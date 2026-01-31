@@ -1,0 +1,60 @@
+{
+  "name": "continues",
+  "version": "1.0.0",
+  "description": "Never lose context. Resume any AI coding session across Codex, Claude, Copilot, Gemini & OpenCode.",
+  "main": "dist/cli.js",
+  "bin": {
+    "continues": "dist/cli.js",
+    "cont": "dist/cli.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build",
+    "link": "npm run build && npm link"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yigitkonur/continues.git"
+  },
+  "keywords": [
+    "ai",
+    "coding-assistant",
+    "codex",
+    "claude",
+    "copilot",
+    "gemini",
+    "opencode",
+    "session",
+    "resume",
+    "context",
+    "cli",
+    "developer-tools",
+    "productivity"
+  ],
+  "author": "Yigit Konur",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/yigitkonur/continues/issues"
+  },
+  "homepage": "https://github.com/yigitkonur/continues#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^14.0.3",
+    "inquirer": "^8.2.7",
+    "ora": "^5.4.1",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^8.2.12",
+    "@types/node": "^25.1.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
