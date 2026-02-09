@@ -1,18 +1,18 @@
 <div align="center">
 
-# continues
+# cli-continues
 
 **One command to resume any AI coding session.**
 
 Codex • Claude • Copilot • Gemini • OpenCode
 
-[![npm](https://img.shields.io/npm/v/continues?color=cb0000&label=)](https://www.npmjs.com/package/continues)
-[![downloads](https://img.shields.io/npm/dm/continues?color=cb0000&label=)](https://www.npmjs.com/package/continues)
+[![npm](https://img.shields.io/npm/v/cli-continues?color=cb0000&label=)](https://www.npmjs.com/package/cli-continues)
+[![downloads](https://img.shields.io/npm/dm/cli-continues?color=cb0000&label=)](https://www.npmjs.com/package/cli-continues)
 
 </div>
 
 ```bash
-npm i -g continues
+npm i -g cli-continues
 ```
 
 ---
@@ -83,7 +83,7 @@ Unified index at `~/.continues/sessions.jsonl`. Auto-refreshes.
 ## Install
 
 ```bash
-npm i -g continues
+npm i -g cli-continues
 ```
 
 Requires Node 18+. Alias: `cont`
@@ -92,6 +92,6 @@ Requires Node 18+. Alias: `cont`
 
 <div align="center">
 
-MIT • [github.com/yigitkonur/continues](https://github.com/yigitkonur/continues)
+MIT • [github.com/yigitkonur/cli-continues](https://github.com/yigitkonur/cli-continues)
 
 </div>

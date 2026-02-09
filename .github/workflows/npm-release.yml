@@ -1,0 +1,108 @@
+name: NPM Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: 'patch'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Determine version bump type
+        id: bump_type
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.version_bump }}" >> $GITHUB_OUTPUT
+          else
+            # Auto-detect from commit message
+            COMMIT_MSG=$(git log -1 --pretty=%B)
+            if echo "$COMMIT_MSG" | grep -qiE "^(breaking|major):"; then
+              echo "type=major" >> $GITHUB_OUTPUT
+            elif echo "$COMMIT_MSG" | grep -qiE "^(feat|feature|minor):"; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Check if version bump needed
+        id: check_version
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED_VERSION=$(npm view cli-continues version 2>/dev/null || echo "0.0.0")
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "published=$PUBLISHED_VERSION" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT_VERSION" = "$PUBLISHED_VERSION" ]; then
+            echo "needs_bump=true" >> $GITHUB_OUTPUT
+          else
+            echo "needs_bump=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        if: steps.check_version.outputs.needs_bump == 'true'
+        run: |
+          BUMP_TYPE="${{ steps.bump_type.outputs.type }}"
+          npm version $BUMP_TYPE -m "chore: bump version to %s [skip ci]"
+          git push --follow-tags
+
+      - name: Publish to NPM (OIDC)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "Publishing to NPM with OIDC..."
+          npm publish --provenance --access public
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.check_version.outputs.current }}
+          release_name: Release v${{ steps.check_version.outputs.current }}
+          body: |
+            Automated release of cli-continues
+
+            **Changes in this version:**
+            See commit history for details.
+          draft: false
+          prerelease: false

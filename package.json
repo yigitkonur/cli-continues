@@ -1,5 +1,5 @@
 {
-  "name": "continues",
+  "name": "cli-continues",
   "version": "1.0.0",
   "description": "Never lose context. Resume any AI coding session across Codex, Claude, Copilot, Gemini & OpenCode.",
   "main": "dist/cli.js",
@@ -14,11 +14,14 @@
     "start": "node dist/cli.js",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
-    "link": "npm run build && npm link"
+    "link": "npm run build && npm link",
+    "version:patch": "npm version patch",
+    "version:minor": "npm version minor",
+    "version:major": "npm version major"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yigitkonur/continues.git"
+    "url": "git+https://github.com/yigitkonur/cli-continues.git"
   },
   "keywords": [
     "ai",
@@ -38,9 +41,9 @@
   "author": "Yigit Konur",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/yigitkonur/continues/issues"
+    "url": "https://github.com/yigitkonur/cli-continues/issues"
   },
-  "homepage": "https://github.com/yigitkonur/continues#readme",
+  "homepage": "https://github.com/yigitkonur/cli-continues#readme",
   "engines": {
     "node": ">=18.0.0"
   },
