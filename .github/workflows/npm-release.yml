@@ -36,6 +36,11 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Verify npm version (requires v11.5.1+ for OIDC)
+        run: |
+          npm --version
+          npm install -g npm@latest
+
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
@@ -85,12 +90,11 @@ jobs:
           npm version $BUMP_TYPE -m "chore: bump version to %s [skip ci]"
           git push --follow-tags
 
-      - name: Publish to NPM (OIDC)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to NPM (OIDC - No Token Required)
         run: |
-          echo "Publishing to NPM with OIDC..."
-          npm publish --provenance --access public
+          echo "Publishing to NPM with OIDC trusted publishing..."
+          echo "No NPM_TOKEN needed - using GitHub OIDC authentication"
+          npm publish --access public
 
       - name: Create GitHub Release
         uses: actions/create-release@v1
