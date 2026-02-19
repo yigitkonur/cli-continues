@@ -7,6 +7,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   codex: 'Codex CLI',
   opencode: 'OpenCode',
+  droid: 'Factory Droid',
 };
 
 /**

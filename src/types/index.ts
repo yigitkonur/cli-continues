@@ -3,7 +3,7 @@
  */
 
 /** Source CLI tool */
-export type SessionSource = 'codex' | 'claude' | 'copilot' | 'gemini' | 'opencode';
+export type SessionSource = 'codex' | 'claude' | 'copilot' | 'gemini' | 'opencode' | 'droid';
 
 /** Unified session metadata */
 export interface UnifiedSession {

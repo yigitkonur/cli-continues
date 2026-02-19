@@ -1,5 +1,5 @@
 /**
- * Fixture-based unit tests for all 20 cross-tool conversion paths.
+ * Fixture-based unit tests for all 30 cross-tool conversion paths.
  * Tests each parser's extractContext using controlled fixture data,
  * independent of real session files on the machine.
  */
@@ -14,6 +14,7 @@ import {
   createGeminiFixture,
   createCodexFixture,
   createOpenCodeSqliteFixture,
+  createDroidFixture,
   type FixtureDir,
 } from './fixtures/index.js';
 
@@ -157,9 +158,43 @@ function parseOpenCodeFixtureMessages(dbPath: string, sessionId: string): Conver
   return messages;
 }
 
+function parseDroidFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.trim().split('\n');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.type !== 'message') continue;
+      const role = parsed.message?.role;
+      const contentBlocks = parsed.message?.content || [];
+
+      const textParts: string[] = [];
+      for (const block of contentBlocks) {
+        if (block.type === 'text' && block.text) {
+          if (!block.text.startsWith('<system-reminder>') && !block.text.startsWith('<permissions')) {
+            textParts.push(block.text);
+          }
+        }
+      }
+
+      const text = textParts.join('\n').trim();
+      if (!text) continue;
+
+      messages.push({
+        role: role === 'user' ? 'user' : 'assistant',
+        content: text,
+        timestamp: parsed.timestamp ? new Date(parsed.timestamp) : undefined,
+      });
+    } catch { /* skip */ }
+  }
+  return messages;
+}
+
 // ─── Fixture Data ────────────────────────────────────────────────────────────
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid'];
 
 let fixtures: Record<string, FixtureDir> = {};
 let contexts: Record<string, SessionContext> = {};
@@ -171,6 +206,7 @@ beforeAll(() => {
   fixtures.gemini = createGeminiFixture();
   fixtures.codex = createCodexFixture();
   fixtures.opencode = createOpenCodeSqliteFixture();
+  fixtures.droid = createDroidFixture();
 
   // Build contexts from fixtures
   const now = new Date();
@@ -252,6 +288,24 @@ beforeAll(() => {
     session: opencodeSession, recentMessages: opencodeMsgs,
     filesModified: [], pendingTasks: [], toolSummaries: [],
     markdown: generateHandoffMarkdown(opencodeSession, opencodeMsgs, [], [], []),
+  };
+
+  // Droid
+  const droidFile = fs.readdirSync(fixtures.droid.root, { recursive: true })
+    .map(f => path.join(fixtures.droid.root, f as string))
+    .find(f => f.endsWith('.jsonl'))!;
+  const droidSession: UnifiedSession = {
+    id: 'dddddddd-1111-2222-3333-444444444444', source: 'droid', cwd: '/home/user/project',
+    repo: 'user/project', lines: 10, bytes: 2000,
+    createdAt: now, updatedAt: now, originalPath: droidFile, summary: 'Fix auth bug',
+    model: 'claude-opus-4-6',
+  };
+  const droidMsgs = parseDroidFixtureMessages(droidFile);
+  contexts.droid = {
+    session: droidSession, recentMessages: droidMsgs,
+    filesModified: ['/home/user/project/login.ts'], pendingTasks: ['Add error handling', 'Write tests'],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(droidSession, droidMsgs, ['/home/user/project/login.ts'], ['Add error handling', 'Write tests'], []),
   };
 });
 
@@ -346,6 +400,32 @@ describe('Low-Level Fixture Parsing', () => {
       expect(msgs[i].timestamp!.getTime()).toBeGreaterThanOrEqual(msgs[i - 1].timestamp!.getTime());
     }
   });
+
+  it('Droid: extracts user and assistant text messages from JSONL', () => {
+    const msgs = contexts.droid.recentMessages;
+    expect(msgs.length).toBeGreaterThanOrEqual(3);
+    expect(msgs[0].role).toBe('user');
+    expect(msgs[0].content).toContain('Fix the authentication bug');
+    const asstMsgs = msgs.filter(m => m.role === 'assistant');
+    expect(asstMsgs.length).toBeGreaterThan(0);
+    expect(asstMsgs[0].content).toContain('token validation was missing');
+  });
+
+  it('Droid: skips session_start and todo_state events in message extraction', () => {
+    const msgs = contexts.droid.recentMessages;
+    for (const msg of msgs) {
+      expect(msg.content).not.toContain('session_start');
+      expect(msg.content).not.toContain('todo_state');
+    }
+  });
+
+  it('Droid: skips tool_use and tool_result content blocks (only text)', () => {
+    const msgs = contexts.droid.recentMessages;
+    for (const msg of msgs) {
+      expect(msg.content).not.toContain('tool_use');
+      expect(msg.content).not.toContain('tool_result');
+    }
+  });
 });
 
 // ─── Shared Markdown Generator Tests ────────────────────────────────────────
@@ -432,7 +512,7 @@ describe('Shared generateHandoffMarkdown', () => {
 
 // ─── All 20 Conversion Path Tests ──────────────────────────────────────────
 
-describe('All 20 Fixture-Based Conversion Paths', () => {
+describe('All 30 Fixture-Based Conversion Paths', () => {
   let conversionNumber = 0;
 
   for (const source of ALL_SOURCES) {
@@ -512,12 +592,12 @@ describe('Injection Safety (Fixture-Based)', () => {
 // ─── Unique Session ID Test ─────────────────────────────────────────────────
 
 describe('Cross-Source Uniqueness', () => {
-  it('all 5 sources produce different session IDs', () => {
+  it('all 6 sources produce different session IDs', () => {
     const ids = new Set(ALL_SOURCES.map(s => contexts[s].session.id));
-    expect(ids.size).toBe(5);
+    expect(ids.size).toBe(6);
   });
 
-  it('all 5 sources have correct source type', () => {
+  it('all 6 sources have correct source type', () => {
     for (const source of ALL_SOURCES) {
       expect(contexts[source].session.source).toBe(source);
     }

@@ -427,6 +427,137 @@ export function createOpenCodeSqliteFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary directory with Droid session fixtures
+ */
+export function createDroidFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-droid-'));
+  const workspaceDir = path.join(root, '-home-user-project');
+  fs.mkdirSync(workspaceDir, { recursive: true });
+
+  const sessionId = 'dddddddd-1111-2222-3333-444444444444';
+
+  // Create .settings.json
+  const settings = {
+    assistantActiveTimeMs: 15000,
+    model: 'claude-opus-4-6',
+    reasoningEffort: 'max',
+    interactionMode: 'auto',
+    autonomyMode: 'auto-low',
+    tokenUsage: {
+      inputTokens: 5000,
+      outputTokens: 1200,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      thinkingTokens: 50,
+    },
+  };
+  fs.writeFileSync(path.join(workspaceDir, `${sessionId}.settings.json`), JSON.stringify(settings, null, 2));
+
+  // Create JSONL session
+  const lines = [
+    JSON.stringify({
+      type: 'session_start',
+      id: sessionId,
+      title: 'Fix authentication bug',
+      sessionTitle: 'Auth Bug Fix',
+      owner: 'testuser',
+      version: 2,
+      cwd: '/home/user/project',
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-001',
+      timestamp: '2026-01-15T10:00:01.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-002',
+      timestamp: '2026-01-15T10:00:05.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tc-001', name: 'Read', input: { file_path: '/home/user/project/login.ts' } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-003',
+      timestamp: '2026-01-15T10:00:06.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tc-001', content: 'export function login() { ... }' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-004',
+      timestamp: '2026-01-15T10:00:08.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'tc-002', name: 'Edit', input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-005',
+      timestamp: '2026-01-15T10:00:09.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tc-002', content: 'File edited successfully' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-006',
+      timestamp: '2026-01-15T10:00:10.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-007',
+      timestamp: '2026-01-15T10:00:12.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Great, please also add error handling' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'msg-008',
+      timestamp: '2026-01-15T10:00:15.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'todo_state',
+      id: 'todo-001',
+      timestamp: '2026-01-15T10:00:15.000Z',
+      todos: { todos: '1. [completed] Fix token validation\n2. [in_progress] Add error handling\n3. [pending] Write tests' },
+      messageIndex: 3,
+    }),
+  ];
+
+  fs.writeFileSync(path.join(workspaceDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create OpenCode JSON-only fixture (legacy format)
  */
 export function createOpenCodeJsonFixture(): FixtureDir {

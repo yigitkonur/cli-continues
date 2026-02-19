@@ -1,6 +1,6 @@
 # continues
 
-> Pick up where you left off — seamlessly continue AI coding sessions across Claude, Copilot, Gemini, Codex & OpenCode.
+> Pick up where you left off — seamlessly continue AI coding sessions across Claude, Copilot, Gemini, Codex, OpenCode & Droid.
 
 ```bash
 npx continues
@@ -22,8 +22,8 @@ You've built up 30 messages of context — file changes, architecture decisions,
 
 ## Features
 
-- 🔄 **Cross-tool handoff** — Move sessions between Claude, Copilot, Gemini, Codex & OpenCode
-- 🔍 **Auto-discovery** — Scans all 5 tools' session directories automatically
+- 🔄 **Cross-tool handoff** — Move sessions between Claude, Copilot, Gemini, Codex, OpenCode & Droid
+- 🔍 **Auto-discovery** — Scans all 6 tools' session directories automatically
 - 🛠️ **Tool activity extraction** — Parses shell commands, file edits, MCP tool calls, patches, and more from every session
 - 🧠 **AI reasoning capture** — Extracts thinking blocks, agent reasoning, and model info for richer handoffs
 - 📋 **Interactive picker** — Browse, filter, and select sessions with a beautiful TUI
@@ -141,6 +141,7 @@ continues codex 3       # 3rd most recent Codex session
 continues copilot       # Latest Copilot session
 continues gemini 2      # 2nd most recent Gemini session
 continues opencode      # Latest OpenCode session
+continues droid         # Latest Droid session
 ```
 
 ### Cross-tool Handoff
@@ -161,7 +162,7 @@ continues resume abc123 --in gemini
 ## How It Works
 
 ```
-1. Discovery    → Scans session directories for all 5 tools
+1. Discovery    → Scans session directories for all 6 tools
 2. Parsing      → Reads each tool's native format (JSONL, JSON, SQLite, YAML)
 3. Extraction   → Pulls recent messages, file changes, tool activity, AI reasoning
 4. Summarizing  → Groups tool calls by type with concise one-line samples
@@ -173,7 +174,7 @@ continues resume abc123 --in gemini
 
 Every tool call from the source session is parsed, categorized, and summarized. The handoff document includes a **Tool Activity** section so the target tool knows exactly what was done — not just what was said.
 
-Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/utils/tool-summarizer.ts`) keep summaries consistent across all 5 CLIs. Adding support for a new tool type is a one-liner.
+Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/utils/tool-summarizer.ts`) keep summaries consistent across all 6 CLIs. Adding support for a new tool type is a one-liner.
 
 **What gets extracted per CLI:**
 
@@ -184,6 +185,7 @@ Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/util
 | Gemini CLI | read_file/write_file (with `diffStat`: +N -M lines), thoughts → reasoning notes, model info, token usage (accumulated) |
 | Copilot CLI | Session metadata from workspace.yaml (tool calls not persisted by Copilot) |
 | OpenCode | Messages from SQLite DB or JSON fallback (tool-specific parts TBD) |
+| Factory Droid | Create/Read/Edit (file paths), Execute/Bash (shell commands), LS, MCP tools (`context7___*`, etc.), thinking blocks → reasoning notes, todo tasks, model info, token usage from companion `.settings.json` |
 
 **Example handoff output:**
 
@@ -212,6 +214,7 @@ Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/util
 | Google Gemini CLI | `~/.gemini/tmp/*/chats/` | JSON |
 | OpenAI Codex | `~/.codex/sessions/` | JSONL |
 | OpenCode | `~/.local/share/opencode/` | SQLite |
+| Factory Droid | `~/.factory/sessions/` | JSONL + JSON |
 
 Session index cached at `~/.continues/sessions.jsonl`. Auto-refreshes when stale (5 min TTL).
 

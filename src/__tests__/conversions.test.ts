@@ -15,9 +15,11 @@ import {
   extractCodexContext,
   parseOpenCodeSessions,
   extractOpenCodeContext,
+  parseDroidSessions,
+  extractDroidContext,
 } from '../parsers/index.js';
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid'];
 
 // Cache parsed sessions and contexts so we only parse once
 const sessionCache: Record<string, UnifiedSession[]> = {};
@@ -29,6 +31,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   gemini: parseGeminiSessions,
   codex: parseCodexSessions,
   opencode: parseOpenCodeSessions,
+  droid: parseDroidSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -37,6 +40,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   gemini: extractGeminiContext,
   codex: extractCodexContext,
   opencode: extractOpenCodeContext,
+  droid: extractDroidContext,
 };
 
 const friendlyNames: Record<SessionSource, string> = {
@@ -45,6 +49,7 @@ const friendlyNames: Record<SessionSource, string> = {
   gemini: 'Gemini CLI',
   codex: 'Codex CLI',
   opencode: 'OpenCode',
+  droid: 'Factory Droid',
 };
 
 beforeAll(async () => {
@@ -164,13 +169,14 @@ describe('Conversion Content Quality', () => {
     expect(ids.size).toBe(ALL_SOURCES.length);
   });
 
-  it('all 5 sources produce markdown with correct source attribution', () => {
+  it('all 6 sources produce markdown with correct source attribution', () => {
     const sourceLabels: Record<SessionSource, string> = {
       claude: 'Claude Code',
       copilot: 'GitHub Copilot CLI',
       gemini: 'Gemini CLI',
       codex: 'Codex CLI',
       opencode: 'OpenCode',
+      droid: 'Factory Droid',
     };
 
     for (const source of ALL_SOURCES) {

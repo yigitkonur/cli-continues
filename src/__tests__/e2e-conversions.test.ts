@@ -21,9 +21,10 @@ import {
   parseGeminiSessions, extractGeminiContext,
   parseCodexSessions, extractCodexContext,
   parseOpenCodeSessions, extractOpenCodeContext,
+  parseDroidSessions, extractDroidContext,
 } from '../parsers/index.js';
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid'];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   claude: parseClaudeSessions,
@@ -31,6 +32,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   gemini: parseGeminiSessions,
   codex: parseCodexSessions,
   opencode: parseOpenCodeSessions,
+  droid: parseDroidSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -39,6 +41,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   gemini: extractGeminiContext,
   codex: extractCodexContext,
   opencode: extractOpenCodeContext,
+  droid: extractDroidContext,
 };
 
 // Results directory
@@ -210,6 +213,7 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
         const sourceLabel = {
           claude: 'Claude Code', copilot: 'GitHub Copilot CLI',
           gemini: 'Gemini CLI', codex: 'Codex CLI', opencode: 'OpenCode',
+          droid: 'Factory Droid',
         }[source];
 
         const prompt = buildVerificationPrompt(contexts[source].markdown, sourceLabel);
