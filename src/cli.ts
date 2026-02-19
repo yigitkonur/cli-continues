@@ -85,6 +85,7 @@ const sourceColors: Record<SessionSource, (s: string) => string> = {
   codex: chalk.magenta,
   opencode: chalk.yellow,
   droid: chalk.red,
+  cursor: chalk.blueBright,
 };
 
 /**
@@ -160,6 +161,7 @@ function showNoSessionsHelp(): void {
   console.log(chalk.gray('  ~/.gemini/tmp/*/chats/'));
   console.log(chalk.gray('  ~/.local/share/opencode/storage/'));
   console.log(chalk.gray('  ~/.factory/sessions/'));
+  console.log(chalk.gray('  ~/.cursor/projects/*/agent-transcripts/'));
 }
 
 /**
@@ -336,7 +338,7 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
  */
 program
   .name('continues')
-  .description('Never lose context. Resume any AI coding session across Claude, Copilot, Gemini, Codex, OpenCode & Droid.')
+  .description('Never lose context. Resume any AI coding session across Claude, Copilot, Gemini, Codex, OpenCode, Droid & Cursor.')
   .version(VERSION)
   .helpOption('-h, --help', 'Display help for command')
   .addHelpText('after', `
@@ -369,7 +371,7 @@ program
 program
   .command('pick')
   .description('Interactive session picker (TUI mode)')
-  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid)')
+  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid, cursor)')
   .option('--no-tui', 'Disable TUI, use plain text')
   .option('--rebuild', 'Force rebuild session index')
   .action(async (options) => {
@@ -383,7 +385,7 @@ program
   .command('list')
   .alias('ls')
   .description('List all sessions in table format')
-  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid)')
+  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid, cursor)')
   .option('-n, --limit <number>', 'Limit number of sessions', '50')
   .option('--json', 'Output as JSON array')
   .option('--jsonl', 'Output as JSONL')
@@ -446,7 +448,7 @@ program
   .command('resume <session-id>')
   .alias('r')
   .description('Resume a session by ID or short ID')
-  .option('-i, --in <cli-tool>', 'Target CLI tool (claude, copilot, gemini, codex, opencode, droid)')
+  .option('-i, --in <cli-tool>', 'Target CLI tool (claude, copilot, gemini, codex, opencode, droid, cursor)')
   .option('--reference', 'Use file reference instead of inline context (for very large sessions)')
   .option('--no-tui', 'Disable interactive prompts')
   .action(async (sessionId, options) => {
@@ -668,6 +670,13 @@ program
   .description('Resume Nth newest Droid session (default: 1)')
   .action(async (n = '1') => {
     await resumeBySource('droid', parseInt(n, 10));
+  });
+
+program
+  .command('cursor [n]')
+  .description('Resume Nth newest Cursor session (default: 1)')
+  .action(async (n = '1') => {
+    await resumeBySource('cursor', parseInt(n, 10));
   });
 
 /**

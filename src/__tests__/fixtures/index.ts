@@ -558,6 +558,86 @@ export function createDroidFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary directory with Cursor agent-transcript fixtures
+ */
+export function createCursorFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-cursor-'));
+  const projectDir = path.join(root, '-test-project');
+  const transcriptsDir = path.join(projectDir, 'agent-transcripts');
+  const sessionId = 'cccccccc-1111-2222-3333-444444444444';
+  const sessionDir = path.join(transcriptsDir, sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const lines = [
+    JSON.stringify({
+      role: 'user',
+      message: {
+        content: [{ type: 'text', text: '<user_query>\nFix the authentication bug in login.ts\n</user_query>' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'I\'ll look into the login.ts file to find the authentication bug.' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tc-001', name: 'read_file', input: { file_path: '/home/user/project/login.ts' } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      role: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tc-001', content: 'export function login() { ... }' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tc-002', name: 'edit_file', input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' } },
+        ],
+      },
+    }),
+    JSON.stringify({
+      role: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tc-002', content: 'File edited successfully' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'user',
+      message: {
+        content: [{ type: 'text', text: '<user_query>\nGreat, please also add error handling\n</user_query>' }],
+      },
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      message: {
+        content: [{ type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' }],
+      },
+    }),
+  ];
+
+  fs.writeFileSync(path.join(sessionDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create OpenCode JSON-only fixture (legacy format)
  */
 export function createOpenCodeJsonFixture(): FixtureDir {

@@ -39,6 +39,11 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
       await runCommand('droid', ['-s', session.id], cwd);
       break;
 
+    case 'cursor':
+      // Cursor doesn't have native session resume via CLI; open the project
+      await runCommand('cursor', [cwd], cwd);
+      break;
+
     default:
       throw new Error(`Unknown session source: ${session.source}`);
   }
@@ -91,6 +96,11 @@ export async function crossToolResume(
 
     case 'droid':
       await runCommand('droid', ['exec', prompt], cwd);
+      break;
+
+    case 'cursor':
+      // Cursor CLI doesn't accept inline prompts; open the project with handoff file
+      await runCommand('cursor', [cwd], cwd);
       break;
 
     default:
@@ -196,13 +206,14 @@ export async function isToolAvailable(tool: SessionSource): Promise<boolean> {
 export async function getAvailableTools(): Promise<SessionSource[]> {
   const tools: SessionSource[] = [];
   
-  const [hasCodex, hasClaude, hasCopilot, hasGemini, hasOpencode, hasDroid] = await Promise.all([
+  const [hasCodex, hasClaude, hasCopilot, hasGemini, hasOpencode, hasDroid, hasCursor] = await Promise.all([
     isToolAvailable('codex'),
     isToolAvailable('claude'),
     isToolAvailable('copilot'),
     isToolAvailable('gemini'),
     isToolAvailable('opencode'),
     isToolAvailable('droid'),
+    isToolAvailable('cursor'),
   ]);
 
   if (hasCodex) tools.push('codex');
@@ -211,6 +222,7 @@ export async function getAvailableTools(): Promise<SessionSource[]> {
   if (hasGemini) tools.push('gemini');
   if (hasOpencode) tools.push('opencode');
   if (hasDroid) tools.push('droid');
+  if (hasCursor) tools.push('cursor');
 
   return tools;
 }
@@ -235,6 +247,8 @@ export function getResumeCommand(session: UnifiedSession, target?: SessionSource
         return `opencode --session ${session.id}`;
       case 'droid':
         return `droid -s ${session.id}`;
+      case 'cursor':
+        return `cursor ${session.cwd}`;
     }
   }
 

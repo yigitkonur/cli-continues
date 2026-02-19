@@ -17,9 +17,11 @@ import {
   extractOpenCodeContext,
   parseDroidSessions,
   extractDroidContext,
+  parseCursorSessions,
+  extractCursorContext,
 } from '../parsers/index.js';
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor'];
 
 // Cache parsed sessions and contexts so we only parse once
 const sessionCache: Record<string, UnifiedSession[]> = {};
@@ -32,6 +34,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   codex: parseCodexSessions,
   opencode: parseOpenCodeSessions,
   droid: parseDroidSessions,
+  cursor: parseCursorSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -41,6 +44,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   codex: extractCodexContext,
   opencode: extractOpenCodeContext,
   droid: extractDroidContext,
+  cursor: extractCursorContext,
 };
 
 const friendlyNames: Record<SessionSource, string> = {
@@ -50,6 +54,7 @@ const friendlyNames: Record<SessionSource, string> = {
   codex: 'Codex CLI',
   opencode: 'OpenCode',
   droid: 'Factory Droid',
+  cursor: 'Cursor AI',
 };
 
 beforeAll(async () => {
@@ -177,6 +182,7 @@ describe('Conversion Content Quality', () => {
       codex: 'Codex CLI',
       opencode: 'OpenCode',
       droid: 'Factory Droid',
+      cursor: 'Cursor AI',
     };
 
     for (const source of ALL_SOURCES) {

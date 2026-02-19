@@ -4,3 +4,4 @@ export { parseCopilotSessions, extractCopilotContext } from './copilot.js';
 export { parseGeminiSessions, extractGeminiContext } from './gemini.js';
 export { parseOpenCodeSessions, extractOpenCodeContext } from './opencode.js';
 export { parseDroidSessions, extractDroidContext } from './droid.js';
+export { parseCursorSessions, extractCursorContext } from './cursor.js';

@@ -7,6 +7,7 @@ import { parseCopilotSessions, extractCopilotContext } from '../parsers/copilot.
 import { parseGeminiSessions, extractGeminiContext } from '../parsers/gemini.js';
 import { parseOpenCodeSessions, extractOpenCodeContext } from '../parsers/opencode.js';
 import { parseDroidSessions, extractDroidContext } from '../parsers/droid.js';
+import { parseCursorSessions, extractCursorContext } from '../parsers/cursor.js';
 
 const CONTINUES_DIR = path.join(process.env.HOME || '~', '.continues');
 const INDEX_FILE = path.join(CONTINUES_DIR, 'sessions.jsonl');
@@ -52,16 +53,17 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
   }
 
   // Parse all sessions from all sources in parallel
-  const [codexSessions, claudeSessions, copilotSessions, geminiSessions, opencodeSessions, droidSessions] = await Promise.all([
+  const [codexSessions, claudeSessions, copilotSessions, geminiSessions, opencodeSessions, droidSessions, cursorSessions] = await Promise.all([
     parseCodexSessions(),
     parseClaudeSessions(),
     parseCopilotSessions(),
     parseGeminiSessions(),
     parseOpenCodeSessions(),
     parseDroidSessions(),
+    parseCursorSessions(),
   ]);
 
-  const allSessions = [...codexSessions, ...claudeSessions, ...copilotSessions, ...geminiSessions, ...opencodeSessions, ...droidSessions];
+  const allSessions = [...codexSessions, ...claudeSessions, ...copilotSessions, ...geminiSessions, ...opencodeSessions, ...droidSessions, ...cursorSessions];
 
   // Sort by updated time (newest first)
   allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
@@ -139,6 +141,8 @@ export async function extractContext(session: UnifiedSession): Promise<SessionCo
       return extractOpenCodeContext(session);
     case 'droid':
       return extractDroidContext(session);
+    case 'cursor':
+      return extractCursorContext(session);
     default:
       throw new Error(`Unknown session source: ${session.source}`);
   }
