@@ -2,10 +2,14 @@
 
 > Pick up where you left off — seamlessly continue AI coding sessions across Claude, Copilot, Gemini, Codex & OpenCode.
 
-[![npm version](https://img.shields.io/npm/v/continues.svg)](https://www.npmjs.com/package/continues)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+```bash
+npx continues
+```
 
 <video src="https://github.com/yigitkonur/cli-continues/raw/main/demo.mp4" autoplay loop muted playsinline width="100%"></video>
+
+[![npm version](https://img.shields.io/npm/v/continues.svg)](https://www.npmjs.com/package/continues)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Why?
 
@@ -28,14 +32,16 @@ You've built up 30 messages of context — file changes, architecture decisions,
 
 ## Installation
 
+No install needed — just run:
+
 ```bash
-npm install -g cli-continues
+npx continues
 ```
 
-Or run directly without installing:
+Or install globally:
 
 ```bash
-npx cli-continues
+npm install -g continues
 ```
 
 Both `continues` and `cont` work as commands after global install.
