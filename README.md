@@ -354,7 +354,7 @@ Same-tool resume is available via `continues <tool>` shortcuts (native resume, n
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite` for OpenCode parsing)
-- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, or OpenCode
+- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, OpenCode, or Droid
 
 ## Development
 

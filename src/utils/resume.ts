@@ -53,11 +53,14 @@ export function buildToolArgs(tool: SessionSource, flags: ToolFlags): string[] {
 
   switch (tool) {
     case 'codex':
-      if (flags.fullAuto) args.push('--full-auto');
-      // --yolo maps to codex's verbose flag name
-      if (flags.yolo) args.push('--dangerously-bypass-approvals-and-sandbox');
-      if (flags.sandbox) args.push('--sandbox', flags.sandbox);
-      if (flags.askForApproval) args.push('--ask-for-approval', flags.askForApproval);
+      if (flags.yolo) {
+        args.push('--dangerously-bypass-approvals-and-sandbox');
+      } else if (flags.fullAuto) {
+        args.push('--full-auto');
+      } else {
+        if (flags.sandbox) args.push('--sandbox', flags.sandbox);
+        if (flags.askForApproval) args.push('--ask-for-approval', flags.askForApproval);
+      }
       if (flags.model) args.push('--model', flags.model);
       break;
 
@@ -338,7 +341,6 @@ export function getResumeCommand(session: UnifiedSession, target?: SessionSource
         return `opencode --session ${session.id}`;
       case 'droid':
         return `droid${flagSuffix} -s ${session.id}`;
-        return `droid -s ${session.id}`;
       case 'cursor':
         return `cursor ${session.cwd}`;
     }
