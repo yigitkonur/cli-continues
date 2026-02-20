@@ -35,6 +35,26 @@ jobs:
           version: 10
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+
+      - name: Auto-increment beta version
+        run: |
+          # Get current beta version from npm (if any)
+          CURRENT_BETA=$(npm view continues@beta version 2>/dev/null || echo "")
+
+          if [ -z "$CURRENT_BETA" ]; then
+            # No beta exists yet — use what's in package.json
+            echo "No existing beta on npm, using package.json version"
+          else
+            # Parse and increment: 2.8.0-beta.0 → 2.8.0-beta.1
+            BASE=$(echo "$CURRENT_BETA" | sed 's/-beta\..*//')
+            BETA_NUM=$(echo "$CURRENT_BETA" | grep -o 'beta\.[0-9]*' | cut -d. -f2)
+            NEXT_NUM=$((BETA_NUM + 1))
+            NEW_VERSION="${BASE}-beta.${NEXT_NUM}"
+
+            echo "Current beta: $CURRENT_BETA → Next: $NEW_VERSION"
+            npm version "$NEW_VERSION" --no-git-tag-version
+          fi
+
       - name: Publish beta to npm
         run: npm publish --tag beta --access public
         env:
