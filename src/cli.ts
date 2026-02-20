@@ -27,6 +27,7 @@ import {
   crossToolResume,
   getAvailableTools,
   getResumeCommand,
+  type ToolFlags,
 } from './utils/resume.js';
 
 const program = new Command();
@@ -439,9 +440,6 @@ program
     }
   });
 
-/**
- * Resume a specific session
- */
 program
   .command('resume <session-id>')
   .alias('r')
@@ -449,6 +447,17 @@ program
   .option('-i, --in <cli-tool>', 'Target CLI tool (claude, copilot, gemini, codex, opencode, droid)')
   .option('--reference', 'Use file reference instead of inline context (for very large sessions)')
   .option('--no-tui', 'Disable interactive prompts')
+  .option('--full-auto', 'Codex: workspace-write sandbox with on-request approvals')
+  .option('--yolo', 'Codex/Gemini: bypass all approvals and sandbox restrictions')
+  .option('--sandbox <mode>', 'Codex: sandbox mode (read-only, workspace-write, danger-full-access)')
+  .option('--ask-for-approval <policy>', 'Codex: approval policy (on-request, untrusted, never)')
+  .option('--dangerously-skip-permissions', 'Claude: skip all permission prompts')
+  .option('--permission-mode <mode>', 'Claude: permission mode (plan, etc.)')
+  .option('--approval-mode <mode>', 'Gemini: approval mode (default, auto_edit, yolo)')
+  .option('--gemini-sandbox', 'Gemini: run in sandboxed environment')
+  .option('--auto <level>', 'Droid: autonomy level (low, medium, high)')
+  .option('--skip-permissions-unsafe', 'Droid: skip all permission prompts (dangerous)')
+  .option('--model <name>', 'Model to use (forwarded to the target tool)')
   .action(async (sessionId, options) => {
     try {
       const spinner = isTTY && !options.noTui ? ora('Finding session...').start() : null;
@@ -456,7 +465,6 @@ program
       if (spinner) spinner.stop();
 
       if (!session) {
-        // Try to find similar sessions
         const allSessions = await getAllSessions();
         const similar = allSessions.filter(s => 
           s.id.toLowerCase().includes(sessionId.toLowerCase()) ||
@@ -478,19 +486,18 @@ program
 
       const target = options.in as SessionSource | undefined;
       const mode = options.reference ? 'reference' as const : 'inline' as const;
+      const flags = collectFlags(options);
 
-      // In non-interactive mode, just resume directly
       if (!isTTY || options.noTui) {
         console.log(chalk.gray('Session: ') + formatSession(session));
-        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target)));
+        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, flags)));
         console.log();
 
         process.chdir(session.cwd);
-        await resume(session, target, mode);
+        await resume(session, target, mode, flags);
         return;
       }
 
-      // Interactive mode - show details and prompt for target if not specified
       if (isTTY && !target) {
         clack.intro(chalk.bold('Resume session'));
         
@@ -520,15 +527,14 @@ program
         clack.outro(`Launching ${selectedTarget}`);
 
         process.chdir(session.cwd);
-        await resume(session, selectedTarget, mode);
+        await resume(session, selectedTarget, mode, flags);
       } else {
-        // Target specified, just resume
         console.log(chalk.gray('Session: ') + formatSession(session));
-        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target)));
+        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, flags)));
         console.log();
 
         process.chdir(session.cwd);
-        await resume(session, target, mode);
+        await resume(session, target, mode, flags);
       }
 
     } catch (error) {
@@ -631,8 +637,11 @@ program
 program
   .command('claude [n]')
   .description('Resume Nth newest Claude session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('claude', parseInt(n, 10));
+  .option('--dangerously-skip-permissions', 'Skip all permission prompts')
+  .option('--permission-mode <mode>', 'Permission mode (plan, etc.)')
+  .option('--model <name>', 'Model to use')
+  .action(async (n = '1', options) => {
+    await resumeBySource('claude', parseInt(n, 10), collectFlags(options));
   });
 
 program
@@ -645,15 +654,24 @@ program
 program
   .command('gemini [n]')
   .description('Resume Nth newest Gemini session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('gemini', parseInt(n, 10));
+  .option('--yolo', 'Bypass all approvals and sandbox restrictions')
+  .option('--approval-mode <mode>', 'Approval mode (default, auto_edit, yolo)')
+  .option('--gemini-sandbox', 'Run in sandboxed environment')
+  .option('--model <name>', 'Model to use')
+  .action(async (n = '1', options) => {
+    await resumeBySource('gemini', parseInt(n, 10), collectFlags(options));
   });
 
 program
   .command('codex [n]')
   .description('Resume Nth newest Codex session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('codex', parseInt(n, 10));
+  .option('--full-auto', 'Workspace-write sandbox with on-request approvals')
+  .option('--yolo', 'Bypass all approvals and sandbox restrictions')
+  .option('--sandbox <mode>', 'Sandbox mode (read-only, workspace-write, danger-full-access)')
+  .option('--ask-for-approval <policy>', 'Approval policy (on-request, untrusted, never)')
+  .option('--model <name>', 'Model to use')
+  .action(async (n = '1', options) => {
+    await resumeBySource('codex', parseInt(n, 10), collectFlags(options));
   });
 
 program
@@ -666,14 +684,40 @@ program
 program
   .command('droid [n]')
   .description('Resume Nth newest Droid session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('droid', parseInt(n, 10));
+  .option('--auto <level>', 'Autonomy level (low, medium, high)')
+  .option('--skip-permissions-unsafe', 'Skip all permission prompts (dangerous)')
+  .option('--model <name>', 'Model to use')
+  .action(async (n = '1', options) => {
+    await resumeBySource('droid', parseInt(n, 10), collectFlags(options));
   });
+
+/**
+ * Collect tool flags from commander options into a ToolFlags object.
+ * Returns undefined if no relevant flags were set (avoids passing empty objects).
+ */
+function collectFlags(options: Record<string, unknown>): ToolFlags | undefined {
+  const flags: ToolFlags = {};
+  let hasAny = false;
+
+  if (options['fullAuto']) { flags.fullAuto = true; hasAny = true; }
+  if (options['yolo']) { flags.yolo = true; hasAny = true; }
+  if (options['sandbox']) { flags.sandbox = options['sandbox'] as string; hasAny = true; }
+  if (options['askForApproval']) { flags.askForApproval = options['askForApproval'] as string; hasAny = true; }
+  if (options['dangerouslySkipPermissions']) { flags.dangerouslySkipPermissions = true; hasAny = true; }
+  if (options['permissionMode']) { flags.permissionMode = options['permissionMode'] as string; hasAny = true; }
+  if (options['approvalMode']) { flags.approvalMode = options['approvalMode'] as string; hasAny = true; }
+  if (options['geminiSandbox']) { flags.geminiSandbox = true; hasAny = true; }
+  if (options['auto']) { flags.auto = options['auto'] as string; hasAny = true; }
+  if (options['skipPermissionsUnsafe']) { flags.skipPermissionsUnsafe = true; hasAny = true; }
+  if (options['model']) { flags.model = options['model'] as string; hasAny = true; }
+
+  return hasAny ? flags : undefined;
+}
 
 /**
  * Helper to resume Nth session from a source
  */
-async function resumeBySource(source: SessionSource, n: number): Promise<void> {
+async function resumeBySource(source: SessionSource, n: number, flags?: ToolFlags): Promise<void> {
   try {
     const sessions = await getSessionsBySource(source);
     
@@ -690,7 +734,7 @@ async function resumeBySource(source: SessionSource, n: number): Promise<void> {
     console.log();
 
     process.chdir(session.cwd);
-    await nativeResume(session);
+    await nativeResume(session, flags);
   } catch (error) {
     console.error(chalk.red('Error:'), (error as Error).message);
     process.exitCode = 1;

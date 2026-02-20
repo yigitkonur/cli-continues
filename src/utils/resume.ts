@@ -6,18 +6,104 @@ import { extractContext, saveContext } from './index.js';
 import { SOURCE_LABELS } from './markdown.js';
 
 /**
- * Resume a session using native CLI commands
+ * Per-tool autonomy/safety flags that can be forwarded to target CLI tools.
+ * Only flags supported at launch time by each tool are included.
+ * Copilot and OpenCode are intentionally omitted — they have no startup autonomy flags.
  */
-export async function nativeResume(session: UnifiedSession): Promise<void> {
-  const cwd = session.cwd;
+export interface ToolFlags {
+  // ── Codex ──────────────────────────────────────────────────────────────────
+  /** codex --full-auto: workspace-write sandbox + on-request approvals */
+  fullAuto?: boolean;
+  /** codex --dangerously-bypass-approvals-and-sandbox: no sandbox, no approvals */
+  yolo?: boolean;
+  /** codex --sandbox <mode>: 'read-only' | 'workspace-write' | 'danger-full-access' */
+  sandbox?: string;
+  /** codex --ask-for-approval <policy>: 'on-request' | 'untrusted' | 'never' */
+  askForApproval?: string;
 
-  switch (session.source) {
+  // ── Claude ─────────────────────────────────────────────────────────────────
+  /** claude --dangerously-skip-permissions: skip all permission prompts */
+  dangerouslySkipPermissions?: boolean;
+  /** claude --permission-mode <mode>: e.g. 'plan' */
+  permissionMode?: string;
+
+  // ── Gemini ─────────────────────────────────────────────────────────────────
+  /** gemini --approval-mode <mode>: 'default' | 'auto_edit' | 'yolo' */
+  approvalMode?: string;
+  /** gemini --sandbox: run in sandboxed environment */
+  geminiSandbox?: boolean;
+
+  // ── Droid ──────────────────────────────────────────────────────────────────
+  /** droid --auto <level>: 'low' | 'medium' | 'high' */
+  auto?: string;
+  /** droid --skip-permissions-unsafe: skip all permission prompts (dangerous) */
+  skipPermissionsUnsafe?: boolean;
+
+  // ── Shared ─────────────────────────────────────────────────────────────────
+  /** --model <name>: forwarded to all tools that support it */
+  model?: string;
+}
+
+/**
+ * Build the CLI argument array for a given tool from a ToolFlags object.
+ * Returns only the flags that are relevant to and supported by the target tool.
+ */
+export function buildToolArgs(tool: SessionSource, flags: ToolFlags): string[] {
+  const args: string[] = [];
+
+  switch (tool) {
     case 'codex':
-      await runCommand('codex', ['-c', `experimental_resume=${session.originalPath}`], cwd);
+      if (flags.fullAuto) args.push('--full-auto');
+      // --yolo maps to codex's verbose flag name
+      if (flags.yolo) args.push('--dangerously-bypass-approvals-and-sandbox');
+      if (flags.sandbox) args.push('--sandbox', flags.sandbox);
+      if (flags.askForApproval) args.push('--ask-for-approval', flags.askForApproval);
+      if (flags.model) args.push('--model', flags.model);
       break;
 
     case 'claude':
-      await runCommand('claude', ['--resume', session.id], cwd);
+      if (flags.dangerouslySkipPermissions) args.push('--dangerously-skip-permissions');
+      if (flags.permissionMode) args.push('--permission-mode', flags.permissionMode);
+      if (flags.model) args.push('--model', flags.model);
+      break;
+
+    case 'gemini':
+      // --yolo on continues maps to gemini's --approval-mode yolo
+      if (flags.yolo) args.push('--approval-mode', 'yolo');
+      else if (flags.approvalMode) args.push('--approval-mode', flags.approvalMode);
+      if (flags.geminiSandbox) args.push('--sandbox');
+      if (flags.model) args.push('--model', flags.model);
+      break;
+
+    case 'droid':
+      if (flags.auto) args.push('--auto', flags.auto);
+      if (flags.skipPermissionsUnsafe) args.push('--skip-permissions-unsafe');
+      if (flags.model) args.push('--model', flags.model);
+      break;
+
+    // copilot and opencode have no startup autonomy/safety flags — pass nothing
+    case 'copilot':
+    case 'opencode':
+      break;
+  }
+
+  return args;
+}
+
+/**
+ * Resume a session using native CLI commands
+ */
+export async function nativeResume(session: UnifiedSession, flags?: ToolFlags): Promise<void> {
+  const cwd = session.cwd;
+  const extraArgs = flags ? buildToolArgs(session.source, flags) : [];
+
+  switch (session.source) {
+    case 'codex':
+      await runCommand('codex', [...extraArgs, '-c', `experimental_resume=${session.originalPath}`], cwd);
+      break;
+
+    case 'claude':
+      await runCommand('claude', [...extraArgs, '--resume', session.id], cwd);
       break;
 
     case 'copilot':
@@ -26,7 +112,7 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
 
     case 'gemini':
       // Gemini uses --continue to resume the last session in cwd
-      await runCommand('gemini', ['--continue'], cwd);
+      await runCommand('gemini', [...extraArgs, '--continue'], cwd);
       break;
 
     case 'opencode':
@@ -36,7 +122,7 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
 
     case 'droid':
       // Droid uses -s to resume a specific session
-      await runCommand('droid', ['-s', session.id], cwd);
+      await runCommand('droid', [...extraArgs, '-s', session.id], cwd);
       break;
 
     default:
@@ -51,6 +137,7 @@ export async function crossToolResume(
   session: UnifiedSession,
   target: SessionSource,
   mode: 'inline' | 'reference' = 'inline',
+  flags?: ToolFlags,
 ): Promise<void> {
   const context = await extractContext(session);
   const cwd = session.cwd;
@@ -67,14 +154,16 @@ export async function crossToolResume(
     ? buildInlinePrompt(context, session)
     : buildReferencePrompt(session, localPath);
 
+  const extraArgs = flags ? buildToolArgs(target, flags) : [];
+
   // Each tool has different CLI syntax for accepting a prompt
   switch (target) {
     case 'codex':
-      await runCommand('codex', [prompt], cwd);
+      await runCommand('codex', [...extraArgs, prompt], cwd);
       break;
 
     case 'claude':
-      await runCommand('claude', [prompt], cwd);
+      await runCommand('claude', [...extraArgs, prompt], cwd);
       break;
 
     case 'copilot':
@@ -82,7 +171,7 @@ export async function crossToolResume(
       break;
 
     case 'gemini':
-      await runCommand('gemini', [prompt], cwd);
+      await runCommand('gemini', [...extraArgs, prompt], cwd);
       break;
 
     case 'opencode':
@@ -90,7 +179,7 @@ export async function crossToolResume(
       break;
 
     case 'droid':
-      await runCommand('droid', ['exec', prompt], cwd);
+      await runCommand('droid', [...extraArgs, 'exec', prompt], cwd);
       break;
 
     default:
@@ -137,15 +226,18 @@ function buildReferencePrompt(session: UnifiedSession, filePath: string): string
 /**
  * Resume a session - automatically chooses native or cross-tool
  */
-export async function resume(session: UnifiedSession, target?: SessionSource, mode: 'inline' | 'reference' = 'inline'): Promise<void> {
+export async function resume(
+  session: UnifiedSession,
+  target?: SessionSource,
+  mode: 'inline' | 'reference' = 'inline',
+  flags?: ToolFlags,
+): Promise<void> {
   const actualTarget = target || session.source;
 
   if (actualTarget === session.source) {
-    // Same tool - use native resume
-    await nativeResume(session);
+    await nativeResume(session, flags);
   } else {
-    // Different tool - use cross-tool injection
-    await crossToolResume(session, actualTarget, mode);
+    await crossToolResume(session, actualTarget, mode, flags);
   }
 }
 
@@ -215,29 +307,44 @@ export async function getAvailableTools(): Promise<SessionSource[]> {
   return tools;
 }
 
-/**
- * Get resume command for display purposes
- */
-export function getResumeCommand(session: UnifiedSession, target?: SessionSource): string {
+export function getResumeCommand(session: UnifiedSession, target?: SessionSource, flags?: ToolFlags): string {
   const actualTarget = target || session.source;
+  const extraArgs = flags ? buildToolArgs(actualTarget, flags) : [];
+  const flagSuffix = extraArgs.length > 0 ? ` ${extraArgs.join(' ')}` : '';
 
   if (actualTarget === session.source) {
     switch (session.source) {
       case 'codex':
-        return `codex -c experimental_resume="${session.originalPath}"`;
+        return `codex${flagSuffix} -c experimental_resume="${session.originalPath}"`;
       case 'claude':
-        return `claude --resume ${session.id}`;
+        return `claude${flagSuffix} --resume ${session.id}`;
       case 'copilot':
         return `copilot --resume ${session.id}`;
       case 'gemini':
-        return `gemini --continue`;
+        return `gemini${flagSuffix} --continue`;
       case 'opencode':
         return `opencode --session ${session.id}`;
       case 'droid':
-        return `droid -s ${session.id}`;
+        return `droid${flagSuffix} -s ${session.id}`;
     }
   }
 
-  // Cross-tool
-  return `continues resume ${session.id} --in ${actualTarget}`;
+  const continuesFlagSuffix = flags ? ` ${buildContinuesFlagString(flags)}`.trimEnd() : '';
+  return `continues resume ${session.id} --in ${actualTarget}${continuesFlagSuffix}`;
+}
+
+function buildContinuesFlagString(flags: ToolFlags): string {
+  const parts: string[] = [];
+  if (flags.fullAuto) parts.push('--full-auto');
+  if (flags.yolo) parts.push('--yolo');
+  if (flags.sandbox) parts.push(`--sandbox ${flags.sandbox}`);
+  if (flags.askForApproval) parts.push(`--ask-for-approval ${flags.askForApproval}`);
+  if (flags.dangerouslySkipPermissions) parts.push('--dangerously-skip-permissions');
+  if (flags.permissionMode) parts.push(`--permission-mode ${flags.permissionMode}`);
+  if (flags.approvalMode) parts.push(`--approval-mode ${flags.approvalMode}`);
+  if (flags.geminiSandbox) parts.push('--gemini-sandbox');
+  if (flags.auto) parts.push(`--auto ${flags.auto}`);
+  if (flags.skipPermissionsUnsafe) parts.push('--skip-permissions-unsafe');
+  if (flags.model) parts.push(`--model ${flags.model}`);
+  return parts.join(' ');
 }
