@@ -9,6 +9,7 @@ import {
   parseCodexSessions, extractCodexContext,
   parseOpenCodeSessions, extractOpenCodeContext,
   parseDroidSessions, extractDroidContext,
+  parseCursorSessions, extractCursorContext,
 } from '../parsers/index.js';
 import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
 import * as fs from 'fs';
@@ -17,7 +18,7 @@ import * as path from 'path';
 const RESULTS_DIR = path.join(process.env.HOME || '~', '.continues', 'e2e-test-results');
 fs.mkdirSync(RESULTS_DIR, { recursive: true });
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor'];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   claude: parseClaudeSessions,
@@ -26,6 +27,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   codex: parseCodexSessions,
   opencode: parseOpenCodeSessions,
   droid: parseDroidSessions,
+  cursor: parseCursorSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -35,6 +37,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   codex: extractCodexContext,
   opencode: extractOpenCodeContext,
   droid: extractDroidContext,
+  cursor: extractCursorContext,
 };
 
 async function main() {

@@ -8,6 +8,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
   opencode: 'OpenCode',
   droid: 'Factory Droid',
+  cursor: 'Cursor AI',
 };
 
 /**
