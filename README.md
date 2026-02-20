@@ -28,6 +28,7 @@ You've built up 30 messages of context — file changes, architecture decisions,
 - 🧠 **AI reasoning capture** — Extracts thinking blocks, agent reasoning, and model info for richer handoffs
 - 📋 **Interactive picker** — Browse, filter, and select sessions with a beautiful TUI
 - ⚡ **Quick resume** — `continues claude` / `continues codex 3` — one command, done
+- 🔒 **Tool flags** — pass autonomy/safety flags directly at launch (`--full-auto`, `--yolo`, `--dangerously-skip-permissions`, etc.)
 - 🖥️ **Scriptable** — JSON/JSONL output, TTY detection, non-interactive mode
 - 📊 **Session stats** — `continues scan` to see everything at a glance
 
@@ -59,8 +60,14 @@ continues list
 # Grab a Claude session and continue it in Gemini
 continues resume abc123 --in gemini
 
+# Resume in Codex with full-auto mode
+continues resume abc123 --in codex --full-auto
+
 # Quick-resume your latest Claude session (native resume)
 continues claude
+
+# Quick-resume Codex in yolo mode (no approvals, no sandbox)
+continues codex --yolo
 ```
 
 ## Usage
@@ -144,6 +151,28 @@ continues opencode      # Latest OpenCode session
 continues droid         # Latest Droid session
 ```
 
+Tool-specific flags can be passed directly:
+
+```bash
+continues codex --full-auto                    # workspace-write sandbox + on-request approvals
+continues codex --yolo                         # no sandbox, no approvals
+continues codex --sandbox workspace-write
+continues codex --ask-for-approval never
+continues codex 3 --model o4-mini
+
+continues claude --dangerously-skip-permissions
+continues claude --permission-mode plan
+continues claude --model claude-opus-4-5
+
+continues gemini --yolo                        # maps to --approval-mode yolo
+continues gemini --approval-mode auto_edit
+continues gemini --gemini-sandbox
+
+continues droid --auto high
+continues droid --skip-permissions-unsafe
+continues droid --model gpt-4o
+```
+
 ### Cross-tool Handoff
 
 This is the whole point. Start in one tool, finish in another:
@@ -152,6 +181,15 @@ This is the whole point. Start in one tool, finish in another:
 # You were debugging in Claude, but hit the rate limit.
 # Grab the session ID from `continues list` and hand it off:
 continues resume abc123 --in gemini
+
+# Hand off to Codex and launch in full-auto mode:
+continues resume abc123 --in codex --full-auto
+
+# Hand off to Claude and skip all permission prompts:
+continues resume abc123 --in claude --dangerously-skip-permissions
+
+# Hand off to Gemini in yolo mode:
+continues resume abc123 --in gemini --yolo
 
 # Or pick interactively — just run `continues`, select a session,
 # and choose a different tool as the target.
@@ -255,7 +293,26 @@ Interactive session picker. Requires a TTY.
 | Flag | Description | Default |
 |:-----|:------------|:--------|
 | `-i, --in <tool>` | Target tool for cross-tool handoff | — |
+| `--reference` | Use file reference instead of inline context (large sessions) | — |
 | `--no-tui` | Skip interactive prompts | — |
+| **Codex flags** | | |
+| `--full-auto` | Workspace-write sandbox with on-request approvals | — |
+| `--yolo` | Bypass all approvals and sandbox restrictions | — |
+| `--sandbox <mode>` | Sandbox mode: `read-only`, `workspace-write`, `danger-full-access` | — |
+| `--ask-for-approval <policy>` | Approval policy: `on-request`, `untrusted`, `never` | — |
+| **Claude flags** | | |
+| `--dangerously-skip-permissions` | Skip all permission prompts | — |
+| `--permission-mode <mode>` | Permission mode (e.g. `plan`) | — |
+| **Gemini flags** | | |
+| `--approval-mode <mode>` | Approval mode: `default`, `auto_edit`, `yolo` | — |
+| `--gemini-sandbox` | Run in sandboxed environment | — |
+| **Droid flags** | | |
+| `--auto <level>` | Autonomy level: `low`, `medium`, `high` | — |
+| `--skip-permissions-unsafe` | Skip all permission prompts (dangerous) | — |
+| **Shared** | | |
+| `--model <name>` | Model to use (forwarded to the target tool) | — |
+
+Flags are forwarded to whichever tool is launched (native or cross-tool target). Flags irrelevant to the target tool are silently ignored — e.g. `--full-auto` does nothing when the target is Claude.
 
 ### `continues scan`
 
@@ -266,19 +323,31 @@ Interactive session picker. Requires a TTY.
 ### `continues <tool> [n]`
 
 Quick-resume using native resume (same tool, no context injection).  
-Tools: `claude`, `copilot`, `gemini`, `codex`, `opencode`. Default `n` is 1.
+Tools: `claude`, `copilot`, `gemini`, `codex`, `opencode`, `droid`. Default `n` is 1.
+
+Each tool supports its own flags:
+
+| Tool | Supported flags |
+|:-----|:----------------|
+| `codex` | `--full-auto`, `--yolo`, `--sandbox <mode>`, `--ask-for-approval <policy>`, `--model <name>` |
+| `claude` | `--dangerously-skip-permissions`, `--permission-mode <mode>`, `--model <name>` |
+| `gemini` | `--yolo`, `--approval-mode <mode>`, `--gemini-sandbox`, `--model <name>` |
+| `droid` | `--auto <level>`, `--skip-permissions-unsafe`, `--model <name>` |
+| `copilot` | *(no startup autonomy flags)* |
+| `opencode` | *(no startup autonomy flags)* |
 
 ## Conversion Matrix
 
-All 20 cross-tool paths are supported and tested:
+All 30 cross-tool paths are supported and tested:
 
-|  | → Claude | → Copilot | → Gemini | → Codex | → OpenCode |
-|:--|:--------:|:---------:|:--------:|:-------:|:----------:|
-| **Claude** | — | ✅ | ✅ | ✅ | ✅ |
-| **Copilot** | ✅ | — | ✅ | ✅ | ✅ |
-| **Gemini** | ✅ | ✅ | — | ✅ | ✅ |
-| **Codex** | ✅ | ✅ | ✅ | — | ✅ |
-| **OpenCode** | ✅ | ✅ | ✅ | ✅ | — |
+|  | → Claude | → Copilot | → Gemini | → Codex | → OpenCode | → Droid |
+|:--|:--------:|:---------:|:--------:|:-------:|:----------:|:-------:|
+| **Claude** | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Copilot** | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| **Gemini** | ✅ | ✅ | — | ✅ | ✅ | ✅ |
+| **Codex** | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| **OpenCode** | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Droid** | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 Same-tool resume is available via `continues <tool>` shortcuts (native resume, not shown in matrix).
 
