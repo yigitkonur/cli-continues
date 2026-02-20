@@ -1,5 +1,5 @@
 /**
- * Unified Session Types for Codex, Claude, Copilot, Gemini, and OpenCode CLIs
+ * Unified Session Types for CLI session tools
  */
 
 /** Source CLI tool */
@@ -35,7 +35,7 @@ export interface UnifiedSession {
 
 /** Conversation message in normalized format */
 export interface ConversationMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp?: Date;
   toolCalls?: ToolCall[];
@@ -64,14 +64,16 @@ export interface ToolUsageSummary {
   samples: ToolSample[];
 }
 
-/** Contextual session notes (reasoning highlights, model info, token usage) */
+/** Contextual session notes (reasoning highlights, token usage) */
 export interface SessionNotes {
-  /** Model used in the session */
+  /** Model used in the session (kept for backwards compatibility with parsers that set it here) */
   model?: string;
-  /** Key reasoning/thinking highlights (max 5) */
+  /** Key reasoning/thinking highlights (max 10) */
   reasoning?: string[];
   /** Token usage statistics */
   tokenUsage?: { input: number; output: number };
+  /** Narrative summary from compact/compaction messages */
+  compactSummary?: string;
 }
 
 /** Extracted context for cross-tool continuation */
@@ -91,22 +93,10 @@ export interface SessionContext {
   markdown: string;
 }
 
-/** Session parser interface - each CLI implements this */
-export interface SessionParser {
-  /** Check if this parser can handle the given path */
-  canParse(path: string): boolean;
-  /** Parse sessions from the default location */
-  parseAll(): Promise<UnifiedSession[]>;
-  /** Extract full context from a session */
-  extractContext(session: UnifiedSession): Promise<SessionContext>;
-}
-
-/** Resume options */
-export interface ResumeOptions {
-  /** Session to resume */
-  session: UnifiedSession;
-  /** Target CLI tool */
-  target: SessionSource;
-  /** Whether to use native resume (same tool) */
-  useNative: boolean;
+/** Options controlling handoff markdown generation */
+export interface HandoffOptions {
+  /** Delivery mode — inline embeds full markdown as CLI arg, reference points to file */
+  mode: 'inline' | 'reference';
+  /** Max bytes for the conversation section (default: 20000 inline, 40000 reference) */
+  maxConversationBytes?: number;
 }

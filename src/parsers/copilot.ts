@@ -4,8 +4,9 @@ import * as readline from 'readline';
 import YAML from 'yaml';
 import type { UnifiedSession, SessionContext, ConversationMessage } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
+import { homeDir } from '../utils/parser-helpers.js';
 
-const COPILOT_SESSIONS_DIR = path.join(process.env.HOME || '~', '.copilot', 'session-state');
+const COPILOT_SESSIONS_DIR = path.join(homeDir(), '.copilot', 'session-state');
 
 interface CopilotWorkspace {
   id: string;
@@ -224,7 +225,7 @@ export async function extractCopilotContext(session: UnifiedSession): Promise<Se
   const pendingTasks: string[] = [];
 
   // Process events to extract conversation
-  for (const event of events.slice(-100)) { // Last 100 events
+  for (const event of events.slice(-20)) {
     if (event.type === 'user.message') {
       const content = event.data?.content || event.data?.transformedContent || '';
       if (content) {

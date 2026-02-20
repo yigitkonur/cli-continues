@@ -1,15 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
-import { parseCodexSessions, extractCodexContext } from '../parsers/codex.js';
-import { parseClaudeSessions, extractClaudeContext } from '../parsers/claude.js';
-import { parseCopilotSessions, extractCopilotContext } from '../parsers/copilot.js';
-import { parseGeminiSessions, extractGeminiContext } from '../parsers/gemini.js';
-import { parseOpenCodeSessions, extractOpenCodeContext } from '../parsers/opencode.js';
-import { parseDroidSessions, extractDroidContext } from '../parsers/droid.js';
-import { parseCursorSessions, extractCursorContext } from '../parsers/cursor.js';
+import { adapters } from '../parsers/registry.js';
+import { homeDir } from './parser-helpers.js';
 
-const CONTINUES_DIR = path.join(process.env.HOME || '~', '.continues');
+const CONTINUES_DIR = path.join(homeDir(), '.continues');
 const INDEX_FILE = path.join(CONTINUES_DIR, 'sessions.jsonl');
 const CONTEXTS_DIR = path.join(CONTINUES_DIR, 'contexts');
 
@@ -20,11 +15,15 @@ const INDEX_TTL = 5 * 60 * 1000;
  * Ensure continues directories exist
  */
 export function ensureDirectories(): void {
-  if (!fs.existsSync(CONTINUES_DIR)) {
-    fs.mkdirSync(CONTINUES_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(CONTEXTS_DIR)) {
-    fs.mkdirSync(CONTEXTS_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(CONTINUES_DIR)) {
+      fs.mkdirSync(CONTINUES_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(CONTEXTS_DIR)) {
+      fs.mkdirSync(CONTEXTS_DIR, { recursive: true });
+    }
+  } catch (err) {
+    // Non-fatal — index/context operations will fail individually if dirs are missing
   }
 }
 
@@ -32,13 +31,13 @@ export function ensureDirectories(): void {
  * Check if index needs rebuilding
  */
 export function indexNeedsRebuild(): boolean {
-  if (!fs.existsSync(INDEX_FILE)) {
-    return true;
+  try {
+    const stats = fs.statSync(INDEX_FILE);
+    const age = Date.now() - stats.mtime.getTime();
+    return age > INDEX_TTL;
+  } catch {
+    return true; // File doesn't exist or can't be read
   }
-
-  const stats = fs.statSync(INDEX_FILE);
-  const age = Date.now() - stats.mtime.getTime();
-  return age > INDEX_TTL;
 }
 
 /**
@@ -52,18 +51,15 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
     return loadIndex();
   }
 
-  // Parse all sessions from all sources in parallel
-  const [codexSessions, claudeSessions, copilotSessions, geminiSessions, opencodeSessions, droidSessions, cursorSessions] = await Promise.all([
-    parseCodexSessions(),
-    parseClaudeSessions(),
-    parseCopilotSessions(),
-    parseGeminiSessions(),
-    parseOpenCodeSessions(),
-    parseDroidSessions(),
-    parseCursorSessions(),
-  ]);
+  // Parse all sessions from all sources in parallel — use allSettled so one
+  // broken parser doesn't crash the entire CLI
+  const results = await Promise.allSettled(
+    Object.values(adapters).map(a => a.parseSessions())
+  );
 
-  const allSessions = [...codexSessions, ...claudeSessions, ...copilotSessions, ...geminiSessions, ...opencodeSessions, ...droidSessions, ...cursorSessions];
+  const allSessions = results
+    .filter((r): r is PromiseFulfilledResult<UnifiedSession[]> => r.status === 'fulfilled')
+    .flatMap(r => r.value);
 
   // Sort by updated time (newest first)
   allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
@@ -84,21 +80,25 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
  * Load sessions from the index file
  */
 export function loadIndex(): UnifiedSession[] {
-  if (!fs.existsSync(INDEX_FILE)) {
-    return [];
+  try {
+    const content = fs.readFileSync(INDEX_FILE, 'utf8');
+    const lines = content.trim().split('\n').filter(l => l);
+
+    return lines.flatMap(line => {
+      try {
+        const parsed = JSON.parse(line);
+        return [{
+          ...parsed,
+          createdAt: new Date(parsed.createdAt),
+          updatedAt: new Date(parsed.updatedAt),
+        } as UnifiedSession];
+      } catch {
+        return []; // Skip corrupted lines
+      }
+    });
+  } catch {
+    return []; // File doesn't exist or can't be read
   }
-
-  const content = fs.readFileSync(INDEX_FILE, 'utf8');
-  const lines = content.trim().split('\n').filter(l => l);
-
-  return lines.map(line => {
-    const parsed = JSON.parse(line);
-    return {
-      ...parsed,
-      createdAt: new Date(parsed.createdAt),
-      updatedAt: new Date(parsed.updatedAt),
-    } as UnifiedSession;
-  });
 }
 
 /**
@@ -128,24 +128,9 @@ export async function findSession(id: string): Promise<UnifiedSession | null> {
  * Extract context from a session based on its source
  */
 export async function extractContext(session: UnifiedSession): Promise<SessionContext> {
-  switch (session.source) {
-    case 'codex':
-      return extractCodexContext(session);
-    case 'claude':
-      return extractClaudeContext(session);
-    case 'copilot':
-      return extractCopilotContext(session);
-    case 'gemini':
-      return extractGeminiContext(session);
-    case 'opencode':
-      return extractOpenCodeContext(session);
-    case 'droid':
-      return extractDroidContext(session);
-    case 'cursor':
-      return extractCursorContext(session);
-    default:
-      throw new Error(`Unknown session source: ${session.source}`);
-  }
+  const adapter = adapters[session.source];
+  if (!adapter) throw new Error(`Unknown session source: ${session.source}`);
+  return adapter.extractContext(session);
 }
 
 /**

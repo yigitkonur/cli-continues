@@ -1,6 +1,6 @@
 # continues
 
-> Pick up where you left off — seamlessly continue AI coding sessions across Claude, Copilot, Gemini, Codex, OpenCode & Droid.
+> Pick up where you left off — seamlessly continue AI coding sessions across Claude, Copilot, Gemini, Codex, OpenCode, Droid & Cursor.
 
 ```bash
 npx continues
@@ -22,8 +22,8 @@ You've built up 30 messages of context — file changes, architecture decisions,
 
 ## Features
 
-- 🔄 **Cross-tool handoff** — Move sessions between Claude, Copilot, Gemini, Codex, OpenCode & Droid
-- 🔍 **Auto-discovery** — Scans all 6 tools' session directories automatically
+- 🔄 **Cross-tool handoff** — Move sessions between Claude, Copilot, Gemini, Codex, OpenCode, Droid & Cursor
+- 🔍 **Auto-discovery** — Scans all 7 tools' session directories automatically
 - 🛠️ **Tool activity extraction** — Parses shell commands, file edits, MCP tool calls, patches, and more from every session
 - 🧠 **AI reasoning capture** — Extracts thinking blocks, agent reasoning, and model info for richer handoffs
 - 📋 **Interactive picker** — Browse, filter, and select sessions with a beautiful TUI
@@ -79,8 +79,8 @@ When you run `continues` from a project directory, it prioritizes sessions from 
 ┌  continues — pick up where you left off
 │
 │  ▸ 12 sessions found in current directory
-│  Found 904 sessions across 5 CLI tools
-│    claude: 723  codex: 72  copilot: 39  opencode: 38  gemini: 31
+│  Found 1042 sessions across 7 CLI tools
+│    claude: 723  codex: 72  cursor: 68  copilot: 39  opencode: 38  droid: 71  gemini: 31
 │
 ◆  Filter sessions
 │  ● This directory (12 sessions)
@@ -88,8 +88,10 @@ When you run `continues` from a project directory, it prioritizes sessions from 
 │  ○ Claude (723)
 │  ○ Codex (72)
 │  ○ Copilot (39)
+│  ○ Droid (71)
 │  ○ Opencode (38)
 │  ○ Gemini (31)
+│  ○ Cursor (68)
 └
 
 ◆  Select a session (12 available)
@@ -104,6 +106,8 @@ When you run `continues` from a project directory, it prioritizes sessions from 
 │  ○ Copilot
 │  ○ Codex
 │  ○ OpenCode
+│  ○ Droid
+│  ○ Cursor
 └
 ```
 
@@ -142,6 +146,7 @@ continues copilot       # Latest Copilot session
 continues gemini 2      # 2nd most recent Gemini session
 continues opencode      # Latest OpenCode session
 continues droid         # Latest Droid session
+continues cursor        # Latest Cursor session
 ```
 
 ### Cross-tool Handoff
@@ -162,7 +167,7 @@ continues resume abc123 --in gemini
 ## How It Works
 
 ```
-1. Discovery    → Scans session directories for all 6 tools
+1. Discovery    → Scans session directories for all 7 tools
 2. Parsing      → Reads each tool's native format (JSONL, JSON, SQLite, YAML)
 3. Extraction   → Pulls recent messages, file changes, tool activity, AI reasoning
 4. Summarizing  → Groups tool calls by type with concise one-line samples
@@ -174,7 +179,7 @@ continues resume abc123 --in gemini
 
 Every tool call from the source session is parsed, categorized, and summarized. The handoff document includes a **Tool Activity** section so the target tool knows exactly what was done — not just what was said.
 
-Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/utils/tool-summarizer.ts`) keep summaries consistent across all 6 CLIs. Adding support for a new tool type is a one-liner.
+Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/utils/tool-summarizer.ts`) keep summaries consistent across all 7 CLIs. Adding support for a new tool type is a one-liner.
 
 **What gets extracted per CLI:**
 
@@ -186,6 +191,7 @@ Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/util
 | Copilot CLI | Session metadata from workspace.yaml (tool calls not persisted by Copilot) |
 | OpenCode | Messages from SQLite DB or JSON fallback (tool-specific parts TBD) |
 | Factory Droid | Create/Read/Edit (file paths), Execute/Bash (shell commands), LS, MCP tools (`context7___*`, etc.), thinking blocks → reasoning notes, todo tasks, model info, token usage from companion `.settings.json` |
+| Cursor (CLI) | Bash/terminal commands, Read/Write/Edit/apply_diff (file paths), Grep/codebase_search, Glob/list_directory/file_search, WebFetch, WebSearch, Task/subagent dispatches, MCP tools (`mcp__*`), thinking blocks → reasoning notes |
 
 **Example handoff output:**
 
@@ -215,6 +221,7 @@ Shared formatting helpers (`SummaryCollector` + per-tool formatters in `src/util
 | OpenAI Codex | `~/.codex/sessions/` | JSONL |
 | OpenCode | `~/.local/share/opencode/` | SQLite |
 | Factory Droid | `~/.factory/sessions/` | JSONL + JSON |
+| Cursor (CLI) | `~/.cursor/projects/*/agent-transcripts/` | JSONL |
 
 Session index cached at `~/.continues/sessions.jsonl`. Auto-refreshes when stale (5 min TTL).
 
@@ -266,26 +273,28 @@ Interactive session picker. Requires a TTY.
 ### `continues <tool> [n]`
 
 Quick-resume using native resume (same tool, no context injection).  
-Tools: `claude`, `copilot`, `gemini`, `codex`, `opencode`. Default `n` is 1.
+Tools: `claude`, `copilot`, `gemini`, `codex`, `opencode`, `droid`, `cursor`. Default `n` is 1.
 
 ## Conversion Matrix
 
-All 20 cross-tool paths are supported and tested:
+All 42 cross-tool paths are supported and tested:
 
-|  | → Claude | → Copilot | → Gemini | → Codex | → OpenCode |
-|:--|:--------:|:---------:|:--------:|:-------:|:----------:|
-| **Claude** | — | ✅ | ✅ | ✅ | ✅ |
-| **Copilot** | ✅ | — | ✅ | ✅ | ✅ |
-| **Gemini** | ✅ | ✅ | — | ✅ | ✅ |
-| **Codex** | ✅ | ✅ | ✅ | — | ✅ |
-| **OpenCode** | ✅ | ✅ | ✅ | ✅ | — |
+|  | → Claude | → Copilot | → Gemini | → Codex | → OpenCode | → Droid | → Cursor |
+|:--|:--------:|:---------:|:--------:|:-------:|:----------:|:-------:|:--------:|
+| **Claude** | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Copilot** | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Gemini** | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ |
+| **Codex** | ✅ | ✅ | ✅ | — | ✅ | ✅ | ✅ |
+| **OpenCode** | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| **Droid** | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ |
+| **Cursor** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 Same-tool resume is available via `continues <tool>` shortcuts (native resume, not shown in matrix).
 
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite` for OpenCode parsing)
-- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, or OpenCode
+- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, OpenCode, Factory Droid, or Cursor CLI
 
 ## Development
 

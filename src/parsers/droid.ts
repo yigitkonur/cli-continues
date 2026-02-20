@@ -3,9 +3,11 @@ import * as path from 'path';
 import * as readline from 'readline';
 import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import { SummaryCollector, shellSummary, fileSummary, grepSummary, globSummary, mcpSummary, withResult, truncate } from '../utils/tool-summarizer.js';
+import { SummaryCollector, shellSummary, fileSummary, grepSummary, globSummary, mcpSummary, subagentSummary, withResult, truncate } from '../utils/tool-summarizer.js';
+import { cwdFromSlug } from '../utils/slug.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
-const DROID_SESSIONS_DIR = path.join(process.env.HOME || '~', '.factory', 'sessions');
+const DROID_SESSIONS_DIR = path.join(homeDir(), '.factory', 'sessions');
 
 /** Content block types inside Droid message.content[] */
 interface DroidContentBlock {
@@ -126,15 +128,6 @@ async function findSessionFiles(): Promise<string[]> {
 }
 
 /**
- * Derive cwd from workspace slug directory name.
- * Slug format: dashes replace slashes (e.g. "-Users-yigitkonur-dev-project" → "/Users/yigitkonur/dev/project")
- */
-function cwdFromSlug(slug: string): string {
-  // Replace leading dash + subsequent dashes-as-separators back to slashes
-  return slug.replace(/-/g, '/');
-}
-
-/**
  * Read companion .settings.json for a session
  */
 function readSettings(jsonlPath: string): DroidSettings | null {
@@ -227,18 +220,6 @@ async function getLineCount(filePath: string): Promise<number> {
 }
 
 /**
- * Extract repo name from cwd path
- */
-function extractRepoFromCwd(cwd: string): string {
-  if (!cwd) return '';
-  const parts = cwd.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('/');
-  }
-  return parts[parts.length - 1] || '';
-}
-
-/**
  * Parse all Droid sessions
  */
 export async function parseDroidSessions(): Promise<UnifiedSession[]> {
@@ -258,11 +239,7 @@ export async function parseDroidSessions(): Promise<UnifiedSession[]> {
       const workspaceSlug = path.basename(path.dirname(filePath));
       const cwd = sessionStart.cwd || cwdFromSlug(workspaceSlug);
 
-      const summary = firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = cleanSummary(firstUserMessage);
 
       const createdAt = firstTimestamp ? new Date(firstTimestamp) : fileStats.birthtime;
       const updatedAt = lastTimestamp ? new Date(lastTimestamp) : fileStats.mtime;

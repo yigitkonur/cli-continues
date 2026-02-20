@@ -4,49 +4,16 @@ import * as path from 'path';
 import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
 import { extractContext, saveContext } from './index.js';
 import { SOURCE_LABELS } from './markdown.js';
+import { adapters, ALL_TOOLS } from '../parsers/registry.js';
 
 /**
  * Resume a session using native CLI commands
  */
 export async function nativeResume(session: UnifiedSession): Promise<void> {
-  const cwd = session.cwd;
-
-  switch (session.source) {
-    case 'codex':
-      await runCommand('codex', ['-c', `experimental_resume=${session.originalPath}`], cwd);
-      break;
-
-    case 'claude':
-      await runCommand('claude', ['--resume', session.id], cwd);
-      break;
-
-    case 'copilot':
-      await runCommand('copilot', ['--resume', session.id], cwd);
-      break;
-
-    case 'gemini':
-      // Gemini uses --continue to resume the last session in cwd
-      await runCommand('gemini', ['--continue'], cwd);
-      break;
-
-    case 'opencode':
-      // OpenCode uses --session to resume a specific session
-      await runCommand('opencode', ['--session', session.id], cwd);
-      break;
-
-    case 'droid':
-      // Droid uses -s to resume a specific session
-      await runCommand('droid', ['-s', session.id], cwd);
-      break;
-
-    case 'cursor':
-      // Cursor doesn't have native session resume via CLI; open the project
-      await runCommand('cursor', [cwd], cwd);
-      break;
-
-    default:
-      throw new Error(`Unknown session source: ${session.source}`);
-  }
+  const cwd = session.cwd || process.cwd();
+  const adapter = adapters[session.source];
+  if (!adapter) throw new Error(`Unknown session source: ${session.source}`);
+  await runCommand(adapter.binaryName, adapter.nativeResumeArgs(session), cwd);
 }
 
 /**
@@ -58,7 +25,7 @@ export async function crossToolResume(
   mode: 'inline' | 'reference' = 'inline',
 ): Promise<void> {
   const context = await extractContext(session);
-  const cwd = session.cwd;
+  const cwd = session.cwd || process.cwd();
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
   const localPath = path.join(cwd, '.continues-handoff.md');
@@ -72,40 +39,9 @@ export async function crossToolResume(
     ? buildInlinePrompt(context, session)
     : buildReferencePrompt(session, localPath);
 
-  // Each tool has different CLI syntax for accepting a prompt
-  switch (target) {
-    case 'codex':
-      await runCommand('codex', [prompt], cwd);
-      break;
-
-    case 'claude':
-      await runCommand('claude', [prompt], cwd);
-      break;
-
-    case 'copilot':
-      await runCommand('copilot', ['-i', prompt], cwd);
-      break;
-
-    case 'gemini':
-      await runCommand('gemini', [prompt], cwd);
-      break;
-
-    case 'opencode':
-      await runCommand('opencode', ['--prompt', prompt], cwd);
-      break;
-
-    case 'droid':
-      await runCommand('droid', ['exec', prompt], cwd);
-      break;
-
-    case 'cursor':
-      // Cursor CLI doesn't accept inline prompts; open the project with handoff file
-      await runCommand('cursor', [cwd], cwd);
-      break;
-
-    default:
-      throw new Error(`Unknown target: ${target}`);
-  }
+  const adapter = adapters[target];
+  if (!adapter) throw new Error(`Unknown target: ${target}`);
+  await runCommand(adapter.binaryName, adapter.crossToolArgs(prompt, cwd), cwd);
 }
 
 /**
@@ -190,11 +126,11 @@ function runCommand(command: string, args: string[], cwd: string, stdinData?: st
 }
 
 /**
- * Check if a CLI tool is available
+ * Check if a CLI tool is available by binary name
  */
-export async function isToolAvailable(tool: SessionSource): Promise<boolean> {
+async function isBinaryAvailable(binaryName: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn('which', [tool], { stdio: 'ignore' });
+    const child = spawn('which', [binaryName], { stdio: 'ignore' });
     child.on('close', (code) => resolve(code === 0));
     child.on('error', () => resolve(false));
   });
@@ -204,27 +140,18 @@ export async function isToolAvailable(tool: SessionSource): Promise<boolean> {
  * Get available tools
  */
 export async function getAvailableTools(): Promise<SessionSource[]> {
-  const tools: SessionSource[] = [];
-  
-  const [hasCodex, hasClaude, hasCopilot, hasGemini, hasOpencode, hasDroid, hasCursor] = await Promise.all([
-    isToolAvailable('codex'),
-    isToolAvailable('claude'),
-    isToolAvailable('copilot'),
-    isToolAvailable('gemini'),
-    isToolAvailable('opencode'),
-    isToolAvailable('droid'),
-    isToolAvailable('cursor'),
-  ]);
+  const checks = await Promise.allSettled(
+    ALL_TOOLS.map(async name => ({
+      name,
+      ok: await isBinaryAvailable(adapters[name].binaryName),
+    }))
+  );
 
-  if (hasCodex) tools.push('codex');
-  if (hasClaude) tools.push('claude');
-  if (hasCopilot) tools.push('copilot');
-  if (hasGemini) tools.push('gemini');
-  if (hasOpencode) tools.push('opencode');
-  if (hasDroid) tools.push('droid');
-  if (hasCursor) tools.push('cursor');
-
-  return tools;
+  return checks
+    .filter((r): r is PromiseFulfilledResult<{ name: SessionSource; ok: boolean }> =>
+      r.status === 'fulfilled' && r.value.ok
+    )
+    .map(r => r.value.name);
 }
 
 /**
@@ -234,22 +161,7 @@ export function getResumeCommand(session: UnifiedSession, target?: SessionSource
   const actualTarget = target || session.source;
 
   if (actualTarget === session.source) {
-    switch (session.source) {
-      case 'codex':
-        return `codex -c experimental_resume="${session.originalPath}"`;
-      case 'claude':
-        return `claude --resume ${session.id}`;
-      case 'copilot':
-        return `copilot --resume ${session.id}`;
-      case 'gemini':
-        return `gemini --continue`;
-      case 'opencode':
-        return `opencode --session ${session.id}`;
-      case 'droid':
-        return `droid -s ${session.id}`;
-      case 'cursor':
-        return `cursor ${session.cwd}`;
-    }
+    return adapters[session.source].resumeCommandDisplay(session);
   }
 
   // Cross-tool

@@ -3,8 +3,9 @@ import * as path from 'path';
 import { createRequire } from 'module';
 import type { UnifiedSession, SessionContext, ConversationMessage } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
+import { extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
-const OPENCODE_BASE_DIR = path.join(process.env.HOME || '~', '.local', 'share', 'opencode');
+const OPENCODE_BASE_DIR = path.join(homeDir(), '.local', 'share', 'opencode');
 const OPENCODE_STORAGE_DIR = path.join(OPENCODE_BASE_DIR, 'storage');
 const OPENCODE_DB_PATH = path.join(OPENCODE_BASE_DIR, 'opencode.db');
 
@@ -227,17 +228,6 @@ function getFirstUserMessage(sessionId: string): string {
 }
 
 /**
- * Extract repo name from worktree path
- */
-function extractRepoFromPath(worktree: string): string {
-  const parts = worktree.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('/');
-  }
-  return parts[parts.length - 1] || '';
-}
-
-/**
  * Count message lines for a session
  */
 function countSessionLines(sessionId: string): number {
@@ -274,8 +264,8 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
   const handle = openDb();
   if (!handle) return [];
 
+  const { db, close } = handle;
   try {
-    const { db, close } = handle;
     const rows = db.prepare(
       'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC'
     ).all() as SqliteSessionRow[];
@@ -313,7 +303,7 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
         id: row.id,
         source: 'opencode',
         cwd,
-        repo: extractRepoFromPath(cwd),
+        repo: extractRepoFromCwd(cwd),
         lines: (msgCount?.cnt ?? 0),
         bytes: 0, // SQLite doesn't have per-session file size
         createdAt: new Date(row.time_created),
@@ -324,10 +314,11 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
       });
     }
 
-    close();
     return sessions;
   } catch {
     return [];
+  } finally {
+    close();
   }
 }
 
@@ -362,7 +353,7 @@ async function parseSessionsFromJson(): Promise<UnifiedSession[]> {
         id: session.id,
         source: 'opencode',
         cwd,
-        repo: extractRepoFromPath(cwd),
+        repo: extractRepoFromCwd(cwd),
         lines,
         bytes: fileStats.size,
         createdAt: new Date(session.time.created),
@@ -399,9 +390,8 @@ function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
   const handle = openDb();
   if (!handle) return [];
 
+  const { db, close } = handle;
   try {
-    const { db, close } = handle;
-    
     // Get messages with their data
     const msgRows = db.prepare(
       'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC'
@@ -435,11 +425,11 @@ function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
       }
     }
 
-    close();
     return messages;
-  } catch (err) {
-    console.error('Error reading OpenCode SQLite messages:', err);
+  } catch {
     return [];
+  } finally {
+    close();
   }
 }
 

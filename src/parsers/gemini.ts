@@ -3,8 +3,9 @@ import * as path from 'path';
 import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { SummaryCollector, fileSummary, mcpSummary, truncate } from '../utils/tool-summarizer.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
-const GEMINI_BASE_DIR = path.join(process.env.HOME || '~', '.gemini', 'tmp');
+const GEMINI_BASE_DIR = path.join(homeDir(), '.gemini', 'tmp');
 
 interface GeminiToolCall {
   name: string;
@@ -134,17 +135,6 @@ function extractFirstUserMessage(session: GeminiSession): string {
 }
 
 /**
- * Extract repo name from project path
- */
-function extractRepoFromPath(projectPath: string): string {
-  const parts = projectPath.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('/');
-  }
-  return parts[parts.length - 1] || '';
-}
-
-/**
  * Extract tool usage summaries and files modified using shared SummaryCollector
  */
 function extractToolData(sessionData: GeminiSession): { summaries: ToolUsageSummary[]; filesModified: string[] } {
@@ -226,16 +216,11 @@ export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
       const projectHashDir = path.dirname(path.dirname(filePath));
       const projectHash = path.basename(projectHashDir);
       
-      // Try to get cwd - for now use the project hash dir path
-      // In a real implementation, we might store a mapping
-      const cwd = projectHashDir;
+      // Gemini does not store working directory in its session data
+      const cwd = '';
       
       const firstUserMessage = extractFirstUserMessage(session);
-      const summary = firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = cleanSummary(firstUserMessage);
 
       const fileStats = fs.statSync(filePath);
       const content = fs.readFileSync(filePath, 'utf8');
@@ -245,7 +230,7 @@ export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
         id: session.sessionId,
         source: 'gemini',
         cwd,
-        repo: extractRepoFromPath(cwd),
+        repo: '',
         lines,
         bytes: fileStats.size,
         createdAt: new Date(session.startTime),

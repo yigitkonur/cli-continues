@@ -6,3 +6,4 @@ dist/
 .continues-handoff.md
 .agent-workspace/
 stress-test-output.log
+.claude/CLAUDE.md

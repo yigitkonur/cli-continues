@@ -4,8 +4,9 @@ import * as readline from 'readline';
 import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { SummaryCollector, shellSummary, fileSummary, grepSummary, globSummary, searchSummary, fetchSummary, mcpSummary, subagentSummary, withResult, truncate } from '../utils/tool-summarizer.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
-const CLAUDE_PROJECTS_DIR = path.join(process.env.HOME || '~', '.claude', 'projects');
+const CLAUDE_PROJECTS_DIR = path.join(homeDir(), '.claude', 'projects');
 
 interface ClaudeMessage {
   type: string;
@@ -132,18 +133,6 @@ async function getFileStats(filePath: string): Promise<{ lines: number; bytes: n
 }
 
 /**
- * Extract repo name from cwd path
- */
-function extractRepoFromCwd(cwd: string): string {
-  if (!cwd) return '';
-  const parts = cwd.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('/');
-  }
-  return parts[parts.length - 1] || '';
-}
-
-/**
  * Parse all Claude sessions
  */
 export async function parseClaudeSessions(): Promise<UnifiedSession[]> {
@@ -157,11 +146,7 @@ export async function parseClaudeSessions(): Promise<UnifiedSession[]> {
       const fileStats = fs.statSync(filePath);
 
       // Use first user message as summary
-      const summary = info.firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = cleanSummary(info.firstUserMessage);
 
       const repo = extractRepoFromCwd(info.cwd);
 
@@ -336,7 +321,7 @@ export async function extractClaudeContext(session: UnifiedSession): Promise<Ses
   const sessionNotes = extractSessionNotes(messages);
   const pendingTasks: string[] = [];
 
-  for (const msg of messages.slice(-100)) {
+  for (const msg of messages.slice(-20)) {
     if (msg.type === 'queue-operation' || msg.type === 'system') continue;
     if ((msg as any).isCompactSummary) continue;
 

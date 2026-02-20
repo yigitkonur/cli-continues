@@ -4,8 +4,9 @@ import * as readline from 'readline';
 import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { SummaryCollector, shellSummary, searchSummary, mcpSummary, withResult, truncate } from '../utils/tool-summarizer.js';
+import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
 
-const CODEX_SESSIONS_DIR = path.join(process.env.HOME || '~', '.codex', 'sessions');
+const CODEX_SESSIONS_DIR = path.join(homeDir(), '.codex', 'sessions');
 
 interface CodexSessionMeta {
   timestamp: string;
@@ -195,11 +196,7 @@ export async function parseCodexSessions(): Promise<UnifiedSession[]> {
       const repo = extractRepoName(gitUrl, cwd);
 
       // Use first user message as summary (cleaned up)
-      const summary = firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = cleanSummary(firstUserMessage);
 
       sessions.push({
         id: parsed.id,

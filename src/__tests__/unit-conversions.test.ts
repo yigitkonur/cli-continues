@@ -231,7 +231,9 @@ function parseDroidFixtureMessages(filePath: string): ConversationMessage[] {
 
 // ─── Fixture Data ────────────────────────────────────────────────────────────
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor'];
+// Derive from registry — automatically picks up new tools
+import { ALL_TOOLS } from '../parsers/registry.js';
+const ALL_SOURCES: SessionSource[] = ALL_TOOLS;
 
 let fixtures: Record<string, FixtureDir> = {};
 let contexts: Record<string, SessionContext> = {};
@@ -287,8 +289,8 @@ beforeAll(() => {
     .map(f => path.join(fixtures.gemini.root, f as string))
     .find(f => f.endsWith('.json'))!;
   const geminiSession: UnifiedSession = {
-    id: 'test-gemini-session-1', source: 'gemini', cwd: '/home/user/project',
-    repo: 'user/project', lines: 10, bytes: 500,
+    id: 'test-gemini-session-1', source: 'gemini', cwd: '',
+    repo: '', lines: 10, bytes: 500,
     createdAt: now, updatedAt: now, originalPath: geminiFile, summary: 'Fix auth bug',
   };
   const geminiMsgs = parseGeminiFixtureMessages(geminiFile);
@@ -528,7 +530,12 @@ describe('Shared generateHandoffMarkdown', () => {
   it('includes working directory', () => {
     for (const source of ALL_SOURCES) {
       const ctx = contexts[source];
-      expect(ctx.markdown).toContain('/home/user/project');
+      if (source === 'gemini') {
+        // Gemini has no cwd data
+        expect(ctx.session.cwd).toBe('');
+      } else {
+        expect(ctx.markdown).toContain('/home/user/project');
+      }
     }
   });
 

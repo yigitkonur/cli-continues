@@ -4,8 +4,10 @@ import * as readline from 'readline';
 import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { SummaryCollector, shellSummary, fileSummary, grepSummary, globSummary, searchSummary, fetchSummary, mcpSummary, subagentSummary, withResult, truncate } from '../utils/tool-summarizer.js';
+import { cwdFromSlug } from '../utils/slug.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
-const CURSOR_PROJECTS_DIR = path.join(process.env.HOME || '~', '.cursor', 'projects');
+const CURSOR_PROJECTS_DIR = path.join(homeDir(), '.cursor', 'projects');
 
 /** Content block inside a Cursor message */
 interface CursorContentBlock {
@@ -27,51 +29,6 @@ interface CursorTranscriptLine {
   message: {
     content: CursorContentBlock[];
   };
-}
-
-/**
- * Derive cwd from the project slug directory name.
- * Cursor replaces both `/` and `.` with `-` in the slug, e.g.:
- *   "Users-evolution-Sites-localhost-dzcm-test" → "/Users/evolution/Sites/localhost/dzcm.test"
- *
- * Uses recursive backtracking: at each dash, tries `/`, `.`, or literal `-`.
- * Intermediate directories that don't yet exist on disk are still explored
- * because the final combined name (e.g. "dzcm.test") may exist.
- */
-function cwdFromSlug(slug: string): string {
-  const parts = slug.split('-');
-  let best: string | null = null;
-
-  function resolve(idx: number, segments: string[]): void {
-    if (best) return; // already found a match
-
-    if (idx >= parts.length) {
-      const p = '/' + segments.join('/');
-      if (fs.existsSync(p)) best = p;
-      return;
-    }
-
-    const part = parts[idx];
-
-    // Option 1: treat dash as path separator (new directory)
-    resolve(idx + 1, [...segments, part]);
-    if (best) return;
-
-    if (segments.length > 0) {
-      const last = segments[segments.length - 1];
-      const rest = segments.slice(0, -1);
-
-      // Option 2: treat dash as dot (e.g. dzcm-test → dzcm.test)
-      resolve(idx + 1, [...rest, last + '.' + part]);
-      if (best) return;
-
-      // Option 3: keep as literal dash (e.g. laravel-contentai)
-      resolve(idx + 1, [...rest, last + '-' + part]);
-    }
-  }
-
-  resolve(0, []);
-  return best || '/' + slug.replace(/-/g, '/');
 }
 
 /**
@@ -186,18 +143,6 @@ async function parseSessionInfo(filePath: string): Promise<{
 }
 
 /**
- * Extract repo name from cwd path
- */
-function extractRepoFromCwd(cwd: string): string {
-  if (!cwd) return '';
-  const parts = cwd.split('/').filter(Boolean);
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('/');
-  }
-  return parts[parts.length - 1] || '';
-}
-
-/**
  * Parse all Cursor sessions
  */
 export async function parseCursorSessions(): Promise<UnifiedSession[]> {
@@ -211,11 +156,7 @@ export async function parseCursorSessions(): Promise<UnifiedSession[]> {
       const slug = getProjectSlug(filePath);
       const cwd = cwdFromSlug(slug);
 
-      const summary = firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = cleanSummary(firstUserMessage);
 
       sessions.push({
         id: getSessionId(filePath),

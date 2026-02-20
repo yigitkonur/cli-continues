@@ -28,6 +28,8 @@ import {
   getAvailableTools,
   getResumeCommand,
 } from './utils/resume.js';
+import { matchesCwd } from './utils/slug.js';
+import { adapters, ALL_TOOLS, SOURCE_HELP } from './parsers/registry.js';
 
 const program = new Command();
 const VERSION = '2.7.0';
@@ -40,16 +42,29 @@ const supportsColor = !process.env.NO_COLOR && isTTY;
 
 /**
  * ASCII art banner with highlighted 's' (the "continues" brand mark)
+ *
+ * Block-font letters (4-char wide, 3 rows + accent line):
+ *   c: █▀▀▀ / █    / ▀▀▀▀    o: █▀▀█ / █  █ / ▀▀▀▀
+ *   n: █▀▀▄ / █  █ / ▀  ▀    t: ▀█▀▀ /  █   /  ▀
+ *   i: (▄ dot) /  █   /  █   /  ▀
+ *   u: █  █ / █  █ / ▀▀▀▀    e: █▀▀█ / █▀▀▀ / ▀▀▀▀
+ *   s: █▀▀▀ / ▀▀▀█ / ▀▀▀▀
  */
 function showBanner(): void {
   if (!supportsColor) return;
+  const t = chalk.white;
+  const s = chalk.cyan.bold;
+  const lbl = chalk.cyan;
   const dim = chalk.gray;
-  const hi = chalk.cyan.bold;
+
   console.log();
-  console.log(dim('  ┌─────────────────────────────────────┐'));
-  console.log(dim('  │  ') + chalk.bold('continue') + hi('s') + dim('                           │'));
-  console.log(dim('  │  ') + chalk.gray(`v${VERSION} — pick up where you left off`) + dim('  │'));
-  console.log(dim('  └─────────────────────────────────────┘'));
+  console.log(t('                       ▄'));
+  console.log(t('  █▀▀▀ █▀▀█ █▀▀▄ ▀█▀▀  █   █▀▀▄ █  █ █▀▀█ ') + s('█▀▀▀'));
+  console.log(t('  █    █  █ █  █  █    █  █  █ █  █ █▀▀▀ ') + s('▀▀▀█'));
+  console.log(t('  ▀▀▀▀ ▀▀▀▀ ▀  ▀  ▀    ▀  ▀  ▀ ▀▀▀▀ ▀▀▀▀ ') + s('▀▀▀▀'));
+  console.log();
+  console.log('  ' + lbl('Session'.padEnd(10)) + dim('Resume any AI coding session, never lose context'));
+  console.log('  ' + lbl('Continue'.padEnd(10)) + dim(`v${VERSION} — cont <n> or continues <tool>`));
   console.log();
 }
 
@@ -76,17 +91,11 @@ process.on('SIGTERM', () => {
 });
 
 /**
- * Source-specific colors for consistent branding
+ * Source-specific colors for consistent branding — derived from the adapter registry
  */
-const sourceColors: Record<SessionSource, (s: string) => string> = {
-  claude: chalk.blue,
-  copilot: chalk.green,
-  gemini: chalk.cyan,
-  codex: chalk.magenta,
-  opencode: chalk.yellow,
-  droid: chalk.red,
-  cursor: chalk.blueBright,
-};
+const sourceColors = Object.fromEntries(
+  Object.values(adapters).map(a => [a.name, a.color])
+) as Record<SessionSource, (s: string) => string>;
 
 /**
  * Format session with colors in columnar layout
@@ -155,19 +164,15 @@ function showNoSessionsHelp(): void {
   clack.log.error('No sessions found.');
   console.log();
   console.log(chalk.gray('Sessions are stored in:'));
-  console.log(chalk.gray('  ~/.codex/sessions/'));
-  console.log(chalk.gray('  ~/.claude/projects/'));
-  console.log(chalk.gray('  ~/.copilot/session-state/'));
-  console.log(chalk.gray('  ~/.gemini/tmp/*/chats/'));
-  console.log(chalk.gray('  ~/.local/share/opencode/storage/'));
-  console.log(chalk.gray('  ~/.factory/sessions/'));
-  console.log(chalk.gray('  ~/.cursor/projects/*/agent-transcripts/'));
+  for (const a of Object.values(adapters)) {
+    console.log(chalk.gray(`  ${a.storagePath}`));
+  }
 }
 
 /**
  * Main interactive TUI command
  */
-async function interactivePick(options: { source?: string; noTui?: boolean; rebuild?: boolean }): Promise<void> {
+async function interactivePick(options: { source?: string; noTui?: boolean; rebuild?: boolean; all?: boolean }): Promise<void> {
   try {
     // If not TTY or --no-tui, fall back to list
     if (!isTTY || options.noTui) {
@@ -197,44 +202,100 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
       return;
     }
 
-    // Check for sessions matching current working directory
+    // Check for sessions matching current working directory (includes subdirectories)
     const currentDir = process.cwd();
-    const cwdSessions = sessions.filter(sess => sess.cwd === currentDir);
-    const otherSessions = sessions.filter(sess => sess.cwd !== currentDir);
+    const cwdSessions = options.all ? [] : sessions.filter(sess => matchesCwd(sess.cwd, currentDir));
     const hasCwdSessions = cwdSessions.length > 0;
 
-    if (hasCwdSessions) {
+    if (options.all) {
+      console.log(chalk.gray(`  Showing all ${sessions.length} sessions`));
+    } else if (hasCwdSessions) {
       console.log(chalk.gray(`  ${chalk.green('▸')} ${cwdSessions.length} session${cwdSessions.length !== 1 ? 's' : ''} found in current directory`));
     } else {
       console.log(chalk.gray(`  No sessions found for ${chalk.cyan(currentDir.split('/').slice(-2).join('/'))}`));
-      console.log(chalk.gray(`  Showing all sessions instead`));
+      console.log(chalk.gray(`  Showing all sessions. Run ${chalk.cyan('continues --all')} to always see all.`));
     }
 
     // Show stats
     showSessionStats(sessions);
     console.log();
 
+    // Auto-resume: if exactly 1 session matches cwd, skip picker
+    if (cwdSessions.length === 1 && !options.source) {
+      const session = cwdSessions[0];
+      console.log(chalk.gray(`  Auto-selected the only matching session:`));
+      console.log('  ' + formatSessionForSelect(session));
+      console.log();
+
+      const availableTools = await getAvailableTools();
+      const targetOptions = availableTools
+        .map(t => ({
+          value: t,
+          label: t === session.source
+            ? `${sourceColors[t](t.charAt(0).toUpperCase() + t.slice(1))} (native resume)`
+            : `${sourceColors[t](t.charAt(0).toUpperCase() + t.slice(1))}`,
+        }));
+
+      if (targetOptions.length === 0) {
+        clack.log.warn('No CLI tools found. Install at least one AI coding CLI.');
+        return;
+      }
+
+      // If only the source tool is available, auto-resume natively
+      if (availableTools.length === 1 && availableTools[0] === session.source) {
+        clack.log.step(`Resuming natively in ${sourceColors[session.source](session.source)}...`);
+        clack.outro(`Launching ${session.source}`);
+        if (session.cwd) if (session.cwd) process.chdir(session.cwd);
+        await nativeResume(session);
+        return;
+      }
+
+      const targetTool = await clack.select({
+        message: `Continue ${sourceColors[session.source](session.source)} session in:`,
+        options: targetOptions,
+        initialValue: session.source,
+      }) as SessionSource;
+
+      if (clack.isCancel(targetTool)) {
+        clack.cancel('Cancelled');
+        return;
+      }
+
+      console.log();
+      clack.log.info(`Working directory: ${chalk.cyan(session.cwd)}`);
+      clack.log.info(`Command: ${chalk.cyan(getResumeCommand(session, targetTool))}`);
+      console.log();
+      clack.log.step(`Handing off to ${targetTool}...`);
+      clack.outro(`Launching ${targetTool}`);
+
+      if (session.cwd) if (session.cwd) process.chdir(session.cwd);
+      await resume(session, targetTool);
+      return;
+    }
+
     // Step 1: Filter by CLI tool (optional) — skip if source already specified
-    let filteredSessions = sessions;
-    
+    let filteredSessions = hasCwdSessions ? cwdSessions : sessions;
+
     if (!options.source && sessions.length > 0) {
-      const bySource = sessions.reduce((acc, s) => {
+      const bySource = (hasCwdSessions ? cwdSessions : sessions).reduce((acc, s) => {
         acc[s.source] = (acc[s.source] || 0) + 1;
         return acc;
       }, {} as Record<string, number>);
 
       const filterOptions: { value: string; label: string }[] = [];
-      
+
       // If we have cwd sessions, offer "This directory" as first option
       if (hasCwdSessions) {
         filterOptions.push({
           value: 'cwd',
           label: `This directory (${cwdSessions.length} session${cwdSessions.length !== 1 ? 's' : ''})`,
         });
+        filterOptions.push(
+          { value: 'all', label: `All CLI tools (${sessions.length} sessions)` },
+        );
       }
 
       filterOptions.push(
-        { value: 'all', label: `All CLI tools (${sessions.length} sessions)` },
         ...Object.entries(bySource)
           .sort((a, b) => b[1] - a[1])
           .map(([source, count]) => ({
@@ -256,8 +317,10 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
 
       if (toolFilter === 'cwd') {
         filteredSessions = cwdSessions;
-      } else if (toolFilter !== 'all') {
-        filteredSessions = sessions.filter(s => s.source === toolFilter);
+      } else if (toolFilter === 'all') {
+        filteredSessions = sessions;
+      } else {
+        filteredSessions = (hasCwdSessions ? cwdSessions : sessions).filter(s => s.source === toolFilter);
       }
     }
 
@@ -297,8 +360,7 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
         }));
 
     if (targetOptions.length === 0) {
-      const allTools: SessionSource[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid'];
-      const missing = allTools.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
+      const missing = ALL_TOOLS.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
       clack.log.warn(`Only ${sourceColors[session.source](session.source)} is installed. Install at least one more (${missing.join(', ')}) to enable cross-tool handoff.`);
       return;
     }
@@ -327,7 +389,7 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
     clack.outro(`Launching ${targetTool}`);
 
     // Change to session's working directory and resume
-    process.chdir(session.cwd);
+    if (session.cwd) process.chdir(session.cwd);
     await resume(session, targetTool);
 
   } catch (error) {
@@ -368,8 +430,9 @@ Short aliases:
  * Default command - Interactive TUI
  */
 program
-  .action(async () => {
-    await interactivePick({});
+  .option('-a, --all', 'Show all sessions globally (skip directory filtering)')
+  .action(async (options) => {
+    await interactivePick({ all: options.all });
   });
 
 /**
@@ -378,7 +441,8 @@ program
 program
   .command('pick')
   .description('Interactive session picker (TUI mode)')
-  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid, cursor)')
+  .option('-s, --source <source>', SOURCE_HELP)
+  .option('-a, --all', 'Show all sessions globally (skip directory filtering)')
   .option('--no-tui', 'Disable TUI, use plain text')
   .option('--rebuild', 'Force rebuild session index')
   .action(async (options) => {
@@ -392,7 +456,7 @@ program
   .command('list')
   .alias('ls')
   .description('List all sessions in table format')
-  .option('-s, --source <source>', 'Filter by source (claude, copilot, gemini, codex, opencode, droid, cursor)')
+  .option('-s, --source <source>', SOURCE_HELP)
   .option('-n, --limit <number>', 'Limit number of sessions', '50')
   .option('--json', 'Output as JSON array')
   .option('--jsonl', 'Output as JSONL')
@@ -455,7 +519,7 @@ program
   .command('resume <session-id>')
   .alias('r')
   .description('Resume a session by ID or short ID')
-  .option('-i, --in <cli-tool>', 'Target CLI tool (claude, copilot, gemini, codex, opencode, droid, cursor)')
+  .option('-i, --in <cli-tool>', `Target CLI tool (${ALL_TOOLS.join(', ')})`)
   .option('--reference', 'Use file reference instead of inline context (for very large sessions)')
   .option('--no-tui', 'Disable interactive prompts')
   .action(async (sessionId, options) => {
@@ -494,7 +558,7 @@ program
         console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target)));
         console.log();
 
-        process.chdir(session.cwd);
+        if (session.cwd) process.chdir(session.cwd);
         await resume(session, target, mode);
         return;
       }
@@ -516,8 +580,7 @@ program
           }));
 
         if (targetOptions.length === 0) {
-          const allTools: SessionSource[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid'];
-          const missing = allTools.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
+          const missing = ALL_TOOLS.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
           clack.log.warn(`Only ${sourceColors[session.source](session.source)} is installed. Install at least one more (${missing.join(', ')}) to enable cross-tool handoff.`);
           return;
         }
@@ -535,7 +598,7 @@ program
         clack.log.step(`Handing off to ${selectedTarget}...`);
         clack.outro(`Launching ${selectedTarget}`);
 
-        process.chdir(session.cwd);
+        if (session.cwd) process.chdir(session.cwd);
         await resume(session, selectedTarget, mode);
       } else {
         // Target specified, just resume
@@ -543,7 +606,7 @@ program
         console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target)));
         console.log();
 
-        process.chdir(session.cwd);
+        if (session.cwd) process.chdir(session.cwd);
         await resume(session, target, mode);
       }
 
@@ -642,56 +705,17 @@ program
   });
 
 /**
- * Quick resume commands for each tool
+ * Quick resume commands for each tool — generated from the adapter registry
  */
-program
-  .command('claude [n]')
-  .description('Resume Nth newest Claude session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('claude', parseInt(n, 10));
-  });
-
-program
-  .command('copilot [n]')
-  .description('Resume Nth newest Copilot session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('copilot', parseInt(n, 10));
-  });
-
-program
-  .command('gemini [n]')
-  .description('Resume Nth newest Gemini session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('gemini', parseInt(n, 10));
-  });
-
-program
-  .command('codex [n]')
-  .description('Resume Nth newest Codex session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('codex', parseInt(n, 10));
-  });
-
-program
-  .command('opencode [n]')
-  .description('Resume Nth newest OpenCode session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('opencode', parseInt(n, 10));
-  });
-
-program
-  .command('droid [n]')
-  .description('Resume Nth newest Droid session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('droid', parseInt(n, 10));
-  });
-
-program
-  .command('cursor [n]')
-  .description('Resume Nth newest Cursor session (default: 1)')
-  .action(async (n = '1') => {
-    await resumeBySource('cursor', parseInt(n, 10));
-  });
+for (const tool of ALL_TOOLS) {
+  const adapter = adapters[tool];
+  program
+    .command(`${tool} [n]`)
+    .description(`Resume Nth newest ${adapter.label} session (default: 1)`)
+    .action(async (n = '1') => {
+      await resumeBySource(tool, parseInt(n, 10));
+    });
+}
 
 /**
  * Helper to resume Nth session from a source
@@ -712,7 +736,7 @@ async function resumeBySource(source: SessionSource, n: number): Promise<void> {
     console.log(formatSessionColored(session));
     console.log();
 
-    process.chdir(session.cwd);
+    if (session.cwd) process.chdir(session.cwd);
     await nativeResume(session);
   } catch (error) {
     console.error(chalk.red('Error:'), (error as Error).message);

@@ -1,15 +1,36 @@
 import type { UnifiedSession, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
+import { adapters } from '../parsers/registry.js';
 
-/** Human-readable labels for each session source */
-export const SOURCE_LABELS: Record<string, string> = {
-  claude: 'Claude Code',
-  copilot: 'GitHub Copilot CLI',
-  gemini: 'Gemini CLI',
-  codex: 'Codex CLI',
-  opencode: 'OpenCode',
-  droid: 'Factory Droid',
-  cursor: 'Cursor AI',
-};
+/** Human-readable labels for each session source — derived lazily from the adapter registry */
+let _sourceLabels: Record<string, string> | null = null;
+export function getSourceLabels(): Record<string, string> {
+  if (!_sourceLabels) {
+    _sourceLabels = Object.fromEntries(
+      Object.values(adapters).map(a => [a.name, a.label])
+    );
+  }
+  return _sourceLabels;
+}
+
+/** @deprecated Use getSourceLabels() — kept as a lazy proxy for backwards compat */
+export const SOURCE_LABELS: Record<string, string> = new Proxy({} as Record<string, string>, {
+  get(_target, prop: string) {
+    return getSourceLabels()[prop];
+  },
+  ownKeys() {
+    return Object.keys(getSourceLabels());
+  },
+  getOwnPropertyDescriptor(_target, prop: string) {
+    const labels = getSourceLabels();
+    if (prop in labels) {
+      return { configurable: true, enumerable: true, value: labels[prop] };
+    }
+    return undefined;
+  },
+  has(_target, prop: string) {
+    return prop in getSourceLabels();
+  },
+});
 
 /**
  * Generate a markdown handoff document from any session source.
@@ -23,7 +44,8 @@ export function generateHandoffMarkdown(
   toolSummaries: ToolUsageSummary[] = [],
   sessionNotes?: SessionNotes,
 ): string {
-  const sourceLabel = SOURCE_LABELS[session.source] || session.source;
+  const labels = getSourceLabels();
+  const sourceLabel = labels[session.source] || session.source;
 
   const lines: string[] = [
     '# Session Handoff Context',
