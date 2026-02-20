@@ -1,6 +1,6 @@
 {
   "name": "continues",
-  "version": "2.7.4",
+  "version": "2.8.0-beta.0",
   "description": "Never lose context. Resume any AI coding session across Claude, Copilot, Gemini, Codex, OpenCode & Droid.",
   "main": "dist/cli.js",
   "bin": {
@@ -21,7 +21,7 @@
     "start": "node dist/cli.js",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
-    "postinstall": "echo '\n  continues v2.7.0 — Now with Factory Droid support!\n  Run `continues droid` or `continues list --source droid` to see your Droid sessions.\n'",
+    "postinstall": "echo '\n  continues v2.8.0-beta — Adapter registry refactor + Cursor support!\n  Run `continues list` to see all sessions.\n'",
     "link": "pnpm build && pnpm link --global",
     "version:patch": "npm version patch",
     "version:minor": "npm version minor",
