@@ -294,6 +294,13 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
           label: `${sourceColors[t](t.charAt(0).toUpperCase() + t.slice(1))}`,
         }));
 
+    if (targetOptions.length === 0) {
+      const allTools: SessionSource[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid'];
+      const missing = allTools.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
+      clack.log.warn(`Only ${sourceColors[session.source](session.source)} is installed. Install at least one more (${missing.join(', ')}) to enable cross-tool handoff.`);
+      return;
+    }
+
     const targetTool = await clack.select({
       message: `Continue ${sourceColors[session.source](session.source)} session in:`,
       options: targetOptions,
@@ -505,6 +512,13 @@ program
             value: t,
             label: `${sourceColors[t](t.charAt(0).toUpperCase() + t.slice(1))}`,
           }));
+
+        if (targetOptions.length === 0) {
+          const allTools: SessionSource[] = ['claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid'];
+          const missing = allTools.filter(t => !availableTools.includes(t)).map(t => t.charAt(0).toUpperCase() + t.slice(1));
+          clack.log.warn(`Only ${sourceColors[session.source](session.source)} is installed. Install at least one more (${missing.join(', ')}) to enable cross-tool handoff.`);
+          return;
+        }
 
         const selectedTarget = await clack.select({
           message: `Continue ${sourceColors[session.source](session.source)} session in:`,
