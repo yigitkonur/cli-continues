@@ -41,28 +41,50 @@ const isTTY = process.stdout.isTTY;
 const supportsColor = !process.env.NO_COLOR && isTTY;
 
 /**
- * ASCII art banner with highlighted 's' (the "continues" brand mark)
- *
- * All letters are exactly 4 chars wide, 1-space separated, 3 rows:
- *   c: █▀▀▀ / █    / ▀▀▀▀    o: █▀▀█ / █  █ / ▀▀▀▀
- *   n: █▀▀▄ / █  █ / ▀  ▀    t: ▀██▀ /  ██  /  ▀▀
- *   i:  ▄▄  /  ██  /  ▀▀     u: █  █ / █  █ / ▀▀▀▀
- *   e: █▀▀█ / █▀▀  / ▀▀▀▀    s: █▀▀▀ / ▀▀▀█ / ▀▀▀▀
+ * ASCII art banner with indigo→cyan gradient and highlighted 's' brand mark.
+ * All letters are exactly 4 chars wide, 1-space separated, 3 rows.
  */
 function showBanner(): void {
   if (!supportsColor) return;
-  const t = chalk.white;
-  const s = chalk.cyan.bold;
-  const lbl = chalk.cyan;
-  const dim = chalk.gray;
+
+  // Letter glyphs: [top, mid, bot], each 4 chars wide
+  const glyphs: string[][] = [
+    ['█▀▀▀', '█   ', '▀▀▀▀'], // c
+    ['█▀▀█', '█  █', '▀▀▀▀'], // o
+    ['█▀▀▄', '█  █', '▀  ▀'], // n
+    ['▀██▀', ' ██ ', ' ▀▀ '], // t
+    [' ██ ', ' ██ ', ' ▀▀ '], // i
+    ['█▀▀▄', '█  █', '▀  ▀'], // n
+    ['█  █', '█  █', '▀▀▀▀'], // u
+    ['█▀▀█', '█▀▀ ', '▀▀▀▀'], // e
+    ['█▀▀▀', '▀▀▀█', '▀▀▀▀'], // s
+  ];
+
+  // Gradient: soft indigo → bright cyan, with 's' in bold mint
+  const colors = [
+    chalk.hex('#9b8ec9'), // c
+    chalk.hex('#8a9ed7'), // o
+    chalk.hex('#79aee5'), // n
+    chalk.hex('#68bef3'), // t
+    chalk.hex('#57ceff'), // i
+    chalk.hex('#4ad6ff'), // n
+    chalk.hex('#3cdeff'), // u
+    chalk.hex('#2ee6ff'), // e
+    chalk.hex('#00ffc8').bold, // s
+  ];
 
   console.log();
-  console.log(t('  █▀▀▀ █▀▀█ █▀▀▄ ▀██▀  ▄▄  █▀▀▄ █  █ █▀▀█ ') + s('█▀▀▀'));
-  console.log(t('  █    █  █ █  █  ██   ██  █  █ █  █ █▀▀  ') + s('▀▀▀█'));
-  console.log(t('  ▀▀▀▀ ▀▀▀▀ ▀  ▀  ▀▀   ▀▀  ▀  ▀ ▀▀▀▀ ▀▀▀▀ ') + s('▀▀▀▀'));
+  for (let row = 0; row < 3; row++) {
+    let line = '  ';
+    for (let i = 0; i < glyphs.length; i++) {
+      line += colors[i](glyphs[i][row]);
+      if (i < glyphs.length - 1) line += ' ';
+    }
+    console.log(line);
+  }
   console.log();
-  console.log('  ' + lbl('Session'.padEnd(10)) + dim('Resume any AI coding session, never lose context'));
-  console.log('  ' + lbl('Continue'.padEnd(10)) + dim(`v${VERSION} — cont <n> or continues <tool>`));
+  console.log('  ' + chalk.cyan('Session'.padEnd(10)) + chalk.gray('Resume any AI coding session, never lose context'));
+  console.log('  ' + chalk.cyan('Continue'.padEnd(10)) + chalk.gray(`v${VERSION} — cont <n> or continues <tool>`));
   console.log();
 }
 
@@ -135,27 +157,6 @@ function formatSessionForSelect(session: UnifiedSession): string {
 }
 
 /**
- * Show session discovery stats
- */
-function showSessionStats(sessions: UnifiedSession[]): void {
-  const bySource = sessions.reduce((acc, s) => {
-    acc[s.source] = (acc[s.source] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-  
-  const cliTools = Object.keys(bySource).length;
-  const total = sessions.length;
-  
-  console.log(chalk.gray(`  Found ${total} sessions across ${cliTools} CLI tool${cliTools !== 1 ? 's' : ''}`));
-  
-  // Show breakdown
-  for (const [source, count] of Object.entries(bySource).sort((a, b) => b[1] - a[1])) {
-    const colorFn = sourceColors[source as SessionSource] || chalk.white;
-    console.log(chalk.gray(`  ${colorFn(source)}: ${count}`));
-  }
-}
-
-/**
  * Show helpful error when no sessions found
  */
 function showNoSessionsHelp(): void {
@@ -205,18 +206,11 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
     const cwdSessions = options.all ? [] : sessions.filter(sess => matchesCwd(sess.cwd, currentDir));
     const hasCwdSessions = cwdSessions.length > 0;
 
-    if (options.all) {
-      console.log(chalk.gray(`  Showing all ${sessions.length} sessions`));
-    } else if (hasCwdSessions) {
-      console.log(chalk.gray(`  ${chalk.green('▸')} ${cwdSessions.length} session${cwdSessions.length !== 1 ? 's' : ''} found in current directory`));
-    } else {
-      console.log(chalk.gray(`  No sessions found for ${chalk.cyan(currentDir.split('/').slice(-2).join('/'))}`));
-      console.log(chalk.gray(`  Showing all sessions. Run ${chalk.cyan('continues --all')} to always see all.`));
-    }
+    const dirName = currentDir.split('/').pop() || currentDir;
 
-    // Show stats
-    showSessionStats(sessions);
-    console.log();
+    if (!options.all && !hasCwdSessions && sessions.length > 0) {
+      clack.log.info(chalk.gray(`No sessions in ${dirName}, showing all`));
+    }
 
     // Auto-resume: if exactly 1 session matches cwd, skip picker
     if (cwdSessions.length === 1 && !options.source) {
@@ -275,50 +269,86 @@ async function interactivePick(options: { source?: string; noTui?: boolean; rebu
     let filteredSessions = hasCwdSessions ? cwdSessions : sessions;
 
     if (!options.source && sessions.length > 0) {
-      const bySource = (hasCwdSessions ? cwdSessions : sessions).reduce((acc, s) => {
-        acc[s.source] = (acc[s.source] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
+      let scope: 'cwd' | 'all' = hasCwdSessions ? 'cwd' : 'all';
 
-      const filterOptions: { value: string; label: string }[] = [];
+      while (true) {
+        const pool = scope === 'cwd' ? cwdSessions : sessions;
+        const bySource = pool.reduce((acc, s) => {
+          acc[s.source] = (acc[s.source] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+        const toolCount = Object.keys(bySource).length;
 
-      // If we have cwd sessions, offer "This directory" as first option
-      if (hasCwdSessions) {
-        filterOptions.push({
-          value: 'cwd',
-          label: `This directory (${cwdSessions.length} session${cwdSessions.length !== 1 ? 's' : ''})`,
-        });
+        // Select message conveys scope context
+        let message: string;
+        if (scope === 'cwd') {
+          message = `${dirName} — ${pool.length} session${pool.length !== 1 ? 's' : ''}`;
+        } else if (hasCwdSessions) {
+          message = `All sessions — ${pool.length} total`;
+        } else {
+          message = `${pool.length} sessions across ${toolCount} tool${toolCount !== 1 ? 's' : ''}`;
+        }
+
+        // Build options: tool names first, then "All tools", then scope toggle
+        const filterOptions: { value: string; label: string; hint?: string }[] = [];
+
+        // Per-tool options (sorted by count desc, colored)
         filterOptions.push(
-          { value: 'all', label: `All CLI tools (${sessions.length} sessions)` },
+          ...Object.entries(bySource)
+            .sort((a, b) => b[1] - a[1])
+            .map(([source, count]) => ({
+              value: source,
+              label: `${sourceColors[source as SessionSource](source.charAt(0).toUpperCase() + source.slice(1))} (${count})`,
+            })),
         );
-      }
 
-      filterOptions.push(
-        ...Object.entries(bySource)
-          .sort((a, b) => b[1] - a[1])
-          .map(([source, count]) => ({
-            value: source,
-            label: `${sourceColors[source as SessionSource](source.charAt(0).toUpperCase() + source.slice(1))} (${count})`,
-          })),
-      );
+        // "All tools" — no tool filter, shows all sessions in current scope
+        filterOptions.push({
+          value: 'all-in-scope',
+          label: `All tools (${pool.length})`,
+        });
 
-      const toolFilter = await clack.select({
-        message: 'Filter sessions',
-        options: filterOptions,
-        initialValue: hasCwdSessions ? 'cwd' : undefined,
-      });
+        // Scope toggle (only when CWD sessions exist and --all wasn't used)
+        if (hasCwdSessions && !options.all) {
+          if (scope === 'cwd') {
+            filterOptions.push({
+              value: 'scope-toggle',
+              label: chalk.dim(`Show all sessions (${sessions.length})`),
+            });
+          } else {
+            filterOptions.push({
+              value: 'scope-toggle',
+              label: chalk.dim(`This directory (${cwdSessions.length})`),
+            });
+          }
+        }
 
-      if (clack.isCancel(toolFilter)) {
-        clack.cancel('Cancelled');
-        return;
-      }
+        const toolFilter = await clack.select({
+          message,
+          options: filterOptions,
+          initialValue: 'all-in-scope',
+        });
 
-      if (toolFilter === 'cwd') {
-        filteredSessions = cwdSessions;
-      } else if (toolFilter === 'all') {
-        filteredSessions = sessions;
-      } else {
-        filteredSessions = (hasCwdSessions ? cwdSessions : sessions).filter(s => s.source === toolFilter);
+        if (clack.isCancel(toolFilter)) {
+          clack.cancel('Cancelled');
+          return;
+        }
+
+        // Scope toggle: flip and re-render
+        if (toolFilter === 'scope-toggle') {
+          scope = scope === 'cwd' ? 'all' : 'cwd';
+          continue;
+        }
+
+        // "All tools": use entire pool
+        if (toolFilter === 'all-in-scope') {
+          filteredSessions = pool;
+          break;
+        }
+
+        // Specific tool: filter by source
+        filteredSessions = pool.filter(s => s.source === toolFilter);
+        break;
       }
     }
 
