@@ -59,7 +59,7 @@ function showBanner(): void {
 
   console.log();
   console.log(t('                       ▄'));
-  console.log(t('  █▀▀▀ █▀▀█ █▀▀▄ ▀█▀▀  █   █▀▀▄ █  █ █▀▀█ ') + s('█▀▀▀'));
+  console.log(t('  █▀▀▀ █▀▀█ █▀▀▄ ▀█▀▀  █  █▀▀▄ █  █ █▀▀█ ') + s('█▀▀▀'));
   console.log(t('  █    █  █ █  █  █    █  █  █ █  █ █▀▀▀ ') + s('▀▀▀█'));
   console.log(t('  ▀▀▀▀ ▀▀▀▀ ▀  ▀  ▀    ▀  ▀  ▀ ▀▀▀▀ ▀▀▀▀ ') + s('▀▀▀▀'));
   console.log();
