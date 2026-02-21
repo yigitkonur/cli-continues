@@ -38,21 +38,28 @@ jobs:
 
       - name: Auto-increment beta version
         run: |
-          # Get current beta version from npm (if any)
+          # Get current beta version from npm and version from package.json
           CURRENT_BETA=$(npm view continues@beta version 2>/dev/null || echo "")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_BASE=$(echo "$PKG_VERSION" | sed 's/-beta\..*//')
 
           if [ -z "$CURRENT_BETA" ]; then
-            # No beta exists yet — use what's in package.json
-            echo "No existing beta on npm, using package.json version"
+            echo "No existing beta on npm, using package.json version: $PKG_VERSION"
           else
-            # Parse and increment: 2.8.0-beta.0 → 2.8.0-beta.1
-            BASE=$(echo "$CURRENT_BETA" | sed 's/-beta\..*//')
-            BETA_NUM=$(echo "$CURRENT_BETA" | grep -o 'beta\.[0-9]*' | cut -d. -f2)
-            NEXT_NUM=$((BETA_NUM + 1))
-            NEW_VERSION="${BASE}-beta.${NEXT_NUM}"
+            NPM_BASE=$(echo "$CURRENT_BETA" | sed 's/-beta\..*//')
 
-            echo "Current beta: $CURRENT_BETA → Next: $NEW_VERSION"
-            npm version "$NEW_VERSION" --no-git-tag-version
+            if [ "$PKG_BASE" != "$NPM_BASE" ]; then
+              # Major/minor version changed in package.json — use it as-is
+              echo "Version base changed: npm=$NPM_BASE, package.json=$PKG_BASE"
+              echo "Using package.json version: $PKG_VERSION"
+            else
+              # Same base — increment beta number
+              BETA_NUM=$(echo "$CURRENT_BETA" | grep -o 'beta\.[0-9]*' | cut -d. -f2)
+              NEXT_NUM=$((BETA_NUM + 1))
+              NEW_VERSION="${NPM_BASE}-beta.${NEXT_NUM}"
+              echo "Current beta: $CURRENT_BETA → Next: $NEW_VERSION"
+              npm version "$NEW_VERSION" --no-git-tag-version
+            fi
           fi
 
       - name: Publish beta to npm
