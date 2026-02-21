@@ -2,8 +2,12 @@
  * Unified Session Types for CLI session tools
  */
 
-/** Source CLI tool */
-export type SessionSource = 'codex' | 'claude' | 'copilot' | 'gemini' | 'opencode' | 'droid' | 'cursor';
+// Import SessionSource locally (used by UnifiedSession below) and re-export
+import type { SessionSource } from './tool-names.js';
+
+// Re-export shared content block types
+export type { ContentBlock, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from './content-blocks.js';
+export { type SessionSource, TOOL_NAMES } from './tool-names.js';
 
 /** Unified session metadata */
 export interface UnifiedSession {

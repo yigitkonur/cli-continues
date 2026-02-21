@@ -2,18 +2,26 @@
  * Extract handoff markdown from the smallest real session of each source.
  * Saves to ~/.continues/e2e-test-results/handoff-from-{source}.md
  */
-import {
-  parseClaudeSessions, extractClaudeContext,
-  parseCopilotSessions, extractCopilotContext,
-  parseGeminiSessions, extractGeminiContext,
-  parseCodexSessions, extractCodexContext,
-  parseOpenCodeSessions, extractOpenCodeContext,
-  parseDroidSessions, extractDroidContext,
-  parseCursorSessions, extractCursorContext,
-} from '../parsers/index.js';
-import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
+
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  extractClaudeContext,
+  extractCodexContext,
+  extractCopilotContext,
+  extractCursorContext,
+  extractDroidContext,
+  extractGeminiContext,
+  extractOpenCodeContext,
+  parseClaudeSessions,
+  parseCodexSessions,
+  parseCopilotSessions,
+  parseCursorSessions,
+  parseDroidSessions,
+  parseGeminiSessions,
+  parseOpenCodeSessions,
+} from '../parsers/index.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
 const RESULTS_DIR = path.join(process.env.HOME || '~', '.continues', 'e2e-test-results');
 fs.mkdirSync(RESULTS_DIR, { recursive: true });
@@ -64,7 +72,9 @@ async function main() {
             usedSession = s;
             break;
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
 
       if (!ctx || !usedSession) {
@@ -76,7 +86,7 @@ async function main() {
       const mdPath = path.join(RESULTS_DIR, `handoff-from-${source}.md`);
       fs.writeFileSync(mdPath, ctx.markdown);
 
-      const firstUserMsg = ctx.recentMessages.find(m => m.role === 'user')?.content.slice(0, 80) || '(no user msg)';
+      const firstUserMsg = ctx.recentMessages.find((m) => m.role === 'user')?.content.slice(0, 80) || '(no user msg)';
       summary[source] = {
         sessionId: usedSession.id.slice(0, 16),
         msgCount: ctx.recentMessages.length,

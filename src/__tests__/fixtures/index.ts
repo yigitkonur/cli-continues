@@ -2,8 +2,8 @@
  * Test fixtures - sanitized session data for all 5 tools
  */
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
 
 export interface FixtureDir {
   root: string;
@@ -215,10 +215,7 @@ export function createGeminiFixture(): FixtureDir {
     ],
   };
 
-  fs.writeFileSync(
-    path.join(chatsDir, 'session-2026-01-15T10-00-test1234.json'),
-    JSON.stringify(session, null, 2)
-  );
+  fs.writeFileSync(path.join(chatsDir, 'session-2026-01-15T10-00-test1234.json'), JSON.stringify(session, null, 2));
 
   return {
     root,
@@ -363,53 +360,111 @@ export function createOpenCodeSqliteFixture(): FixtureDir {
 
   // Insert project
   db.prepare('INSERT INTO project VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-    'proj_test1', '/home/user/project', 'git', 'project', null, null, now - 10000, now, null, '[]', null
+    'proj_test1',
+    '/home/user/project',
+    'git',
+    'project',
+    null,
+    null,
+    now - 10000,
+    now,
+    null,
+    '[]',
+    null,
   );
 
   // Insert session
   db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-    'ses_test1', 'proj_test1', null, 'test-session', '/home/user/project',
-    'Fix authentication bug', '1.2.0', null, 2, 0, 1, null, null, null, now - 5000, now, null, null
+    'ses_test1',
+    'proj_test1',
+    null,
+    'test-session',
+    '/home/user/project',
+    'Fix authentication bug',
+    '1.2.0',
+    null,
+    2,
+    0,
+    1,
+    null,
+    null,
+    null,
+    now - 5000,
+    now,
+    null,
+    null,
   );
 
   // Insert user message
   db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run(
-    'msg_user1', 'ses_test1', now - 4000, now - 4000,
-    JSON.stringify({ role: 'user', time: { created: now - 4000 } })
+    'msg_user1',
+    'ses_test1',
+    now - 4000,
+    now - 4000,
+    JSON.stringify({ role: 'user', time: { created: now - 4000 } }),
   );
   db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
-    'prt_user1', 'msg_user1', 'ses_test1', now - 4000, now - 4000,
-    JSON.stringify({ type: 'text', text: 'Fix the authentication bug in login.ts' })
+    'prt_user1',
+    'msg_user1',
+    'ses_test1',
+    now - 4000,
+    now - 4000,
+    JSON.stringify({ type: 'text', text: 'Fix the authentication bug in login.ts' }),
   );
 
   // Insert assistant message
   db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run(
-    'msg_asst1', 'ses_test1', now - 3000, now - 3000,
-    JSON.stringify({ role: 'assistant', time: { created: now - 3000, completed: now - 2500 }, modelID: 'claude-opus-4.6' })
+    'msg_asst1',
+    'ses_test1',
+    now - 3000,
+    now - 3000,
+    JSON.stringify({
+      role: 'assistant',
+      time: { created: now - 3000, completed: now - 2500 },
+      modelID: 'claude-opus-4.6',
+    }),
   );
   db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
-    'prt_asst1', 'msg_asst1', 'ses_test1', now - 3000, now - 3000,
-    JSON.stringify({ type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' })
+    'prt_asst1',
+    'msg_asst1',
+    'ses_test1',
+    now - 3000,
+    now - 3000,
+    JSON.stringify({ type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' }),
   );
 
   // Insert another user message
   db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run(
-    'msg_user2', 'ses_test1', now - 2000, now - 2000,
-    JSON.stringify({ role: 'user', time: { created: now - 2000 } })
+    'msg_user2',
+    'ses_test1',
+    now - 2000,
+    now - 2000,
+    JSON.stringify({ role: 'user', time: { created: now - 2000 } }),
   );
   db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
-    'prt_user2', 'msg_user2', 'ses_test1', now - 2000, now - 2000,
-    JSON.stringify({ type: 'text', text: 'Great, please also add error handling' })
+    'prt_user2',
+    'msg_user2',
+    'ses_test1',
+    now - 2000,
+    now - 2000,
+    JSON.stringify({ type: 'text', text: 'Great, please also add error handling' }),
   );
 
   // Insert another assistant message
   db.prepare('INSERT INTO message VALUES (?, ?, ?, ?, ?)').run(
-    'msg_asst2', 'ses_test1', now - 1000, now - 1000,
-    JSON.stringify({ role: 'assistant', time: { created: now - 1000, completed: now - 500 } })
+    'msg_asst2',
+    'ses_test1',
+    now - 1000,
+    now - 1000,
+    JSON.stringify({ role: 'assistant', time: { created: now - 1000, completed: now - 500 } }),
   );
   db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
-    'prt_asst2', 'msg_asst2', 'ses_test1', now - 1000, now - 1000,
-    JSON.stringify({ type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' })
+    'prt_asst2',
+    'msg_asst2',
+    'ses_test1',
+    now - 1000,
+    now - 1000,
+    JSON.stringify({ type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' }),
   );
 
   db.close();
@@ -500,7 +555,12 @@ export function createDroidFixture(): FixtureDir {
       message: {
         role: 'assistant',
         content: [
-          { type: 'tool_use', id: 'tc-002', name: 'Edit', input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' } },
+          {
+            type: 'tool_use',
+            id: 'tc-002',
+            name: 'Edit',
+            input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' },
+          },
         ],
       },
     }),
@@ -544,7 +604,9 @@ export function createDroidFixture(): FixtureDir {
       type: 'todo_state',
       id: 'todo-001',
       timestamp: '2026-01-15T10:00:15.000Z',
-      todos: { todos: '1. [completed] Fix token validation\n2. [in_progress] Add error handling\n3. [pending] Write tests' },
+      todos: {
+        todos: '1. [completed] Fix token validation\n2. [in_progress] Add error handling\n3. [pending] Write tests',
+      },
       messageIndex: 3,
     }),
   ];
@@ -578,7 +640,7 @@ export function createCursorFixture(): FixtureDir {
     JSON.stringify({
       role: 'assistant',
       message: {
-        content: [{ type: 'text', text: 'I\'ll look into the login.ts file to find the authentication bug.' }],
+        content: [{ type: 'text', text: "I'll look into the login.ts file to find the authentication bug." }],
       },
     }),
     JSON.stringify({
@@ -599,7 +661,12 @@ export function createCursorFixture(): FixtureDir {
       role: 'assistant',
       message: {
         content: [
-          { type: 'tool_use', id: 'tc-002', name: 'edit_file', input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' } },
+          {
+            type: 'tool_use',
+            id: 'tc-002',
+            name: 'edit_file',
+            input: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' },
+          },
         ],
       },
     }),
@@ -660,7 +727,7 @@ export function createOpenCodeJsonFixture(): FixtureDir {
       directory: '/home/user/project',
       title: 'Fix authentication bug (JSON)',
       time: { created: now - 5000, updated: now },
-    })
+    }),
   );
 
   // Create project file
@@ -668,7 +735,7 @@ export function createOpenCodeJsonFixture(): FixtureDir {
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(
     path.join(projectDir, `${projectId}.json`),
-    JSON.stringify({ id: projectId, worktree: '/home/user/project' })
+    JSON.stringify({ id: projectId, worktree: '/home/user/project' }),
   );
 
   // Create message files
@@ -681,7 +748,7 @@ export function createOpenCodeJsonFixture(): FixtureDir {
       sessionID: sessionId,
       role: 'user',
       time: { created: now - 4000 },
-    })
+    }),
   );
   fs.writeFileSync(
     path.join(msgDir, 'msg_a1.json'),
@@ -690,7 +757,7 @@ export function createOpenCodeJsonFixture(): FixtureDir {
       sessionID: sessionId,
       role: 'assistant',
       time: { created: now - 3000, completed: now - 2500 },
-    })
+    }),
   );
 
   // Create part files
@@ -698,14 +765,26 @@ export function createOpenCodeJsonFixture(): FixtureDir {
   fs.mkdirSync(partDirU1, { recursive: true });
   fs.writeFileSync(
     path.join(partDirU1, 'prt_u1.json'),
-    JSON.stringify({ id: 'prt_u1', sessionID: sessionId, messageID: 'msg_u1', type: 'text', text: 'Fix the authentication bug in login.ts' })
+    JSON.stringify({
+      id: 'prt_u1',
+      sessionID: sessionId,
+      messageID: 'msg_u1',
+      type: 'text',
+      text: 'Fix the authentication bug in login.ts',
+    }),
   );
 
   const partDirA1 = path.join(storageDir, 'part', 'msg_a1');
   fs.mkdirSync(partDirA1, { recursive: true });
   fs.writeFileSync(
     path.join(partDirA1, 'prt_a1.json'),
-    JSON.stringify({ id: 'prt_a1', sessionID: sessionId, messageID: 'msg_a1', type: 'text', text: 'I found the issue. The token validation was missing.' })
+    JSON.stringify({
+      id: 'prt_a1',
+      sessionID: sessionId,
+      messageID: 'msg_a1',
+      type: 'text',
+      text: 'I found the issue. The token validation was missing.',
+    }),
   );
 
   return {

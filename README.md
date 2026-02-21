@@ -59,6 +59,9 @@ continues list
 # Grab a Claude session and continue it in Gemini
 continues resume abc123 --in gemini
 
+# Pass launch flags to the destination tool during cross-tool handoff
+continues resume abc123 --in codex --yolo --search --add-dir /tmp
+
 # Quick-resume your latest Claude session (native resume)
 continues claude
 ```
@@ -160,9 +163,14 @@ continues resume abc123 --in gemini
 
 # Or pick interactively — just run `continues`, select a session,
 # and choose a different tool as the target.
+
+# In picker flows, forward destination flags after `--`
+continues pick -- --model gpt-5 --sandbox workspace-write
 ```
 
 `continues` extracts your conversation context (messages, file changes, pending tasks) and injects it as a structured prompt into the target tool. The target picks up with full awareness of what you were working on.
+
+When forwarding flags in cross-tool mode, `continues` maps common interactive settings to the selected target tool (model, sandbox/permissions, yolo/auto-approve, extra directories, etc.). Any flag that is not mapped is passed through as-is to the destination CLI.
 
 ## How It Works
 
@@ -246,6 +254,7 @@ Interactive session picker. Requires a TTY.
 | `-s, --source <tool>` | Pre-filter to one tool |
 | `--no-tui` | Disable interactive mode |
 | `--rebuild` | Force-rebuild index first |
+| `-- ...` | Forward raw launch flags to selected destination tool |
 
 ### `continues list` (alias: `ls`)
 
@@ -263,6 +272,7 @@ Interactive session picker. Requires a TTY.
 |:-----|:------------|:--------|
 | `-i, --in <tool>` | Target tool for cross-tool handoff | — |
 | `--no-tui` | Skip interactive prompts | — |
+| `...` unknown flags | In cross-tool mode, map common flags and pass unmapped ones directly to destination CLI | — |
 
 ### `continues scan`
 
@@ -294,7 +304,7 @@ Same-tool resume is available via `continues <tool>` shortcuts (native resume, n
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite` for OpenCode parsing)
-- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, OpenCode, Factory Droid, or Cursor CLI
+- At least one of: Claude Code, GitHub Copilot, Gemini CLI, Codex, OpenCode, Factory Droid, or Cursor Agent CLI (`agent`)
 
 ## Development
 

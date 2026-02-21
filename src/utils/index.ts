@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
+import { logger } from '../logger.js';
 import { adapters } from '../parsers/registry.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { homeDir } from './parser-helpers.js';
 
 const CONTINUES_DIR = path.join(homeDir(), '.continues');
@@ -23,7 +24,7 @@ export function ensureDirectories(): void {
       fs.mkdirSync(CONTEXTS_DIR, { recursive: true });
     }
   } catch (err) {
-    // Non-fatal — index/context operations will fail individually if dirs are missing
+    logger.debug('index: failed to create directories', err);
   }
 }
 
@@ -35,7 +36,8 @@ export function indexNeedsRebuild(): boolean {
     const stats = fs.statSync(INDEX_FILE);
     const age = Date.now() - stats.mtime.getTime();
     return age > INDEX_TTL;
-  } catch {
+  } catch (err) {
+    logger.debug('index: cache stale check failed', err);
     return true; // File doesn't exist or can't be read
   }
 }
@@ -53,23 +55,23 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
 
   // Parse all sessions from all sources in parallel — use allSettled so one
   // broken parser doesn't crash the entire CLI
-  const results = await Promise.allSettled(
-    Object.values(adapters).map(a => a.parseSessions())
-  );
+  const results = await Promise.allSettled(Object.values(adapters).map((a) => a.parseSessions()));
 
   const allSessions = results
     .filter((r): r is PromiseFulfilledResult<UnifiedSession[]> => r.status === 'fulfilled')
-    .flatMap(r => r.value);
+    .flatMap((r) => r.value);
 
   // Sort by updated time (newest first)
   allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 
   // Write to index file
-  const lines = allSessions.map(s => JSON.stringify({
-    ...s,
-    createdAt: s.createdAt.toISOString(),
-    updatedAt: s.updatedAt.toISOString(),
-  }));
+  const lines = allSessions.map((s) =>
+    JSON.stringify({
+      ...s,
+      createdAt: s.createdAt.toISOString(),
+      updatedAt: s.updatedAt.toISOString(),
+    }),
+  );
 
   fs.writeFileSync(INDEX_FILE, lines.join('\n') + '\n');
 
@@ -82,21 +84,28 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
 export function loadIndex(): UnifiedSession[] {
   try {
     const content = fs.readFileSync(INDEX_FILE, 'utf8');
-    const lines = content.trim().split('\n').filter(l => l);
+    const lines = content
+      .trim()
+      .split('\n')
+      .filter((l) => l);
 
-    return lines.flatMap(line => {
+    return lines.flatMap((line) => {
       try {
         const parsed = JSON.parse(line);
-        return [{
-          ...parsed,
-          createdAt: new Date(parsed.createdAt),
-          updatedAt: new Date(parsed.updatedAt),
-        } as UnifiedSession];
-      } catch {
+        return [
+          {
+            ...parsed,
+            createdAt: new Date(parsed.createdAt),
+            updatedAt: new Date(parsed.updatedAt),
+          } as UnifiedSession,
+        ];
+      } catch (err) {
+        logger.debug('index: skipping corrupted line in cache', err);
         return []; // Skip corrupted lines
       }
     });
-  } catch {
+  } catch (err) {
+    logger.debug('index: cannot read cache file', INDEX_FILE, err);
     return []; // File doesn't exist or can't be read
   }
 }
@@ -113,7 +122,7 @@ export async function getAllSessions(forceRebuild = false): Promise<UnifiedSessi
  */
 export async function getSessionsBySource(source: SessionSource, forceRebuild = false): Promise<UnifiedSession[]> {
   const all = await getAllSessions(forceRebuild);
-  return all.filter(s => s.source === source);
+  return all.filter((s) => s.source === source);
 }
 
 /**
@@ -121,7 +130,7 @@ export async function getSessionsBySource(source: SessionSource, forceRebuild = 
  */
 export async function findSession(id: string): Promise<UnifiedSession | null> {
   const all = await getAllSessions();
-  return all.find(s => s.id === id || s.id.startsWith(id)) || null;
+  return all.find((s) => s.id === id || s.id.startsWith(id)) || null;
 }
 
 /**
@@ -138,10 +147,10 @@ export async function extractContext(session: UnifiedSession): Promise<SessionCo
  */
 export function saveContext(context: SessionContext): string {
   ensureDirectories();
-  
+
   const contextPath = path.join(CONTEXTS_DIR, `${context.session.id}.md`);
   fs.writeFileSync(contextPath, context.markdown);
-  
+
   return contextPath;
 }
 
@@ -150,11 +159,11 @@ export function saveContext(context: SessionContext): string {
  */
 export function getCachedContext(sessionId: string): string | null {
   const contextPath = path.join(CONTEXTS_DIR, `${sessionId}.md`);
-  
+
   if (fs.existsSync(contextPath)) {
     return fs.readFileSync(contextPath, 'utf8');
   }
-  
+
   return null;
 }
 
@@ -169,7 +178,7 @@ export function formatSession(session: UnifiedSession): string {
   const branch = (session.branch || '').slice(0, 15).padEnd(15);
   const summary = (session.summary || '').slice(0, 40);
   const id = session.id.slice(0, 12);
-  
+
   return `${source} ${date}  ${repo} ${branch} ${summary.padEnd(40)} ${id}`;
 }
 
@@ -177,9 +186,13 @@ export function formatSession(session: UnifiedSession): string {
  * Format sessions as JSONL for output
  */
 export function sessionsToJsonl(sessions: UnifiedSession[]): string {
-  return sessions.map(s => JSON.stringify({
-    ...s,
-    createdAt: s.createdAt.toISOString(),
-    updatedAt: s.updatedAt.toISOString(),
-  })).join('\n');
+  return sessions
+    .map((s) =>
+      JSON.stringify({
+        ...s,
+        createdAt: s.createdAt.toISOString(),
+        updatedAt: s.updatedAt.toISOString(),
+      }),
+    )
+    .join('\n');
 }
