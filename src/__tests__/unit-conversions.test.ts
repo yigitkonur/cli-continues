@@ -3,19 +3,20 @@
  * Tests each parser's extractContext using controlled fixture data,
  * independent of real session files on the machine.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UnifiedSession, SessionSource, SessionContext, ConversationMessage } from '../types/index.js';
-import { generateHandoffMarkdown, SOURCE_LABELS } from '../utils/markdown.js';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { ConversationMessage, SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
+import { generateHandoffMarkdown, getSourceLabels } from '../utils/markdown.js';
 import {
   createClaudeFixture,
-  createCopilotFixture,
-  createGeminiFixture,
   createCodexFixture,
-  createOpenCodeSqliteFixture,
-  createDroidFixture,
+  createCopilotFixture,
   createCursorFixture,
+  createDroidFixture,
+  createGeminiFixture,
+  createOpenCodeSqliteFixture,
   type FixtureDir,
 } from './fixtures/index.js';
 
@@ -38,21 +39,31 @@ function parseClaudeFixtureMessages(filePath: string): ConversationMessage[] {
       if (parsed.isCompactSummary) continue;
 
       if (parsed.type === 'user' && parsed.message?.content) {
-        const text = typeof parsed.message.content === 'string'
-          ? parsed.message.content
-          : parsed.message.content.filter((c: any) => c.type === 'text' && c.text).map((c: any) => c.text).join('\n');
+        const text =
+          typeof parsed.message.content === 'string'
+            ? parsed.message.content
+            : parsed.message.content
+                .filter((c: any) => c.type === 'text' && c.text)
+                .map((c: any) => c.text)
+                .join('\n');
         if (text && !text.startsWith('<') && !text.startsWith('/') && !text.includes('Session Handoff')) {
           messages.push({ role: 'user', content: text, timestamp: new Date(parsed.timestamp) });
         }
       } else if (parsed.type === 'assistant' && parsed.message?.content) {
-        const text = typeof parsed.message.content === 'string'
-          ? parsed.message.content
-          : parsed.message.content.filter((c: any) => c.type === 'text' && c.text).map((c: any) => c.text).join('\n');
+        const text =
+          typeof parsed.message.content === 'string'
+            ? parsed.message.content
+            : parsed.message.content
+                .filter((c: any) => c.type === 'text' && c.text)
+                .map((c: any) => c.text)
+                .join('\n');
         if (text) {
           messages.push({ role: 'assistant', content: text, timestamp: new Date(parsed.timestamp) });
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return messages;
 }
@@ -72,7 +83,9 @@ function parseCopilotFixtureMessages(eventsPath: string): ConversationMessage[] 
         const text = event.data?.content || '';
         if (text) messages.push({ role: 'assistant', content: text, timestamp: new Date(event.timestamp) });
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return messages;
 }
@@ -112,11 +125,16 @@ function parseCodexFixtureMessages(filePath: string): ConversationMessage[] {
       if (parsed.type === 'event_msg' && parsed.payload?.type === 'user_message') {
         const text = parsed.payload.message || '';
         if (text) messages.push({ role: 'user', content: text, timestamp: new Date(parsed.timestamp) });
-      } else if (parsed.type === 'event_msg' && (parsed.payload?.type === 'agent_message' || parsed.payload?.type === 'assistant_message')) {
+      } else if (
+        parsed.type === 'event_msg' &&
+        (parsed.payload?.type === 'agent_message' || parsed.payload?.type === 'assistant_message')
+      ) {
         const text = parsed.payload.message || '';
         if (text) messages.push({ role: 'assistant', content: text, timestamp: new Date(parsed.timestamp) });
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return messages;
 }
@@ -127,17 +145,17 @@ function parseOpenCodeFixtureMessages(dbPath: string, sessionId: string): Conver
   const messages: ConversationMessage[] = [];
 
   try {
-    const msgRows = db.prepare(
-      'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC'
-    ).all(sessionId) as any[];
+    const msgRows = db
+      .prepare('SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC')
+      .all(sessionId) as any[];
 
     for (const msgRow of msgRows) {
       const msgData = JSON.parse(msgRow.data);
       const role = msgData.role === 'user' ? 'user' : 'assistant';
 
-      const partRows = db.prepare(
-        'SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC'
-      ).all(msgRow.id) as any[];
+      const partRows = db
+        .prepare('SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC')
+        .all(msgRow.id) as any[];
 
       let text = '';
       for (const partRow of partRows) {
@@ -173,8 +191,13 @@ function parseCursorFixtureMessages(filePath: string): ConversationMessage[] {
       const textParts: string[] = [];
       for (const block of contentBlocks) {
         if (block.type === 'text' && block.text) {
-          if (block.text.startsWith('<system-reminder>') || block.text.startsWith('<permissions')
-            || block.text.startsWith('<external_links>') || block.text.startsWith('<image_files>')) continue;
+          if (
+            block.text.startsWith('<system-reminder>') ||
+            block.text.startsWith('<permissions') ||
+            block.text.startsWith('<external_links>') ||
+            block.text.startsWith('<image_files>')
+          )
+            continue;
 
           // Extract from user_query tags
           const queryMatch = block.text.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/);
@@ -190,7 +213,9 @@ function parseCursorFixtureMessages(filePath: string): ConversationMessage[] {
         role: role === 'user' ? 'user' : 'assistant',
         content: text,
       });
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return messages;
 }
@@ -224,7 +249,9 @@ function parseDroidFixtureMessages(filePath: string): ConversationMessage[] {
         content: text,
         timestamp: parsed.timestamp ? new Date(parsed.timestamp) : undefined,
       });
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
   }
   return messages;
 }
@@ -233,10 +260,11 @@ function parseDroidFixtureMessages(filePath: string): ConversationMessage[] {
 
 // Derive from registry — automatically picks up new tools
 import { ALL_TOOLS } from '../parsers/registry.js';
-const ALL_SOURCES: SessionSource[] = ALL_TOOLS;
 
-let fixtures: Record<string, FixtureDir> = {};
-let contexts: Record<string, SessionContext> = {};
+const ALL_SOURCES: readonly SessionSource[] = ALL_TOOLS;
+
+const fixtures: Record<string, FixtureDir> = {};
+const contexts: Record<string, SessionContext> = {};
 
 beforeAll(() => {
   // Create fixtures
@@ -252,115 +280,196 @@ beforeAll(() => {
   const now = new Date();
 
   // Claude
-  const claudeFile = fs.readdirSync(fixtures.claude.root, { recursive: true })
-    .map(f => path.join(fixtures.claude.root, f as string))
-    .find(f => f.endsWith('.jsonl'))!;
+  const claudeFile = fs
+    .readdirSync(fixtures.claude.root, { recursive: true })
+    .map((f) => path.join(fixtures.claude.root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
   const claudeSession: UnifiedSession = {
-    id: 'test-claude-session-1', source: 'claude', cwd: '/home/user/project',
-    repo: 'user/project', branch: 'main', lines: 5, bytes: 1000,
-    createdAt: now, updatedAt: now, originalPath: claudeFile, summary: 'Fix auth bug',
+    id: 'test-claude-session-1',
+    source: 'claude',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    branch: 'main',
+    lines: 5,
+    bytes: 1000,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: claudeFile,
+    summary: 'Fix auth bug',
   };
   const claudeMsgs = parseClaudeFixtureMessages(claudeFile);
   contexts.claude = {
-    session: claudeSession, recentMessages: claudeMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: claudeSession,
+    recentMessages: claudeMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(claudeSession, claudeMsgs, [], [], []),
   };
 
   // Copilot
-  const copilotDir = fs.readdirSync(fixtures.copilot.root, { withFileTypes: true })
-    .find(d => d.isDirectory())!;
+  const copilotDir = fs.readdirSync(fixtures.copilot.root, { withFileTypes: true }).find((d) => d.isDirectory())!;
   const copilotEventsPath = path.join(fixtures.copilot.root, copilotDir.name, 'events.jsonl');
   const copilotSession: UnifiedSession = {
-    id: 'test-copilot-session-1', source: 'copilot', cwd: '/home/user/project',
-    repo: undefined, lines: 5, bytes: 1000,
-    createdAt: now, updatedAt: now, originalPath: path.join(fixtures.copilot.root, copilotDir.name),
-    summary: 'Fix auth bug', model: 'claude-sonnet-4',
+    id: 'test-copilot-session-1',
+    source: 'copilot',
+    cwd: '/home/user/project',
+    repo: undefined,
+    lines: 5,
+    bytes: 1000,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: path.join(fixtures.copilot.root, copilotDir.name),
+    summary: 'Fix auth bug',
+    model: 'claude-sonnet-4',
   };
   const copilotMsgs = parseCopilotFixtureMessages(copilotEventsPath);
   contexts.copilot = {
-    session: copilotSession, recentMessages: copilotMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: copilotSession,
+    recentMessages: copilotMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(copilotSession, copilotMsgs, [], [], []),
   };
 
   // Gemini
-  const geminiFile = fs.readdirSync(fixtures.gemini.root, { recursive: true })
-    .map(f => path.join(fixtures.gemini.root, f as string))
-    .find(f => f.endsWith('.json'))!;
+  const geminiFile = fs
+    .readdirSync(fixtures.gemini.root, { recursive: true })
+    .map((f) => path.join(fixtures.gemini.root, f as string))
+    .find((f) => f.endsWith('.json'))!;
   const geminiSession: UnifiedSession = {
-    id: 'test-gemini-session-1', source: 'gemini', cwd: '',
-    repo: '', lines: 10, bytes: 500,
-    createdAt: now, updatedAt: now, originalPath: geminiFile, summary: 'Fix auth bug',
+    id: 'test-gemini-session-1',
+    source: 'gemini',
+    cwd: '',
+    repo: '',
+    lines: 10,
+    bytes: 500,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: geminiFile,
+    summary: 'Fix auth bug',
   };
   const geminiMsgs = parseGeminiFixtureMessages(geminiFile);
   contexts.gemini = {
-    session: geminiSession, recentMessages: geminiMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: geminiSession,
+    recentMessages: geminiMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(geminiSession, geminiMsgs, [], [], []),
   };
 
   // Codex
-  const codexFile = fs.readdirSync(fixtures.codex.root, { recursive: true })
-    .map(f => path.join(fixtures.codex.root, f as string))
-    .find(f => f.endsWith('.jsonl'))!;
+  const codexFile = fs
+    .readdirSync(fixtures.codex.root, { recursive: true })
+    .map((f) => path.join(fixtures.codex.root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
   const codexSession: UnifiedSession = {
-    id: 'test-codex-uuid-1234', source: 'codex', cwd: '/home/user/project',
-    repo: 'user/project.git', branch: 'main', lines: 5, bytes: 800,
-    createdAt: now, updatedAt: now, originalPath: codexFile, summary: 'Fix auth bug',
+    id: 'test-codex-uuid-1234',
+    source: 'codex',
+    cwd: '/home/user/project',
+    repo: 'user/project.git',
+    branch: 'main',
+    lines: 5,
+    bytes: 800,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: codexFile,
+    summary: 'Fix auth bug',
   };
   const codexMsgs = parseCodexFixtureMessages(codexFile);
   contexts.codex = {
-    session: codexSession, recentMessages: codexMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: codexSession,
+    recentMessages: codexMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(codexSession, codexMsgs, [], [], []),
   };
 
   // OpenCode (SQLite)
   const opencodDbPath = path.join(fixtures.opencode.root, 'opencode.db');
   const opencodeSession: UnifiedSession = {
-    id: 'ses_test1', source: 'opencode', cwd: '/home/user/project',
-    repo: 'user/project', lines: 4, bytes: 0,
-    createdAt: now, updatedAt: now, originalPath: opencodDbPath, summary: 'Fix auth bug',
+    id: 'ses_test1',
+    source: 'opencode',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 4,
+    bytes: 0,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: opencodDbPath,
+    summary: 'Fix auth bug',
   };
   const opencodeMsgs = parseOpenCodeFixtureMessages(opencodDbPath, 'ses_test1');
   contexts.opencode = {
-    session: opencodeSession, recentMessages: opencodeMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: opencodeSession,
+    recentMessages: opencodeMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(opencodeSession, opencodeMsgs, [], [], []),
   };
 
   // Droid
-  const droidFile = fs.readdirSync(fixtures.droid.root, { recursive: true })
-    .map(f => path.join(fixtures.droid.root, f as string))
-    .find(f => f.endsWith('.jsonl'))!;
+  const droidFile = fs
+    .readdirSync(fixtures.droid.root, { recursive: true })
+    .map((f) => path.join(fixtures.droid.root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
   const droidSession: UnifiedSession = {
-    id: 'dddddddd-1111-2222-3333-444444444444', source: 'droid', cwd: '/home/user/project',
-    repo: 'user/project', lines: 10, bytes: 2000,
-    createdAt: now, updatedAt: now, originalPath: droidFile, summary: 'Fix auth bug',
+    id: 'dddddddd-1111-2222-3333-444444444444',
+    source: 'droid',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 10,
+    bytes: 2000,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: droidFile,
+    summary: 'Fix auth bug',
     model: 'claude-opus-4-6',
   };
   const droidMsgs = parseDroidFixtureMessages(droidFile);
   contexts.droid = {
-    session: droidSession, recentMessages: droidMsgs,
-    filesModified: ['/home/user/project/login.ts'], pendingTasks: ['Add error handling', 'Write tests'],
+    session: droidSession,
+    recentMessages: droidMsgs,
+    filesModified: ['/home/user/project/login.ts'],
+    pendingTasks: ['Add error handling', 'Write tests'],
     toolSummaries: [],
-    markdown: generateHandoffMarkdown(droidSession, droidMsgs, ['/home/user/project/login.ts'], ['Add error handling', 'Write tests'], []),
+    markdown: generateHandoffMarkdown(
+      droidSession,
+      droidMsgs,
+      ['/home/user/project/login.ts'],
+      ['Add error handling', 'Write tests'],
+      [],
+    ),
   };
 
   // Cursor
-  const cursorFile = fs.readdirSync(fixtures.cursor.root, { recursive: true })
-    .map(f => path.join(fixtures.cursor.root, f as string))
-    .find(f => f.endsWith('.jsonl'))!;
+  const cursorFile = fs
+    .readdirSync(fixtures.cursor.root, { recursive: true })
+    .map((f) => path.join(fixtures.cursor.root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
   const cursorSession: UnifiedSession = {
-    id: 'cccccccc-1111-2222-3333-444444444444', source: 'cursor', cwd: '/home/user/project',
-    repo: 'user/project', lines: 9, bytes: 1500,
-    createdAt: now, updatedAt: now, originalPath: cursorFile, summary: 'Fix auth bug',
+    id: 'cccccccc-1111-2222-3333-444444444444',
+    source: 'cursor',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 9,
+    bytes: 1500,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: cursorFile,
+    summary: 'Fix auth bug',
   };
   const cursorMsgs = parseCursorFixtureMessages(cursorFile);
   contexts.cursor = {
-    session: cursorSession, recentMessages: cursorMsgs,
-    filesModified: [], pendingTasks: [], toolSummaries: [],
+    session: cursorSession,
+    recentMessages: cursorMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
     markdown: generateHandoffMarkdown(cursorSession, cursorMsgs, [], [], []),
   };
 });
@@ -385,7 +494,7 @@ describe('Low-Level Fixture Parsing', () => {
 
   it('Claude: skips system and queue-operation messages', () => {
     const msgs = contexts.claude.recentMessages;
-    const systemMsgs = msgs.filter(m => m.role === 'system');
+    const systemMsgs = msgs.filter((m) => m.role === 'system');
     expect(systemMsgs.length).toBe(0);
   });
 
@@ -408,15 +517,15 @@ describe('Low-Level Fixture Parsing', () => {
 
   it('Gemini: extracts user and gemini-type messages', () => {
     const msgs = contexts.gemini.recentMessages;
-    const userMsgs = msgs.filter(m => m.role === 'user');
-    const asstMsgs = msgs.filter(m => m.role === 'assistant');
+    const userMsgs = msgs.filter((m) => m.role === 'user');
+    const asstMsgs = msgs.filter((m) => m.role === 'assistant');
     expect(userMsgs.length).toBe(2);
     expect(asstMsgs.length).toBeGreaterThanOrEqual(2);
   });
 
   it('Gemini: captures tool-call-only messages (empty content + toolCalls)', () => {
     const msgs = contexts.gemini.recentMessages;
-    const toolMsgs = msgs.filter(m => m.content.includes('[Used tools:'));
+    const toolMsgs = msgs.filter((m) => m.content.includes('[Used tools:'));
     expect(toolMsgs.length).toBe(1);
     expect(toolMsgs[0].content).toContain('read_file');
     expect(toolMsgs[0].toolCalls).toBeDefined();
@@ -462,7 +571,7 @@ describe('Low-Level Fixture Parsing', () => {
     expect(msgs.length).toBeGreaterThanOrEqual(3);
     expect(msgs[0].role).toBe('user');
     expect(msgs[0].content).toContain('Fix the authentication bug');
-    const asstMsgs = msgs.filter(m => m.role === 'assistant');
+    const asstMsgs = msgs.filter((m) => m.role === 'assistant');
     expect(asstMsgs.length).toBeGreaterThan(0);
     expect(asstMsgs[0].content).toContain('token validation was missing');
   });
@@ -488,9 +597,9 @@ describe('Low-Level Fixture Parsing', () => {
     expect(msgs.length).toBeGreaterThanOrEqual(3);
     expect(msgs[0].role).toBe('user');
     expect(msgs[0].content).toContain('Fix the authentication bug');
-    const asstMsgs = msgs.filter(m => m.role === 'assistant');
+    const asstMsgs = msgs.filter((m) => m.role === 'assistant');
     expect(asstMsgs.length).toBeGreaterThan(0);
-    expect(asstMsgs.some(m => m.content.includes('token validation was missing'))).toBe(true);
+    expect(asstMsgs.some((m) => m.content.includes('token validation was missing'))).toBe(true);
   });
 
   it('Cursor: strips <user_query> tags from user messages', () => {
@@ -516,7 +625,7 @@ describe('Shared generateHandoffMarkdown', () => {
   it('includes correct source label for each tool', () => {
     for (const source of ALL_SOURCES) {
       const ctx = contexts[source];
-      expect(ctx.markdown).toContain(SOURCE_LABELS[source]);
+      expect(ctx.markdown).toContain(getSourceLabels()[source]);
     }
   });
 
@@ -559,8 +668,14 @@ describe('Shared generateHandoffMarkdown', () => {
       content: 'A'.repeat(600),
     };
     const session: UnifiedSession = {
-      id: 'test', source: 'claude', cwd: '/tmp', lines: 1, bytes: 100,
-      createdAt: new Date(), updatedAt: new Date(), originalPath: '/tmp',
+      id: 'test',
+      source: 'claude',
+      cwd: '/tmp',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp',
     };
     const md = generateHandoffMarkdown(session, [longMsg], [], [], []);
     expect(md).toContain('A'.repeat(500) + '…');
@@ -569,8 +684,14 @@ describe('Shared generateHandoffMarkdown', () => {
 
   it('includes files modified when present', () => {
     const session: UnifiedSession = {
-      id: 'test', source: 'codex', cwd: '/tmp', lines: 1, bytes: 100,
-      createdAt: new Date(), updatedAt: new Date(), originalPath: '/tmp',
+      id: 'test',
+      source: 'codex',
+      cwd: '/tmp',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp',
     };
     const md = generateHandoffMarkdown(session, [], ['src/auth.ts', 'src/login.ts'], [], []);
     expect(md).toContain('## Files Modified');
@@ -580,8 +701,14 @@ describe('Shared generateHandoffMarkdown', () => {
 
   it('includes pending tasks when present', () => {
     const session: UnifiedSession = {
-      id: 'test', source: 'opencode', cwd: '/tmp', lines: 1, bytes: 100,
-      createdAt: new Date(), updatedAt: new Date(), originalPath: '/tmp',
+      id: 'test',
+      source: 'opencode',
+      cwd: '/tmp',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp',
     };
     const md = generateHandoffMarkdown(session, [], [], ['Add tests', 'Fix lint errors'], []);
     expect(md).toContain('## Pending Tasks');
@@ -625,7 +752,7 @@ describe('All 42 Fixture-Based Conversion Paths', () => {
         expect(md).toContain('You are continuing this session');
 
         // Source attribution
-        expect(md).toContain(SOURCE_LABELS[source]);
+        expect(md).toContain(getSourceLabels()[source]);
 
         // Has meaningful content
         expect(md.length).toBeGreaterThan(100);
@@ -636,8 +763,8 @@ describe('All 42 Fixture-Based Conversion Paths', () => {
         expect(ctx.recentMessages.length).toBeGreaterThan(0);
 
         // At least one user and one assistant message
-        const userMsgs = ctx.recentMessages.filter(m => m.role === 'user');
-        const asstMsgs = ctx.recentMessages.filter(m => m.role === 'assistant');
+        const userMsgs = ctx.recentMessages.filter((m) => m.role === 'user');
+        const asstMsgs = ctx.recentMessages.filter((m) => m.role === 'assistant');
         expect(userMsgs.length).toBeGreaterThan(0);
         expect(asstMsgs.length).toBeGreaterThan(0);
 
@@ -680,7 +807,7 @@ describe('Injection Safety (Fixture-Based)', () => {
 
 describe('Cross-Source Uniqueness', () => {
   it('all 7 sources produce different session IDs', () => {
-    const ids = new Set(ALL_SOURCES.map(s => contexts[s].session.id));
+    const ids = new Set(ALL_SOURCES.map((s) => contexts[s].session.id));
     expect(ids.size).toBe(7);
   });
 

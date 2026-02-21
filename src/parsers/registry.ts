@@ -1,12 +1,20 @@
 import chalk from 'chalk';
-import type { SessionSource, UnifiedSession, SessionContext } from '../types/index.js';
-import { parseClaudeSessions, extractClaudeContext } from './claude.js';
-import { parseCodexSessions, extractCodexContext } from './codex.js';
-import { parseCopilotSessions, extractCopilotContext } from './copilot.js';
-import { parseGeminiSessions, extractGeminiContext } from './gemini.js';
-import { parseOpenCodeSessions, extractOpenCodeContext } from './opencode.js';
-import { parseDroidSessions, extractDroidContext } from './droid.js';
-import { parseCursorSessions, extractCursorContext } from './cursor.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
+import { TOOL_NAMES } from '../types/tool-names.js';
+import {
+  type FlagOccurrence,
+  type ForwardFlagMapContext,
+  type ForwardFlagMapper,
+  type ForwardMapResult,
+  normalizeAgentSandbox,
+} from '../utils/forward-flags.js';
+import { extractClaudeContext, parseClaudeSessions } from './claude.js';
+import { extractCodexContext, parseCodexSessions } from './codex.js';
+import { extractCopilotContext, parseCopilotSessions } from './copilot.js';
+import { extractCursorContext, parseCursorSessions } from './cursor.js';
+import { extractDroidContext, parseDroidSessions } from './droid.js';
+import { extractGeminiContext, parseGeminiSessions } from './gemini.js';
+import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 
 /**
  * Adapter interface — single contract for all supported CLI tools.
@@ -33,16 +41,334 @@ export interface ToolAdapter {
   crossToolArgs: (prompt: string, cwd: string) => string[];
   /** Display string for the native resume command */
   resumeCommandDisplay: (session: UnifiedSession) => string;
+  /** Adapter-level mapping for interactive handoff launch flags */
+  mapHandoffFlags?: ForwardFlagMapper;
 }
 
 /**
  * Central registry — single source of truth for all supported tools.
  * Insertion order determines display order in the TUI.
  */
-const _adapters: Record<string, ToolAdapter> = {};
+const _adapters: Partial<Record<SessionSource, ToolAdapter>> = {};
 
 function register(adapter: ToolAdapter): void {
   _adapters[adapter.name] = adapter;
+}
+
+function normalizePlanOccurrences(context: ForwardFlagMapContext): FlagOccurrence[] {
+  const fromPlanFlag = context.all('plan');
+  const fromMode = context.all('mode').filter((occ) => String(occ.value).toLowerCase() === 'plan');
+  const fromApproval = context.all('approvalMode').filter((occ) => String(occ.value).toLowerCase() === 'plan');
+  const fromPermission = context.all('permissionMode').filter((occ) => String(occ.value).toLowerCase() === 'plan');
+  return [...fromPlanFlag, ...fromMode, ...fromApproval, ...fromPermission];
+}
+
+function collectAutoApproveOccurrences(context: ForwardFlagMapContext): FlagOccurrence[] {
+  return context.all('yolo', 'force', 'allowAll', 'dangerouslyBypass', 'dangerouslySkipPermissions');
+}
+
+function mapCodexFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+  const warnings: string[] = [];
+
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  const fullAutoOccurrences = context.all('fullAuto');
+  const sandboxOccurrences = context.all('sandbox');
+  const askOccurrences = context.all('askForApproval');
+
+  if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences, ...fullAutoOccurrences, ...sandboxOccurrences, ...askOccurrences);
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+
+    if (fullAutoOccurrences.length > 0 || sandboxOccurrences.length > 0 || askOccurrences.length > 0) {
+      warnings.push('Codex precedence: auto-approve flags override --full-auto, --sandbox, and --ask-for-approval.');
+    }
+  } else if (fullAutoOccurrences.length > 0) {
+    context.consume(...fullAutoOccurrences, ...sandboxOccurrences, ...askOccurrences);
+    args.push('--full-auto');
+
+    if (sandboxOccurrences.length > 0 || askOccurrences.length > 0) {
+      warnings.push('Codex precedence: --full-auto overrides --sandbox and --ask-for-approval.');
+    }
+  } else {
+    const sandbox = context.latestString('sandbox');
+    if (sandbox) {
+      context.consumeKeys('sandbox');
+      args.push('--sandbox', sandbox);
+    }
+
+    const askForApproval = context.latestString('askForApproval');
+    if (askForApproval) {
+      context.consumeKeys('askForApproval');
+      args.push('--ask-for-approval', askForApproval);
+    }
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  for (const directory of context.consumeAllCsvStrings('addDir', 'includeDirectories')) {
+    args.push('--add-dir', directory);
+  }
+
+  const cwd = context.latestString('cd', 'workspace');
+  if (cwd) {
+    context.consumeKeys('cd', 'workspace');
+    args.push('--cd', cwd);
+  }
+
+  for (const override of context.consumeAllStrings('config')) {
+    args.push('--config', override);
+  }
+
+  return { mappedArgs: args, warnings };
+}
+
+function mapGeminiFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  const explicitApprovalMode = context.latestString('approvalMode');
+  const planOccurrences = normalizePlanOccurrences(context);
+
+  if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences, ...context.all('approvalMode'), ...planOccurrences);
+    args.push('--approval-mode', 'yolo');
+  } else if (explicitApprovalMode) {
+    context.consumeKeys('approvalMode');
+    args.push('--approval-mode', explicitApprovalMode);
+  } else if (planOccurrences.length > 0) {
+    context.consume(...planOccurrences);
+    args.push('--approval-mode', 'plan');
+  }
+
+  const sandbox = context.latest('sandbox');
+  if (sandbox) {
+    const normalized = String(sandbox.value).toLowerCase();
+    if (sandbox.value === true || ['true', '1', 'yes', 'on', 'enabled'].includes(normalized)) {
+      context.consumeKeys('sandbox');
+      args.push('--sandbox');
+    }
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  const hasDebug = context.has('debug');
+  if (hasDebug) {
+    context.consumeKeys('debug');
+    args.push('--debug');
+  }
+
+  for (const directory of context.consumeAllCsvStrings('includeDirectories', 'addDir')) {
+    args.push('--include-directories', directory);
+  }
+
+  for (const tool of context.consumeAllCsvStrings('allowedTools', 'allowTool')) {
+    args.push('--allowed-tools', tool);
+  }
+
+  for (const serverName of context.consumeAllCsvStrings('allowedMcpServerNames')) {
+    args.push('--allowed-mcp-server-names', serverName);
+  }
+
+  return { mappedArgs: args };
+}
+
+function mapClaudeFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+  const warnings: string[] = [];
+
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  const planOccurrences = normalizePlanOccurrences(context);
+
+  if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences);
+    args.push('--dangerously-skip-permissions');
+
+    const permissionOccurrences = context.all('permissionMode');
+    if (permissionOccurrences.length > 0 || planOccurrences.length > 0) {
+      context.consume(...permissionOccurrences, ...planOccurrences);
+      warnings.push('Claude precedence: auto-approve flags override permission-mode planning options.');
+    }
+  } else {
+    const permissionMode = context.latestString('permissionMode');
+    if (permissionMode) {
+      context.consumeKeys('permissionMode');
+      args.push('--permission-mode', permissionMode);
+    } else if (planOccurrences.length > 0) {
+      context.consume(...planOccurrences);
+      args.push('--permission-mode', 'plan');
+    }
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  for (const directory of context.consumeAllCsvStrings('addDir', 'includeDirectories')) {
+    args.push('--add-dir', directory);
+  }
+
+  for (const tool of context.consumeAllCsvStrings('allowedTools', 'allowTool')) {
+    args.push('--allowed-tools', tool);
+  }
+
+  for (const tool of context.consumeAllCsvStrings('disallowedTools', 'denyTool')) {
+    args.push('--disallowed-tools', tool);
+  }
+
+  const agent = context.latestString('agent');
+  if (agent) {
+    context.consumeKeys('agent');
+    args.push('--agent', agent);
+  }
+
+  const debugOccurrence = context.latest('debug');
+  if (debugOccurrence) {
+    context.consumeKeys('debug');
+    if (typeof debugOccurrence.value === 'string' && debugOccurrence.value.trim().length > 0) {
+      args.push('--debug', debugOccurrence.value);
+    } else {
+      args.push('--debug');
+    }
+  }
+
+  for (const config of context.consumeAllStrings('mcpConfig', 'additionalMcpConfig')) {
+    args.push('--mcp-config', config);
+  }
+
+  return { mappedArgs: args, warnings };
+}
+
+function mapDroidFlags(_context: ForwardFlagMapContext): ForwardMapResult {
+  return { mappedArgs: [] };
+}
+
+function mapOpenCodeFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  const agent = context.latestString('agent');
+  if (agent) {
+    context.consumeKeys('agent');
+    args.push('--agent', agent);
+  }
+
+  const logLevel = context.latestString('logLevel');
+  if (logLevel) {
+    context.consumeKeys('logLevel');
+    args.push('--log-level', logLevel);
+  }
+
+  return { mappedArgs: args };
+}
+
+function mapCopilotFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  const allowAllOccurrences = context.all('allowAll');
+
+  if (allowAllOccurrences.length > 0 && autoOccurrences.length === allowAllOccurrences.length) {
+    context.consume(...allowAllOccurrences);
+    args.push('--allow-all');
+  } else if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences);
+    args.push('--yolo');
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  for (const directory of context.consumeAllCsvStrings('addDir', 'includeDirectories')) {
+    args.push('--add-dir', directory);
+  }
+
+  for (const tool of context.consumeAllCsvStrings('allowedTools', 'allowTool')) {
+    args.push('--allow-tool', tool);
+  }
+
+  for (const tool of context.consumeAllCsvStrings('disallowedTools', 'denyTool')) {
+    args.push('--deny-tool', tool);
+  }
+
+  const agent = context.latestString('agent');
+  if (agent) {
+    context.consumeKeys('agent');
+    args.push('--agent', agent);
+  }
+
+  const logLevel = context.latestString('logLevel');
+  if (logLevel) {
+    context.consumeKeys('logLevel');
+    args.push('--log-level', logLevel);
+  }
+
+  for (const config of context.consumeAllStrings('additionalMcpConfig', 'mcpConfig')) {
+    args.push('--additional-mcp-config', config);
+  }
+
+  return { mappedArgs: args };
+}
+
+function mapCursorAgentFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences);
+    args.push('--yolo');
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  const sandboxOccurrence = context.latest('sandbox');
+  if (sandboxOccurrence) {
+    const normalized = normalizeAgentSandbox(sandboxOccurrence.value);
+    if (normalized) {
+      context.consumeKeys('sandbox');
+      args.push('--sandbox', normalized);
+    }
+  }
+
+  const planOccurrences = normalizePlanOccurrences(context);
+  if (planOccurrences.length > 0) {
+    context.consume(...planOccurrences);
+    args.push('--plan');
+  }
+
+  const workspace = context.latestString('workspace', 'cd');
+  if (workspace) {
+    context.consumeKeys('workspace', 'cd');
+    args.push('--workspace', workspace);
+  }
+
+  if (context.consumeAnyBoolean('approveMcps')) {
+    args.push('--approve-mcps');
+  }
+
+  return { mappedArgs: args };
 }
 
 // ── Claude Code ──────────────────────────────────────────────────────
@@ -57,6 +383,7 @@ register({
   nativeResumeArgs: (s) => ['--resume', s.id],
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: (s) => `claude --resume ${s.id}`,
+  mapHandoffFlags: mapClaudeFlags,
 });
 
 // ── Codex CLI ────────────────────────────────────────────────────────
@@ -71,6 +398,7 @@ register({
   nativeResumeArgs: (s) => ['-c', `experimental_resume=${s.originalPath}`],
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: (s) => `codex -c experimental_resume="${s.originalPath}"`,
+  mapHandoffFlags: mapCodexFlags,
 });
 
 // ── GitHub Copilot CLI ───────────────────────────────────────────────
@@ -85,6 +413,7 @@ register({
   nativeResumeArgs: (s) => ['--resume', s.id],
   crossToolArgs: (prompt) => ['-i', prompt],
   resumeCommandDisplay: (s) => `copilot --resume ${s.id}`,
+  mapHandoffFlags: mapCopilotFlags,
 });
 
 // ── Gemini CLI ───────────────────────────────────────────────────────
@@ -99,6 +428,7 @@ register({
   nativeResumeArgs: () => ['--continue'],
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: () => `gemini --continue`,
+  mapHandoffFlags: mapGeminiFlags,
 });
 
 // ── OpenCode ─────────────────────────────────────────────────────────
@@ -113,6 +443,7 @@ register({
   nativeResumeArgs: (s) => ['--session', s.id],
   crossToolArgs: (prompt) => ['--prompt', prompt],
   resumeCommandDisplay: (s) => `opencode --session ${s.id}`,
+  mapHandoffFlags: mapOpenCodeFlags,
 });
 
 // ── Factory Droid ────────────────────────────────────────────────────
@@ -127,29 +458,39 @@ register({
   nativeResumeArgs: (s) => ['-s', s.id],
   crossToolArgs: (prompt) => ['exec', prompt],
   resumeCommandDisplay: (s) => `droid -s ${s.id}`,
+  mapHandoffFlags: mapDroidFlags,
 });
 
-// ── Cursor AI ────────────────────────────────────────────────────────
+// ── Cursor AI (Agent CLI) ────────────────────────────────────────────
 register({
   name: 'cursor',
   label: 'Cursor AI',
   color: chalk.blueBright,
   storagePath: '~/.cursor/projects/*/agent-transcripts/',
-  binaryName: 'cursor',
+  binaryName: 'agent',
   parseSessions: parseCursorSessions,
   extractContext: extractCursorContext,
-  nativeResumeArgs: (s) => [s.cwd],
-  crossToolArgs: (_prompt, cwd) => [cwd],
-  resumeCommandDisplay: (s) => `cursor ${s.cwd}`,
+  nativeResumeArgs: (s) => ['--resume', s.id],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: (s) => `agent --resume ${s.id}`,
+  mapHandoffFlags: mapCursorAgentFlags,
 });
+
+// ── Completeness assertion ──────────────────────────────────────────
+// Runs at module load — if a new tool is added to TOOL_NAMES but not
+// registered here, this throws immediately with a clear message.
+const missing = TOOL_NAMES.filter((name) => !(name in _adapters));
+if (missing.length > 0) {
+  throw new Error(`Registry incomplete: missing adapter(s) for ${missing.join(', ')}`);
+}
 
 // ── Exports ──────────────────────────────────────────────────────────
 
-/** Type-safe adapter lookup */
-export const adapters = _adapters as Record<SessionSource, ToolAdapter>;
+/** Type-safe adapter lookup — completeness proven by runtime assertion above */
+export const adapters: Readonly<Record<SessionSource, ToolAdapter>> = _adapters as Record<SessionSource, ToolAdapter>;
 
-/** Ordered list of all tool names */
-export const ALL_TOOLS: SessionSource[] = Object.keys(adapters) as SessionSource[];
+/** Ordered list of all tool names — derived from the canonical TOOL_NAMES array */
+export const ALL_TOOLS: readonly SessionSource[] = TOOL_NAMES;
 
 /** Formatted help string for --source options */
 export const SOURCE_HELP = `Filter by source (${ALL_TOOLS.join(', ')})`;

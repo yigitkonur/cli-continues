@@ -1,6 +1,6 @@
 /**
  * REAL E2E Test: cli-continues cross-tool conversion pipeline
- * 
+ *
  * Tests the ACTUAL flow:
  * 1. extractContext() parses real sessions (NOT test artifacts)
  * 2. Generated markdown contains real conversation content
@@ -8,11 +8,11 @@
  * 4. Semantic verification: target must reference specific facts from the source
  */
 
-import { getAllSessions, extractContext } from '../utils/index.js';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UnifiedSession, SessionContext, SessionSource } from '../types/index.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
+import { extractContext, getAllSessions } from '../utils/index.js';
 
 const RESULTS_DIR = path.join(process.env.HOME!, '.continues', 'real-e2e');
 
@@ -40,27 +40,27 @@ async function pickRealSessions(): Promise<Map<string, PickedSession>> {
   const picked = new Map<string, PickedSession>();
 
   for (const source of ['claude', 'copilot', 'gemini', 'codex', 'opencode'] as const) {
-    const sourceSessions = sessions.filter(s => s.source === source);
-    
+    const sourceSessions = sessions.filter((s) => s.source === source);
+
     for (const s of sourceSessions) {
       try {
         const ctx = await extractContext(s);
         if (ctx.recentMessages.length < 2) continue;
-        
+
         // Skip test artifacts from earlier runs
         const firstMsg = ctx.recentMessages[0].content;
         if (firstMsg.startsWith('# Session Handoff Context')) continue;
         if (firstMsg.includes('HANDOFF_RECEIVED')) continue;
         if (firstMsg.includes('VERIFICATION TASK')) continue;
-        
+
         // Extract key facts for semantic verification
         const keyFacts = extractKeyFacts(ctx);
         if (keyFacts.length < 2) continue;
-        
+
         picked.set(source, { source, session: s, context: ctx, keyFacts });
         break;
-      } catch (e) {
-        continue;
+      } catch (_e) {
+        /* skip sessions that fail to parse */
       }
     }
   }
@@ -71,27 +71,24 @@ async function pickRealSessions(): Promise<Map<string, PickedSession>> {
 function extractKeyFacts(ctx: SessionContext): string[] {
   const facts: string[] = [];
   const seen = new Set<string>();
-  
+
   // Use the summary as the primary source of key facts
   const summary = (ctx.session.summary || '').toLowerCase();
-  
+
   // Also get the first user message
-  const firstUser = ctx.recentMessages.find(m => m.role === 'user');
+  const firstUser = ctx.recentMessages.find((m) => m.role === 'user');
   const firstUserContent = (firstUser?.content || '').toLowerCase();
-  
+
   // All text for broader matching
-  const allText = [
-    summary,
-    firstUserContent,
-    ...ctx.recentMessages.map(m => m.content)
-  ].join(' ').toLowerCase();
-  
+  const allText = [summary, firstUserContent, ...ctx.recentMessages.map((m) => m.content)].join(' ').toLowerCase();
+
   // Extract SEMANTIC topic keywords (not garbage file paths)
   // Focus on words that describe WHAT the session was about
-  const topicTerms = allText.match(
-    /\b(?:ssh|quic|migration|superset|tauri|electron|authentication|codex|readme|count|sample|switcher|account|backup|architecture|remote|workspace|desktop|terminal|integration|session|handoff|picker)\b/gi
-  ) || [];
-  
+  const topicTerms =
+    allText.match(
+      /\b(?:ssh|quic|migration|superset|tauri|electron|authentication|codex|readme|count|sample|switcher|account|backup|architecture|remote|workspace|desktop|terminal|integration|session|handoff|picker)\b/gi,
+    ) || [];
+
   for (const t of topicTerms) {
     const lower = t.toLowerCase();
     if (!seen.has(lower)) {
@@ -99,7 +96,7 @@ function extractKeyFacts(ctx: SessionContext): string[] {
       facts.push(lower);
     }
   }
-  
+
   // Extract meaningful file names (only short, recognizable ones)
   const files = allText.match(/\b[a-z]+\.(?:json|txt|md|ts|js|toml|db)\b/g) || [];
   for (const f of files) {
@@ -108,7 +105,7 @@ function extractKeyFacts(ctx: SessionContext): string[] {
       facts.push(f);
     }
   }
-  
+
   // Extract short paths (only recognizable ones like ~/.codex/)
   const shortPaths = allText.match(/~\/\.[a-z]+\/[a-z.]+/g) || [];
   for (const p of shortPaths) {
@@ -117,10 +114,10 @@ function extractKeyFacts(ctx: SessionContext): string[] {
       facts.push(p);
     }
   }
-  
+
   // Extract key action words from user message
   if (firstUserContent.length > 3) {
-    const words = firstUserContent.split(/\s+/).filter(w => w.length > 4 && /^[a-z]+$/i.test(w));
+    const words = firstUserContent.split(/\s+/).filter((w) => w.length > 4 && /^[a-z]+$/i.test(w));
     for (const w of words.slice(0, 3)) {
       if (!seen.has(w)) {
         seen.add(w);
@@ -128,13 +125,13 @@ function extractKeyFacts(ctx: SessionContext): string[] {
       }
     }
   }
-  
+
   return facts.slice(0, 8);
 }
 
 function invokeTarget(target: string, markdown: string, cwd: string): string {
   const effectiveCwd = cwd && fs.existsSync(cwd) ? cwd : process.cwd();
-  
+
   const prompt = `${markdown}
 
 ---
@@ -149,42 +146,52 @@ Based ONLY on the handoff context above, describe in 2-3 sentences:
   try {
     switch (target) {
       case 'claude':
-        return execSync(
-          `cat "${promptFile}" | claude -p --max-turns 2`,
-          { cwd: effectiveCwd, timeout: 120_000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim();
+        return execSync(`cat "${promptFile}" | claude -p --max-turns 2`, {
+          cwd: effectiveCwd,
+          timeout: 120_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
 
       case 'gemini':
-        return execSync(
-          `cat "${promptFile}" | gemini -p ""`,
-          { cwd: effectiveCwd, timeout: 120_000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim();
+        return execSync(`cat "${promptFile}" | gemini -p ""`, {
+          cwd: effectiveCwd,
+          timeout: 120_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
 
       case 'codex': {
         // Codex needs a trusted git dir
-        const codexCwd = fs.existsSync(path.join(effectiveCwd, '.git')) 
-          ? effectiveCwd 
-          : process.cwd();
-        return execSync(
-          `cat "${promptFile}" | codex exec`,
-          { cwd: codexCwd, timeout: 120_000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-        ).trim();
+        const codexCwd = fs.existsSync(path.join(effectiveCwd, '.git')) ? effectiveCwd : process.cwd();
+        return execSync(`cat "${promptFile}" | codex exec`, {
+          cwd: codexCwd,
+          timeout: 120_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).trim();
       }
 
       case 'opencode': {
         const truncated = prompt.slice(0, 4000).replace(/"/g, '\\"').replace(/`/g, '\\`');
-        return execSync(
-          `opencode run "${truncated}"`,
-          { cwd: effectiveCwd, timeout: 120_000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' }
-        ).trim();
+        return execSync(`opencode run "${truncated}"`, {
+          cwd: effectiveCwd,
+          timeout: 120_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          shell: '/bin/zsh',
+        }).trim();
       }
 
       case 'copilot': {
         const truncated = prompt.slice(0, 3000).replace(/"/g, '\\"').replace(/`/g, '\\`');
-        return execSync(
-          `timeout 90 copilot -i "${truncated}" --no-ask-user --max-autopilot-continues 0`,
-          { cwd: effectiveCwd, timeout: 120_000, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], shell: '/bin/zsh' }
-        ).trim();
+        return execSync(`timeout 90 copilot -i "${truncated}" --no-ask-user --max-autopilot-continues 0`, {
+          cwd: effectiveCwd,
+          timeout: 120_000,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          shell: '/bin/zsh',
+        }).trim();
       }
 
       default:
@@ -209,7 +216,9 @@ async function main() {
   const picked = await pickRealSessions();
 
   for (const [source, data] of picked) {
-    console.log(`  ✅ ${source}: "${data.session.summary?.slice(0, 50) || '(no summary)'}" (${data.context.recentMessages.length} msgs)`);
+    console.log(
+      `  ✅ ${source}: "${data.session.summary?.slice(0, 50) || '(no summary)'}" (${data.context.recentMessages.length} msgs)`,
+    );
     console.log(`     Key facts: [${data.keyFacts.join(', ')}]`);
     console.log(`     Markdown: ${data.context.markdown.length} bytes`);
   }
@@ -240,17 +249,19 @@ async function main() {
         const responseLower = response.toLowerCase();
 
         // Verify key facts
-        const factResults = sourceData.keyFacts.map(fact => ({
+        const factResults = sourceData.keyFacts.map((fact) => ({
           fact,
           found: responseLower.includes(fact),
         }));
 
-        const found = factResults.filter(f => f.found).length;
+        const found = factResults.filter((f) => f.found).length;
         const threshold = Math.max(1, Math.ceil(sourceData.keyFacts.length * 0.3));
         const passed = found >= threshold;
 
         results.push({
-          id: testId, source, target,
+          id: testId,
+          source,
+          target,
           status: passed ? 'pass' : 'fail',
           factsFound: found,
           factsTotal: sourceData.keyFacts.length,
@@ -258,23 +269,21 @@ async function main() {
           responsePreview: response.slice(0, 300),
         });
 
-        const foundFacts = factResults.filter(f => f.found).map(f => f.fact);
-        const missedFacts = factResults.filter(f => !f.found).map(f => f.fact);
-        
+        const foundFacts = factResults.filter((f) => f.found).map((f) => f.fact);
+        const missedFacts = factResults.filter((f) => !f.found).map((f) => f.fact);
+
         console.log(`     ${passed ? '✅' : '❌'} Facts: ${found}/${sourceData.keyFacts.length} (need ${threshold})`);
         if (foundFacts.length > 0) console.log(`     Found: ${foundFacts.join(', ')}`);
         if (missedFacts.length > 0) console.log(`     Missed: ${missedFacts.join(', ')}`);
 
         // Save response
-        fs.writeFileSync(
-          path.join(RESULTS_DIR, `response-${source}-to-${target}.txt`),
-          response
-        );
-
+        fs.writeFileSync(path.join(RESULTS_DIR, `response-${source}-to-${target}.txt`), response);
       } catch (e: any) {
         console.log(`     ⚠️  Error: ${e.message?.slice(0, 80)}`);
         results.push({
-          id: testId, source, target,
+          id: testId,
+          source,
+          target,
           status: 'error',
           factsFound: 0,
           factsTotal: sourceData.keyFacts.length,
@@ -291,18 +300,18 @@ async function main() {
   console.log('║  RESULTS                                                      ║');
   console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
-  const pass = results.filter(r => r.status === 'pass').length;
-  const fail = results.filter(r => r.status === 'fail').length;
-  const err = results.filter(r => r.status === 'error').length;
+  const pass = results.filter((r) => r.status === 'pass').length;
+  const fail = results.filter((r) => r.status === 'fail').length;
+  const err = results.filter((r) => r.status === 'error').length;
 
   // Matrix
   console.log('From / To      | Claude | Copilot | Gemini | Codex  | OpenCode');
   console.log('──────────────-|--------|---------|--------|--------|----------');
   for (const source of targets) {
     if (!picked.has(source)) continue;
-    const cols = targets.map(target => {
+    const cols = targets.map((target) => {
       if (target === source) return '   -  ';
-      const r = results.find(r => r.source === source && r.target === target);
+      const r = results.find((r) => r.source === source && r.target === target);
       if (!r) return '   ?  ';
       if (r.status === 'pass') return ` ✅${r.factsFound}/${r.factsTotal}`;
       if (r.status === 'fail') return ` ❌${r.factsFound}/${r.factsTotal}`;
@@ -316,9 +325,12 @@ async function main() {
   // Save full results
   fs.writeFileSync(path.join(RESULTS_DIR, 'results.json'), JSON.stringify(results, null, 2));
   console.log(`\nResults: ${RESULTS_DIR}/results.json`);
-  
+
   // Exit code
   process.exit(fail + err);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

@@ -10,20 +10,28 @@
  *   opencode run "message"
  *   copilot -i "prompt" (falls back to stdin)
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
+import { beforeAll, describe, expect, it } from 'vitest';
 import {
-  parseClaudeSessions, extractClaudeContext,
-  parseCopilotSessions, extractCopilotContext,
-  parseGeminiSessions, extractGeminiContext,
-  parseCodexSessions, extractCodexContext,
-  parseOpenCodeSessions, extractOpenCodeContext,
-  parseDroidSessions, extractDroidContext,
-  parseCursorSessions, extractCursorContext,
+  extractClaudeContext,
+  extractCodexContext,
+  extractCopilotContext,
+  extractCursorContext,
+  extractDroidContext,
+  extractGeminiContext,
+  extractOpenCodeContext,
+  parseClaudeSessions,
+  parseCodexSessions,
+  parseCopilotSessions,
+  parseCursorSessions,
+  parseDroidSessions,
+  parseGeminiSessions,
+  parseOpenCodeSessions,
 } from '../parsers/index.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
 const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor'];
 
@@ -126,7 +134,11 @@ function runTool(tool: SessionSource, prompt: string, cwd: string): string {
   } catch (err: any) {
     return `ERROR: ${err.message?.slice(0, 500) || 'unknown error'}`;
   } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(tmpFile);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -145,7 +157,7 @@ beforeAll(async () => {
 
       // Pick smallest session with actual content
       const sorted = [...sessions].sort((a, b) => a.bytes - b.bytes);
-      const session = sorted.find(s => s.bytes > 200) || sessions[sessions.length - 1];
+      const session = sorted.find((s) => s.bytes > 200) || sessions[sessions.length - 1];
 
       const ctx = await extractors[source](session);
       if (ctx.recentMessages.length === 0) {
@@ -166,7 +178,9 @@ beforeAll(async () => {
         const mdPath = path.join(RESULTS_DIR, `handoff-from-${source}.md`);
         fs.writeFileSync(mdPath, contexts[source].markdown);
         handoffFiles[source] = mdPath;
-        console.log(`✓ ${source}: extracted ${contexts[source].recentMessages.length} messages from session ${session.id.slice(0, 12)}`);
+        console.log(
+          `✓ ${source}: extracted ${contexts[source].recentMessages.length} messages from session ${session.id.slice(0, 12)}`,
+        );
       }
     } catch (err) {
       console.log(`⚠ ${source}: extraction failed - ${err}`);
@@ -214,9 +228,13 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
         }
 
         const sourceLabels: Record<SessionSource, string> = {
-          claude: 'Claude Code', copilot: 'GitHub Copilot CLI',
-          gemini: 'Gemini CLI', codex: 'Codex CLI', opencode: 'OpenCode',
-          droid: 'Factory Droid', cursor: 'Cursor AI',
+          claude: 'Claude Code',
+          copilot: 'GitHub Copilot CLI',
+          gemini: 'Gemini CLI',
+          codex: 'Codex CLI',
+          opencode: 'OpenCode',
+          droid: 'Factory Droid',
+          cursor: 'Cursor AI',
         };
         const sourceLabel = sourceLabels[source];
 
@@ -246,7 +264,10 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
           lowerOutput.includes('received') ||
           output.includes('HANDOFF_RECEIVED');
 
-        expect(acknowledged, `${target} did not acknowledge the handoff from ${source}. Output: ${output.slice(0, 300)}`).toBe(true);
+        expect(
+          acknowledged,
+          `${target} did not acknowledge the handoff from ${source}. Output: ${output.slice(0, 300)}`,
+        ).toBe(true);
       }, 180_000); // 3 min timeout per test
     }
   }

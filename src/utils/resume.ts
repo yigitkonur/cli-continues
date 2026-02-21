@@ -1,10 +1,28 @@
-import { spawn } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import type { UnifiedSession, SessionSource, SessionContext } from '../types/index.js';
+import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { logger } from '../logger.js';
+import { ALL_TOOLS, adapters } from '../parsers/registry.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
+import {
+  type ForwardResolution,
+  formatForwardArgs,
+  type HandoffForwardingOptions,
+  resolveTargetForwarding,
+} from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
-import { SOURCE_LABELS } from './markdown.js';
-import { adapters, ALL_TOOLS } from '../parsers/registry.js';
+import { getSourceLabels } from './markdown.js';
+
+/**
+ * Resolve mapped + passthrough forward args for cross-tool launches.
+ */
+export function resolveCrossToolForwarding(
+  target: SessionSource,
+  options?: HandoffForwardingOptions,
+): ForwardResolution {
+  const adapter = adapters[target];
+  return resolveTargetForwarding(target, adapter?.mapHandoffFlags, options);
+}
 
 /**
  * Resume a session using native CLI commands
@@ -23,25 +41,30 @@ export async function crossToolResume(
   session: UnifiedSession,
   target: SessionSource,
   mode: 'inline' | 'reference' = 'inline',
+  forwarding?: HandoffForwardingOptions,
 ): Promise<void> {
   const context = await extractContext(session);
   const cwd = session.cwd || process.cwd();
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
   const localPath = path.join(cwd, '.continues-handoff.md');
-  try { fs.writeFileSync(localPath, context.markdown); } catch { /* non-critical */ }
+  try {
+    fs.writeFileSync(localPath, context.markdown);
+  } catch (err) {
+    logger.debug('resume: failed to write handoff file', localPath, err);
+  }
 
   // Also save to global directory as backup
   saveContext(context);
 
   // Build prompt based on mode
-  const prompt = mode === 'inline'
-    ? buildInlinePrompt(context, session)
-    : buildReferencePrompt(session, localPath);
+  const prompt = mode === 'inline' ? buildInlinePrompt(context, session) : buildReferencePrompt(session);
 
   const adapter = adapters[target];
   if (!adapter) throw new Error(`Unknown target: ${target}`);
-  await runCommand(adapter.binaryName, adapter.crossToolArgs(prompt, cwd), cwd);
+
+  const resolved = resolveCrossToolForwarding(target, forwarding);
+  await runCommand(adapter.binaryName, [...resolved.extraArgs, ...adapter.crossToolArgs(prompt, cwd)], cwd);
 }
 
 /**
@@ -49,7 +72,7 @@ export async function crossToolResume(
  * The LLM gets everything upfront — no file reading needed.
  */
 function buildInlinePrompt(context: SessionContext, session: UnifiedSession): string {
-  const sourceLabel = SOURCE_LABELS[session.source] || session.source;
+  const sourceLabel = getSourceLabels()[session.source] || session.source;
 
   // Simple intro — the handoff markdown already has the full table, conversation, and closing directive
   const intro = `I'm continuing a coding session from **${sourceLabel}**. Here's the full context:\n\n---\n\n`;
@@ -61,8 +84,8 @@ function buildInlinePrompt(context: SessionContext, session: UnifiedSession): st
  * Build a compact reference prompt that points to the handoff file.
  * Used when --reference flag is passed (for very large sessions).
  */
-function buildReferencePrompt(session: UnifiedSession, filePath: string): string {
-  const sourceLabel = SOURCE_LABELS[session.source] || session.source;
+function buildReferencePrompt(session: UnifiedSession): string {
+  const sourceLabel = getSourceLabels()[session.source] || session.source;
 
   return [
     `# 🔄 Session Handoff`,
@@ -77,13 +100,20 @@ function buildReferencePrompt(session: UnifiedSession, filePath: string): string
     session.summary ? `| Last task | ${session.summary.slice(0, 80)} |` : '',
     ``,
     `Read \`.continues-handoff.md\` first, then continue the work.`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**
  * Resume a session - automatically chooses native or cross-tool
  */
-export async function resume(session: UnifiedSession, target?: SessionSource, mode: 'inline' | 'reference' = 'inline'): Promise<void> {
+export async function resume(
+  session: UnifiedSession,
+  target?: SessionSource,
+  mode: 'inline' | 'reference' = 'inline',
+  forwarding?: HandoffForwardingOptions,
+): Promise<void> {
   const actualTarget = target || session.source;
 
   if (actualTarget === session.source) {
@@ -91,7 +121,7 @@ export async function resume(session: UnifiedSession, target?: SessionSource, mo
     await nativeResume(session);
   } else {
     // Different tool - use cross-tool injection
-    await crossToolResume(session, actualTarget, mode);
+    await crossToolResume(session, actualTarget, mode, forwarding);
   }
 }
 
@@ -141,29 +171,34 @@ async function isBinaryAvailable(binaryName: string): Promise<boolean> {
  */
 export async function getAvailableTools(): Promise<SessionSource[]> {
   const checks = await Promise.allSettled(
-    ALL_TOOLS.map(async name => ({
+    ALL_TOOLS.map(async (name) => ({
       name,
       ok: await isBinaryAvailable(adapters[name].binaryName),
-    }))
+    })),
   );
 
   return checks
-    .filter((r): r is PromiseFulfilledResult<{ name: SessionSource; ok: boolean }> =>
-      r.status === 'fulfilled' && r.value.ok
+    .filter(
+      (r): r is PromiseFulfilledResult<{ name: SessionSource; ok: boolean }> => r.status === 'fulfilled' && r.value.ok,
     )
-    .map(r => r.value.name);
+    .map((r) => r.value.name);
 }
 
 /**
  * Get resume command for display purposes
  */
-export function getResumeCommand(session: UnifiedSession, target?: SessionSource): string {
+export function getResumeCommand(
+  session: UnifiedSession,
+  target?: SessionSource,
+  forwarding?: HandoffForwardingOptions,
+): string {
   const actualTarget = target || session.source;
 
   if (actualTarget === session.source) {
     return adapters[session.source].resumeCommandDisplay(session);
   }
 
-  // Cross-tool
-  return `continues resume ${session.id} --in ${actualTarget}`;
+  const resolved = resolveCrossToolForwarding(actualTarget, forwarding);
+  const suffix = resolved.extraArgs.length > 0 ? ` ${formatForwardArgs(resolved.extraArgs)}` : '';
+  return `continues resume ${session.id} --in ${actualTarget}${suffix}`;
 }

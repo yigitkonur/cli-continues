@@ -1,36 +1,14 @@
-import type { UnifiedSession, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
 import { adapters } from '../parsers/registry.js';
+import type { ConversationMessage, SessionNotes, ToolUsageSummary, UnifiedSession } from '../types/index.js';
 
 /** Human-readable labels for each session source — derived lazily from the adapter registry */
 let _sourceLabels: Record<string, string> | null = null;
 export function getSourceLabels(): Record<string, string> {
   if (!_sourceLabels) {
-    _sourceLabels = Object.fromEntries(
-      Object.values(adapters).map(a => [a.name, a.label])
-    );
+    _sourceLabels = Object.fromEntries(Object.values(adapters).map((a) => [a.name, a.label]));
   }
   return _sourceLabels;
 }
-
-/** @deprecated Use getSourceLabels() — kept as a lazy proxy for backwards compat */
-export const SOURCE_LABELS: Record<string, string> = new Proxy({} as Record<string, string>, {
-  get(_target, prop: string) {
-    return getSourceLabels()[prop];
-  },
-  ownKeys() {
-    return Object.keys(getSourceLabels());
-  },
-  getOwnPropertyDescriptor(_target, prop: string) {
-    const labels = getSourceLabels();
-    if (prop in labels) {
-      return { configurable: true, enumerable: true, value: labels[prop] };
-    }
-    return undefined;
-  },
-  has(_target, prop: string) {
-    return prop in getSourceLabels();
-  },
-});
 
 /**
  * Generate a markdown handoff document from any session source.
@@ -71,7 +49,9 @@ export function generateHandoffMarkdown(
   }
   lines.push(`| **Last Active** | ${session.updatedAt.toISOString().slice(0, 16).replace('T', ' ')} |`);
   if (sessionNotes?.tokenUsage) {
-    lines.push(`| **Tokens Used** | ${sessionNotes.tokenUsage.input.toLocaleString()} in / ${sessionNotes.tokenUsage.output.toLocaleString()} out |`);
+    lines.push(
+      `| **Tokens Used** | ${sessionNotes.tokenUsage.input.toLocaleString()} in / ${sessionNotes.tokenUsage.output.toLocaleString()} out |`,
+    );
   }
   lines.push(`| **Files Modified** | ${filesModified.length} |`);
   lines.push(`| **Messages** | ${messages.length} |`);
@@ -91,7 +71,7 @@ export function generateHandoffMarkdown(
     lines.push('');
     const sortedTools = [...toolSummaries].sort((a, b) => b.count - a.count);
     for (const tool of sortedTools) {
-      const sampleStr = tool.samples.map(s => `\`${s.summary}\``).join(' · ');
+      const sampleStr = tool.samples.map((s) => `\`${s.summary}\``).join(' · ');
       lines.push(`- **${tool.name}** (×${tool.count}): ${sampleStr}`);
     }
     lines.push('');
@@ -145,7 +125,9 @@ export function generateHandoffMarkdown(
 
   lines.push('---');
   lines.push('');
-  lines.push('**You are continuing this session. Pick up exactly where it left off — review the conversation above, check pending tasks, and keep going.**');
+  lines.push(
+    '**You are continuing this session. Pick up exactly where it left off — review the conversation above, check pending tasks, and keep going.**',
+  );
 
   return lines.join('\n');
 }

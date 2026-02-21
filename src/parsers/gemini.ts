@@ -1,95 +1,41 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UnifiedSession, SessionContext, ConversationMessage, ToolUsageSummary, SessionNotes } from '../types/index.js';
+import { logger } from '../logger.js';
+import type {
+  ConversationMessage,
+  SessionContext,
+  SessionNotes,
+  ToolUsageSummary,
+  UnifiedSession,
+} from '../types/index.js';
+import type { GeminiSession } from '../types/schemas.js';
+import { GeminiSessionSchema } from '../types/schemas.js';
+import { extractTextFromBlocks } from '../utils/content.js';
+import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import { SummaryCollector, fileSummary, mcpSummary, truncate } from '../utils/tool-summarizer.js';
-import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
+import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
+import { fileSummary, mcpSummary, SummaryCollector, truncate } from '../utils/tool-summarizer.js';
 
 const GEMINI_BASE_DIR = path.join(homeDir(), '.gemini', 'tmp');
-
-interface GeminiToolCall {
-  name: string;
-  args?: Record<string, unknown>;
-  result?: Array<{ functionResponse?: { response?: { output?: string } } }>;
-  status?: string;
-  resultDisplay?: {
-    fileName?: string;
-    filePath?: string;
-    fileDiff?: string;
-    originalContent?: string;
-    newContent?: string;
-    diffStat?: {
-      model_added_lines?: number;
-      model_removed_lines?: number;
-    };
-    isNewFile?: boolean;
-  };
-}
-
-interface GeminiThought {
-  subject?: string;
-  description?: string;
-  timestamp?: string;
-}
-
-interface GeminiMessage {
-  id: string;
-  timestamp: string;
-  type: 'user' | 'gemini' | 'info';
-  content: string | Array<{ text?: string; type?: string }>;
-  toolCalls?: GeminiToolCall[];
-  thoughts?: GeminiThought[];
-  model?: string;
-  tokens?: {
-    input?: number;
-    output?: number;
-    cached?: number;
-    thoughts?: number;
-    tool?: number;
-    total?: number;
-  };
-}
-
-interface GeminiSession {
-  sessionId: string;
-  projectHash: string;
-  startTime: string;
-  lastUpdated: string;
-  messages: GeminiMessage[];
-}
 
 /**
  * Find all Gemini session files
  */
 async function findSessionFiles(): Promise<string[]> {
-  const files: string[] = [];
-  
-  if (!fs.existsSync(GEMINI_BASE_DIR)) {
-    return files;
-  }
+  if (!fs.existsSync(GEMINI_BASE_DIR)) return [];
 
-  try {
-    // Iterate through project hash directories
-    const projectDirs = fs.readdirSync(GEMINI_BASE_DIR, { withFileTypes: true });
-    
-    for (const projectDir of projectDirs) {
-      if (!projectDir.isDirectory() || projectDir.name === 'bin') continue;
-      
-      const chatsDir = path.join(GEMINI_BASE_DIR, projectDir.name, 'chats');
-      if (!fs.existsSync(chatsDir)) continue;
-      
-      const chatFiles = fs.readdirSync(chatsDir, { withFileTypes: true });
-      for (const chatFile of chatFiles) {
-        if (chatFile.isFile() && chatFile.name.startsWith('session-') && chatFile.name.endsWith('.json')) {
-          files.push(path.join(chatsDir, chatFile.name));
-        }
-      }
-    }
-  } catch {
-    // Skip directories we can't read
+  const results: string[] = [];
+  for (const projectDir of listSubdirectories(GEMINI_BASE_DIR)) {
+    if (path.basename(projectDir) === 'bin') continue;
+    const chatsDir = path.join(projectDir, 'chats');
+    results.push(
+      ...findFiles(chatsDir, {
+        match: (entry) => entry.name.startsWith('session-') && entry.name.endsWith('.json'),
+        recursive: false,
+      }),
+    );
   }
-
-  return files;
+  return results;
 }
 
 /**
@@ -98,8 +44,12 @@ async function findSessionFiles(): Promise<string[]> {
 function parseSessionFile(filePath: string): GeminiSession | null {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(content) as GeminiSession;
-  } catch {
+    const result = GeminiSessionSchema.safeParse(JSON.parse(content));
+    if (result.success) return result.data;
+    logger.debug('gemini: session validation failed', filePath, result.error.message);
+    return null;
+  } catch (err) {
+    logger.debug('gemini: failed to parse session file', filePath, err);
     return null;
   }
 }
@@ -108,18 +58,7 @@ function parseSessionFile(filePath: string): GeminiSession | null {
  * Extract text content from Gemini message (handles both string and array formats)
  */
 function extractGeminiContent(content: string | Array<{ text?: string; type?: string }>): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-  
-  if (Array.isArray(content)) {
-    return content
-      .filter(part => part.text)
-      .map(part => part.text)
-      .join('\n');
-  }
-  
-  return '';
+  return extractTextFromBlocks(content as string | Array<{ type: string; text?: string }>);
 }
 
 /**
@@ -149,10 +88,16 @@ function extractToolData(sessionData: GeminiSession): { summaries: ToolUsageSumm
         const fp = resultDisplay?.filePath || (args?.file_path as string) || '';
         let diffStat: { added: number; removed: number } | undefined;
         if (resultDisplay?.diffStat) {
-          diffStat = { added: resultDisplay.diffStat.model_added_lines || 0, removed: resultDisplay.diffStat.model_removed_lines || 0 };
+          diffStat = {
+            added: resultDisplay.diffStat.model_added_lines || 0,
+            removed: resultDisplay.diffStat.model_removed_lines || 0,
+          };
         } else if (resultDisplay?.fileDiff) {
           const lines = resultDisplay.fileDiff.split('\n');
-          diffStat = { added: lines.filter(l => l.startsWith('+')).length, removed: lines.filter(l => l.startsWith('-')).length };
+          diffStat = {
+            added: lines.filter((l) => l.startsWith('+')).length,
+            removed: lines.filter((l) => l.startsWith('-')).length,
+          };
         }
         collector.add('write_file', fileSummary('write', fp, diffStat, resultDisplay?.isNewFile), fp, true);
       } else if (name === 'read_file') {
@@ -215,10 +160,10 @@ export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
       // Get cwd from parent directory structure (project hash dir)
       const projectHashDir = path.dirname(path.dirname(filePath));
       const projectHash = path.basename(projectHashDir);
-      
+
       // Gemini does not store working directory in its session data
       const cwd = '';
-      
+
       const firstUserMessage = extractFirstUserMessage(session);
       const summary = cleanSummary(firstUserMessage);
 
@@ -238,14 +183,15 @@ export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
         originalPath: filePath,
         summary: summary || undefined,
       });
-    } catch {
+    } catch (err) {
+      logger.debug('gemini: skipping unparseable session', filePath, err);
       // Skip files we can't parse
     }
   }
 
   // Filter sessions that have real user messages (not just auth flows)
   return sessions
-    .filter(s => s.summary && s.summary.length > 0)
+    .filter((s) => s.summary && s.summary.length > 0)
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
@@ -273,9 +219,14 @@ export async function extractGeminiContext(session: UnifiedSession): Promise<Ses
           if (pendingTasks.length >= 5) break;
           const subject = thought.subject?.toLowerCase() || '';
           const description = thought.description?.toLowerCase() || '';
-          if (subject.includes('todo') || subject.includes('next') || 
-              subject.includes('remaining') || subject.includes('need to') ||
-              description.includes('need to') || description.includes('next step')) {
+          if (
+            subject.includes('todo') ||
+            subject.includes('next') ||
+            subject.includes('remaining') ||
+            subject.includes('need to') ||
+            description.includes('need to') ||
+            description.includes('next step')
+          ) {
             const taskText = thought.subject || thought.description || '';
             if (taskText && taskText.length > 0) pendingTasks.push(taskText);
           }

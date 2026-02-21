@@ -7,3 +7,5 @@ dist/
 .agent-workspace/
 stress-test-output.log
 .claude/CLAUDE.md
+.claude/settings.local.json
+.emdash.json

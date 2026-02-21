@@ -1,7 +1,24 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import { createRequire } from 'module';
-import type { UnifiedSession, SessionContext, ConversationMessage } from '../types/index.js';
+import * as path from 'path';
+import { z } from 'zod';
+import { logger } from '../logger.js';
+import type { ConversationMessage, SessionContext, UnifiedSession } from '../types/index.js';
+import type {
+  OpenCodeProject,
+  OpenCodeSession,
+  SqliteMessageRow,
+  SqlitePartRow,
+  SqliteProjectRow,
+  SqliteSessionRow,
+} from '../types/schemas.js';
+import {
+  OpenCodeMessageSchema,
+  OpenCodePartSchema,
+  OpenCodeProjectSchema,
+  OpenCodeSessionSchema,
+} from '../types/schemas.js';
+import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 
@@ -9,93 +26,22 @@ const OPENCODE_BASE_DIR = path.join(homeDir(), '.local', 'share', 'opencode');
 const OPENCODE_STORAGE_DIR = path.join(OPENCODE_BASE_DIR, 'storage');
 const OPENCODE_DB_PATH = path.join(OPENCODE_BASE_DIR, 'opencode.db');
 
-interface OpenCodeSession {
-  id: string;
-  slug?: string;
-  version?: string;
-  projectID: string;
-  directory: string;
-  title?: string;
-  time: {
-    created: number;
-    updated: number;
-  };
-  summary?: {
-    additions?: number;
-    deletions?: number;
-    files?: number;
-  };
+/** Minimal typed interface for node:sqlite DatabaseSync */
+interface SqlitePreparedStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown | undefined;
 }
 
-interface OpenCodeProject {
-  id: string;
-  worktree: string;
-  vcs?: string;
-  time?: {
-    created: number;
-    updated: number;
-  };
+interface SqliteDatabase {
+  prepare(sql: string): SqlitePreparedStatement;
+  close(): void;
 }
 
-interface OpenCodeMessage {
-  id: string;
-  sessionID: string;
-  role: 'user' | 'assistant';
-  time: {
-    created: number;
-    completed?: number;
-  };
-  summary?: {
-    title?: string;
-  };
-  path?: {
-    cwd?: string;
-    root?: string;
-  };
-}
+/** Zod schema for message data blob stored in SQLite data column */
+const SqliteMsgDataSchema = z.object({ role: z.string() }).passthrough();
 
-interface OpenCodePart {
-  id: string;
-  sessionID: string;
-  messageID: string;
-  type: string;
-  text?: string;
-}
-
-// SQLite row types
-interface SqliteSessionRow {
-  id: string;
-  project_id: string;
-  slug: string;
-  directory: string;
-  title: string;
-  version: string;
-  summary_additions: number | null;
-  summary_deletions: number | null;
-  summary_files: number | null;
-  time_created: number;
-  time_updated: number;
-}
-
-interface SqliteMessageRow {
-  id: string;
-  session_id: string;
-  time_created: number;
-  data: string;
-}
-
-interface SqlitePartRow {
-  id: string;
-  message_id: string;
-  session_id: string;
-  time_created: number;
-  data: string;
-}
-
-interface SqliteProjectRow {
-  id: string;
-  worktree: string;
-}
+/** Zod schema for part data blob stored in SQLite data column */
+const SqlitePartDataSchema = z.object({ type: z.string(), text: z.string().optional() }).passthrough();
 
 /**
  * Check if SQLite DB exists and is usable
@@ -107,14 +53,15 @@ function hasSqliteDb(): boolean {
 /**
  * Open SQLite database using node:sqlite (built-in)
  */
-function openDb(): { db: any; close: () => void } | null {
+function openDb(): { db: SqliteDatabase; close: () => void } | null {
   try {
     // Dynamic import of node:sqlite to avoid issues on older Node versions
     const require = createRequire(import.meta.url);
     const { DatabaseSync } = require('node:sqlite');
-    const db = new DatabaseSync(OPENCODE_DB_PATH, { open: true, readOnly: true });
+    const db = new DatabaseSync(OPENCODE_DB_PATH, { open: true, readOnly: true }) as SqliteDatabase;
     return { db, close: () => db.close() };
-  } catch {
+  } catch (err) {
+    logger.debug('opencode: failed to open SQLite database', OPENCODE_DB_PATH, err);
     return null;
   }
 }
@@ -123,34 +70,17 @@ function openDb(): { db: any; close: () => void } | null {
  * Find all OpenCode session files
  */
 async function findSessionFiles(): Promise<string[]> {
-  const files: string[] = [];
   const sessionDir = path.join(OPENCODE_STORAGE_DIR, 'session');
-  
-  if (!fs.existsSync(sessionDir)) {
-    return files;
+  const results: string[] = [];
+  for (const projectDir of listSubdirectories(sessionDir)) {
+    results.push(
+      ...findFiles(projectDir, {
+        match: (entry) => entry.name.startsWith('ses_') && entry.name.endsWith('.json'),
+        recursive: false,
+      }),
+    );
   }
-
-  try {
-    // Iterate through project hash directories
-    const projectDirs = fs.readdirSync(sessionDir, { withFileTypes: true });
-    
-    for (const projectDir of projectDirs) {
-      if (!projectDir.isDirectory()) continue;
-      
-      const projectPath = path.join(sessionDir, projectDir.name);
-      const sessionFiles = fs.readdirSync(projectPath, { withFileTypes: true });
-      
-      for (const sessionFile of sessionFiles) {
-        if (sessionFile.isFile() && sessionFile.name.startsWith('ses_') && sessionFile.name.endsWith('.json')) {
-          files.push(path.join(projectPath, sessionFile.name));
-        }
-      }
-    }
-  } catch {
-    // Skip directories we can't read
-  }
-
-  return files;
+  return results;
 }
 
 /**
@@ -159,8 +89,12 @@ async function findSessionFiles(): Promise<string[]> {
 function parseSessionFile(filePath: string): OpenCodeSession | null {
   try {
     const content = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(content) as OpenCodeSession;
-  } catch {
+    const result = OpenCodeSessionSchema.safeParse(JSON.parse(content));
+    if (result.success) return result.data;
+    logger.debug('opencode: session validation failed', filePath, result.error.message);
+    return null;
+  } catch (err) {
+    logger.debug('opencode: failed to parse session file', filePath, err);
     return null;
   }
 }
@@ -173,10 +107,12 @@ function loadProjectInfo(projectId: string): OpenCodeProject | null {
   try {
     if (fs.existsSync(projectFile)) {
       const content = fs.readFileSync(projectFile, 'utf8');
-      return JSON.parse(content) as OpenCodeProject;
+      const result = OpenCodeProjectSchema.safeParse(JSON.parse(content));
+      if (result.success) return result.data;
+      logger.debug('opencode: project validation failed', projectFile, result.error.message);
     }
-  } catch {
-    // Ignore parse errors
+  } catch (err) {
+    logger.debug('opencode: failed to parse project file', projectFile, err);
   }
   return null;
 }
@@ -189,30 +125,36 @@ function getFirstUserMessage(sessionId: string): string {
   if (!fs.existsSync(messageDir)) return '';
 
   try {
-    const messageFiles = fs.readdirSync(messageDir)
-      .filter(f => f.startsWith('msg_') && f.endsWith('.json'))
+    const messageFiles = fs
+      .readdirSync(messageDir)
+      .filter((f) => f.startsWith('msg_') && f.endsWith('.json'))
       .sort(); // Sort to get chronological order
 
     for (const msgFile of messageFiles) {
       const msgPath = path.join(messageDir, msgFile);
       const msgContent = fs.readFileSync(msgPath, 'utf8');
-      const msg = JSON.parse(msgContent) as OpenCodeMessage;
-      
+      const msgResult = OpenCodeMessageSchema.safeParse(JSON.parse(msgContent));
+      if (!msgResult.success) continue;
+      const msg = msgResult.data;
+
       if (msg.role === 'user') {
         // Get the message text from parts
         const messageId = msg.id;
         const partDir = path.join(OPENCODE_STORAGE_DIR, 'part', messageId);
-        
+
         if (fs.existsSync(partDir)) {
-          const partFiles = fs.readdirSync(partDir)
-            .filter(f => f.startsWith('prt_') && f.endsWith('.json'))
+          const partFiles = fs
+            .readdirSync(partDir)
+            .filter((f) => f.startsWith('prt_') && f.endsWith('.json'))
             .sort();
-          
+
           for (const partFile of partFiles) {
             const partPath = path.join(partDir, partFile);
             const partContent = fs.readFileSync(partPath, 'utf8');
-            const part = JSON.parse(partContent) as OpenCodePart;
-            
+            const partResult = OpenCodePartSchema.safeParse(JSON.parse(partContent));
+            if (!partResult.success) continue;
+            const part = partResult.data;
+
             if (part.type === 'text' && part.text) {
               return part.text;
             }
@@ -220,8 +162,8 @@ function getFirstUserMessage(sessionId: string): string {
         }
       }
     }
-  } catch {
-    // Ignore errors
+  } catch (err) {
+    logger.debug('opencode: failed to read messages for session', sessionId, err);
   }
 
   return '';
@@ -235,10 +177,10 @@ function countSessionLines(sessionId: string): number {
   if (!fs.existsSync(messageDir)) return 0;
 
   try {
-    const messageFiles = fs.readdirSync(messageDir)
-      .filter(f => f.startsWith('msg_') && f.endsWith('.json'));
+    const messageFiles = fs.readdirSync(messageDir).filter((f) => f.startsWith('msg_') && f.endsWith('.json'));
     return messageFiles.length;
-  } catch {
+  } catch (err) {
+    logger.debug('opencode: failed to count messages for session', sessionId, err);
     return 0;
   }
 }
@@ -266,9 +208,11 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
 
   const { db, close } = handle;
   try {
-    const rows = db.prepare(
-      'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC'
-    ).all() as SqliteSessionRow[];
+    const rows = db
+      .prepare(
+        'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',
+      )
+      .all() as SqliteSessionRow[];
 
     // Build project lookup
     const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
@@ -278,24 +222,30 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
 
     for (const row of rows) {
       const cwd = row.directory || projectMap.get(row.project_id) || '';
-      
+
       // Count messages for this session
-      const msgCount = db.prepare('SELECT COUNT(*) as cnt FROM message WHERE session_id = ?').get(row.id) as { cnt: number };
+      const msgCount = db.prepare('SELECT COUNT(*) as cnt FROM message WHERE session_id = ?').get(row.id) as
+        | { cnt: number }
+        | undefined;
 
       // Get first user message for summary if no title
       let summary = row.title || '';
       if (!summary || summary.startsWith('New session')) {
-        const firstMsg = db.prepare(
-          "SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE '%\"role\":\"user\"%' AND p.data LIKE '%\"type\":\"text\"%' ORDER BY m.time_created ASC LIMIT 1"
-        ).get(row.id) as { id: string; data: string } | undefined;
-        
+        const firstMsg = db
+          .prepare(
+            'SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE \'%"role":"user"%\' AND p.data LIKE \'%"type":"text"%\' ORDER BY m.time_created ASC LIMIT 1',
+          )
+          .get(row.id) as { id: string; data: string } | undefined;
+
         if (firstMsg) {
           try {
             const partData = JSON.parse(firstMsg.data);
             if (partData.text) {
               summary = partData.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
             }
-          } catch { /* ignore */ }
+          } catch (_err) {
+            /* ignore malformed part data */
+          }
         }
       }
 
@@ -304,7 +254,7 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
         source: 'opencode',
         cwd,
         repo: extractRepoFromCwd(cwd),
-        lines: (msgCount?.cnt ?? 0),
+        lines: msgCount?.cnt ?? 0,
         bytes: 0, // SQLite doesn't have per-session file size
         createdAt: new Date(row.time_created),
         updatedAt: new Date(row.time_updated),
@@ -315,7 +265,8 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
     }
 
     return sessions;
-  } catch {
+  } catch (err) {
+    logger.debug('opencode: SQLite session query failed', err);
     return [];
   } finally {
     close();
@@ -337,14 +288,10 @@ async function parseSessionsFromJson(): Promise<UnifiedSession[]> {
       // Get project info for worktree
       const project = loadProjectInfo(session.projectID);
       const cwd = session.directory || project?.worktree || '';
-      
+
       // Get first user message for summary
       const firstUserMessage = getFirstUserMessage(session.id);
-      const summary = session.title || firstUserMessage
-        .replace(/\n/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 50);
+      const summary = session.title || firstUserMessage.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
 
       const fileStats = fs.statSync(filePath);
       const lines = countSessionLines(session.id);
@@ -361,7 +308,8 @@ async function parseSessionsFromJson(): Promise<UnifiedSession[]> {
         originalPath: filePath,
         summary: summary || session.slug || undefined,
       });
-    } catch {
+    } catch (err) {
+      logger.debug('opencode: skipping unparseable JSON session', filePath, err);
       // Skip files we can't parse
     }
   }
@@ -378,7 +326,7 @@ function readAllMessages(sessionId: string): ConversationMessage[] {
     const msgs = readMessagesFromSqlite(sessionId);
     if (msgs.length > 0) return msgs;
   }
-  
+
   // Fallback to JSON files
   return readMessagesFromJson(sessionId);
 }
@@ -393,32 +341,34 @@ function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
   const { db, close } = handle;
   try {
     // Get messages with their data
-    const msgRows = db.prepare(
-      'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC'
-    ).all(sessionId) as SqliteMessageRow[];
+    const msgRows = db
+      .prepare('SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC')
+      .all(sessionId) as SqliteMessageRow[];
 
     const messages: ConversationMessage[] = [];
 
     for (const msgRow of msgRows) {
-      const msgData = JSON.parse(msgRow.data) as { role: string; [key: string]: unknown };
-      const role = msgData.role === 'user' ? 'user' : 'assistant';
-      
+      const msgDataResult = SqliteMsgDataSchema.safeParse(JSON.parse(msgRow.data));
+      if (!msgDataResult.success) continue;
+      const role: 'user' | 'assistant' = msgDataResult.data.role === 'user' ? 'user' : 'assistant';
+
       // Get text parts for this message
-      const partRows = db.prepare(
-        "SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC"
-      ).all(msgRow.id) as SqlitePartRow[];
+      const partRows = db
+        .prepare('SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC')
+        .all(msgRow.id) as SqlitePartRow[];
 
       let text = '';
       for (const partRow of partRows) {
-        const partData = JSON.parse(partRow.data) as { type: string; text?: string };
-        if (partData.type === 'text' && partData.text) {
-          text += partData.text + '\n';
+        const partDataResult = SqlitePartDataSchema.safeParse(JSON.parse(partRow.data));
+        if (!partDataResult.success) continue;
+        if (partDataResult.data.type === 'text' && partDataResult.data.text) {
+          text += partDataResult.data.text + '\n';
         }
       }
 
       if (text.trim()) {
         messages.push({
-          role: role as 'user' | 'assistant',
+          role,
           content: text.trim(),
           timestamp: new Date(msgRow.time_created),
         });
@@ -426,7 +376,8 @@ function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
     }
 
     return messages;
-  } catch {
+  } catch (err) {
+    logger.debug('opencode: SQLite message query failed for session', sessionId, err);
     return [];
   } finally {
     close();
@@ -439,33 +390,39 @@ function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
 function readMessagesFromJson(sessionId: string): ConversationMessage[] {
   const messages: ConversationMessage[] = [];
   const messageDir = path.join(OPENCODE_STORAGE_DIR, 'message', sessionId);
-  
+
   if (!fs.existsSync(messageDir)) return messages;
 
   try {
-    const messageFiles = fs.readdirSync(messageDir)
-      .filter(f => f.startsWith('msg_') && f.endsWith('.json'))
+    const messageFiles = fs
+      .readdirSync(messageDir)
+      .filter((f) => f.startsWith('msg_') && f.endsWith('.json'))
       .sort();
 
     for (const msgFile of messageFiles) {
       const msgPath = path.join(messageDir, msgFile);
       const msgContent = fs.readFileSync(msgPath, 'utf8');
-      const msg = JSON.parse(msgContent) as OpenCodeMessage;
-      
+      const msgResult = OpenCodeMessageSchema.safeParse(JSON.parse(msgContent));
+      if (!msgResult.success) continue;
+      const msg = msgResult.data;
+
       // Get message text from parts
       const partDir = path.join(OPENCODE_STORAGE_DIR, 'part', msg.id);
       let text = '';
-      
+
       if (fs.existsSync(partDir)) {
-        const partFiles = fs.readdirSync(partDir)
-          .filter(f => f.startsWith('prt_') && f.endsWith('.json'))
+        const partFiles = fs
+          .readdirSync(partDir)
+          .filter((f) => f.startsWith('prt_') && f.endsWith('.json'))
           .sort();
-        
+
         for (const partFile of partFiles) {
           const partPath = path.join(partDir, partFile);
           const partContent = fs.readFileSync(partPath, 'utf8');
-          const part = JSON.parse(partContent) as OpenCodePart;
-          
+          const partResult = OpenCodePartSchema.safeParse(JSON.parse(partContent));
+          if (!partResult.success) continue;
+          const part = partResult.data;
+
           if (part.type === 'text' && part.text) {
             text += part.text + '\n';
           }
@@ -480,7 +437,8 @@ function readMessagesFromJson(sessionId: string): ConversationMessage[] {
         });
       }
     }
-  } catch {
+  } catch (err) {
+    logger.debug('opencode: failed to read JSON messages for session', sessionId, err);
     // Ignore errors
   }
 

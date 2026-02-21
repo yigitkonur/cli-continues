@@ -1,8 +1,16 @@
 {
   "name": "continues",
-  "version": "2.7.5",
-  "description": "Never lose context. Resume any AI coding session across Claude, Copilot, Gemini, Codex, OpenCode & Droid.",
-  "main": "dist/cli.js",
+  "version": "3.0.0-beta.0",
+  "description": "Never lose context. Resume any AI coding session across Claude, Copilot, Gemini, Codex, OpenCode, Droid & Cursor.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli": "./dist/cli.js"
+  },
   "bin": {
     "continues": "dist/cli.js",
     "cont": "dist/cli.js"
@@ -21,7 +29,11 @@
     "start": "node dist/cli.js",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build",
-    "postinstall": "echo '\n  continues v2.7.0 — Now with Factory Droid support!\n  Run `continues droid` or `continues list --source droid` to see your Droid sessions.\n'",
+    "postinstall": "echo '\n  continues v3.0.0 — Major refactor with typed schemas, library exports & Cursor support!\n  Run `continues list` to see all sessions.\n'",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
+    "format": "biome format --write src/",
+    "check": "pnpm lint && pnpm build",
     "link": "pnpm build && pnpm link --global",
     "version:patch": "npm version patch",
     "version:minor": "npm version minor",
@@ -50,7 +62,8 @@
     "rate-limit",
     "session-handoff",
     "context-switch",
-    "cross-tool"
+    "cross-tool",
+    "cursor"
   ],
   "author": "Yigit Konur",
   "license": "MIT",
@@ -66,9 +79,11 @@
     "chalk": "^4.1.2",
     "commander": "^14.0.3",
     "ora": "^5.4.1",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.4",
     "@types/node": "^25.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",

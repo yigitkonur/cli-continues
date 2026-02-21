@@ -11,15 +11,14 @@
  */
 
 import * as fs from 'fs';
-import * as path from 'path';
 import * as os from 'os';
+import * as path from 'path';
 import { extractClaudeContext } from '../parsers/claude.js';
+import { extractCodexContext } from '../parsers/codex.js';
 import { extractCopilotContext } from '../parsers/copilot.js';
 import { extractGeminiContext } from '../parsers/gemini.js';
-import { extractCodexContext } from '../parsers/codex.js';
-import { extractOpenCodeContext } from '../parsers/opencode.js';
+import type { ConversationMessage, SessionContext, UnifiedSession } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import type { UnifiedSession, SessionContext, ConversationMessage } from '../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -397,12 +396,7 @@ async function readBackFromTarget(target: Source, targetPath: string): Promise<S
 // Validation
 // ---------------------------------------------------------------------------
 
-function validate(
-  source: Source,
-  target: Source,
-  keyPhrase: string,
-  targetContext: SessionContext | null,
-): TestResult {
+function validate(source: Source, target: Source, keyPhrase: string, targetContext: SessionContext | null): TestResult {
   if (!targetContext) {
     return { source, target, passed: false, details: 'Failed to read back target context' };
   }
@@ -458,9 +452,7 @@ async function main() {
       try {
         const ctx = await extractSourceContext(source);
         sourceContexts.set(source, ctx);
-        console.log(
-          `✅  ${ctx.recentMessages.length} msgs, ${ctx.markdown.length} chars markdown`,
-        );
+        console.log(`✅  ${ctx.recentMessages.length} msgs, ${ctx.markdown.length} chars markdown`);
       } catch (err: any) {
         console.log(`❌  ${err.message ?? err}`);
       }
@@ -562,19 +554,12 @@ async function main() {
     console.log('\n╔══════════════════════════════════════════════════╗');
     console.log('║                  RESULTS TABLE                   ║');
     console.log('╚══════════════════════════════════════════════════╝\n');
-    console.log(
-      'Source'.padEnd(10) +
-        '  Target'.padEnd(12) +
-        '  Status'.padEnd(8) +
-        '  Details',
-    );
+    console.log('Source'.padEnd(10) + '  Target'.padEnd(12) + '  Status'.padEnd(8) + '  Details');
     console.log('─'.repeat(72));
 
     for (const r of results) {
       const icon = r.passed ? '✅' : '❌';
-      console.log(
-        `${r.source.padEnd(10)}→ ${r.target.padEnd(10)}${icon.padEnd(6)}  ${r.details}`,
-      );
+      console.log(`${r.source.padEnd(10)}→ ${r.target.padEnd(10)}${icon.padEnd(6)}  ${r.details}`);
     }
 
     console.log('─'.repeat(72));
