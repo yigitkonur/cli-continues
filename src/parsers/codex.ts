@@ -13,7 +13,9 @@ import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepo, homeDir } from '../utils/parser-helpers.js';
+import { extractStdoutTail } from '../utils/diff.js';
 import {
+  extractExitCode,
   mcpSummary,
   SummaryCollector,
   searchSummary,
@@ -230,22 +232,54 @@ function extractToolData(messages: CodexMessage[]): { summaries: ToolUsageSummar
             if (!cmd) continue;
             const baseCmd = cmd.trim().split(/\s+/)[0];
             const category = COMMON_SHELL_TOOLS.has(baseCmd) ? baseCmd : 'shell';
-            collector.add(category, shellSummary(cmd, output));
+            const exitCode = extractExitCode(output);
+            const errored = exitCode !== undefined && exitCode !== 0;
+            const stdoutTail = output ? extractStdoutTail(output, 5) : undefined;
+            collector.add(category, shellSummary(cmd, output), {
+              data: {
+                category: 'shell',
+                command: cmd,
+                ...(exitCode !== undefined ? { exitCode } : {}),
+                ...(stdoutTail ? { stdoutTail } : {}),
+                ...(errored ? { errored } : {}),
+              },
+              isError: errored,
+            });
             trackShellFileWrites(cmd, collector);
           } else if (name === 'write_stdin') {
             collector.add('write_stdin', `stdin: "${truncate(String(args.input || args.data || ''), 60)}"`);
           } else if (['read_mcp_resource', 'list_mcp_resources', 'list_mcp_resource_templates'].includes(name)) {
-            collector.add('mcp-resource', `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`);
+            collector.add('mcp-resource', `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`, {
+              data: { category: 'mcp', toolName: name, params: String(args.uri || args.server_label || '') },
+            });
           } else if (name === 'request_user_input') {
-            collector.add('user-input', `ask: "${truncate(String(args.prompt || args.message || ''), 60)}"`);
+            const question = truncate(String(args.prompt || args.message || ''), 80);
+            collector.add('user-input', `ask: "${question}"`, {
+              data: { category: 'ask', question },
+            });
           } else if (name === 'update_plan') {
             collector.add('plan', `plan: "${truncate(String(args.explanation || ''), 60)}"`);
           } else if (name === 'view_image') {
             collector.add('view_image', `image: ${truncate(String(args.path || args.url || ''), 60)}`);
           } else if (name.startsWith('mcp__') || name.includes('-')) {
-            collector.add(name, mcpSummary(name, JSON.stringify(args).slice(0, 100), output));
+            const params = JSON.stringify(args).slice(0, 100);
+            collector.add(name, mcpSummary(name, params, output), {
+              data: {
+                category: 'mcp',
+                toolName: name,
+                params,
+                ...(output ? { result: output.slice(0, 100) } : {}),
+              },
+            });
           } else {
-            collector.add(name, withResult(`${name}(${JSON.stringify(args).slice(0, 80)})`, output));
+            collector.add(name, withResult(`${name}(${JSON.stringify(args).slice(0, 80)})`, output), {
+              data: {
+                category: 'mcp',
+                toolName: name,
+                params: JSON.stringify(args).slice(0, 100),
+                ...(output ? { result: output.slice(0, 100) } : {}),
+              },
+            });
           }
         } catch (err) {
           logger.debug('codex: skipping unparseable tool arguments', err);
@@ -260,7 +294,17 @@ function extractToolData(messages: CodexMessage[]): { summaries: ToolUsageSummar
           const fileMatches = input.match(/\*\*\* (?:Add|Update|Delete) File: (.+)/g) || [];
           const files = fileMatches.map((m: string) => m.replace(/^\*\*\* (?:Add|Update|Delete) File: /, ''));
           const fileList = files.length > 0 ? files.slice(0, 3).join(', ') : '(patch)';
-          collector.add('apply_patch', `patch: ${truncate(fileList, 70)}`);
+          // Capture the patch content as diff (Codex patches are in unified diff-like format)
+          const diff = input.length > 0 ? input : undefined;
+          collector.add('apply_patch', `patch: ${truncate(fileList, 70)}`, {
+            data: {
+              category: 'edit',
+              filePath: files[0] || '(multiple)',
+              ...(diff ? { diff } : {}),
+            },
+            filePath: files[0],
+            isWrite: true,
+          });
           for (const f of files) collector.trackFile(f);
         } else {
           collector.add(name, `${name}: ${truncate(input, 80)}`);
@@ -269,16 +313,24 @@ function extractToolData(messages: CodexMessage[]): { summaries: ToolUsageSummar
 
       // web_search_call
       if (payload.type === 'web_search_call') {
-        collector.add('web_search', searchSummary(String(payload.action?.query || payload.action?.queries?.[0] || '')));
+        const query = String(payload.action?.query || payload.action?.queries?.[0] || '');
+        collector.add('web_search', searchSummary(query), {
+          data: { category: 'search', query },
+        });
       }
     } else if (msg.type === 'event_msg') {
       // Task lifecycle events
       const payload = msg.payload;
       if (!payload) continue;
       if (payload.type === 'task_started') {
-        collector.add('task', `task: started "${truncate(payload.message || '', 60)}"`);
+        const desc = truncate(payload.message || '', 60);
+        collector.add('task', `task: started "${desc}"`, {
+          data: { category: 'task', description: desc },
+        });
       } else if (payload.type === 'task_complete') {
-        collector.add('task', 'task: completed');
+        collector.add('task', 'task: completed', {
+          data: { category: 'task', description: 'completed' },
+        });
       }
     }
   }

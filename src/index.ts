@@ -34,17 +34,30 @@ export { ALL_TOOLS, adapters, SOURCE_HELP } from './parsers/registry.js';
 export type { ContentBlock, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from './types/content-blocks.js';
 // ── Types ────────────────────────────────────────────────────────────
 export type {
+  AskSampleData,
   ConversationMessage,
+  EditSampleData,
+  FetchSampleData,
+  GlobSampleData,
+  GrepSampleData,
   HandoffOptions,
+  McpSampleData,
+  ReadSampleData,
+  SearchSampleData,
   SessionContext,
   SessionNotes,
   SessionSource,
+  ShellSampleData,
+  StructuredToolSample,
+  TaskSampleData,
   ToolCall,
   ToolSample,
+  ToolSampleCategory,
   ToolUsageSummary,
   UnifiedSession,
+  WriteSampleData,
 } from './types/index.js';
-export { TOOL_NAMES } from './types/tool-names.js';
+export { classifyToolName, TOOL_NAMES } from './types/tool-names.js';
 export type {
   CanonicalFlagKey,
   FlagOccurrence,

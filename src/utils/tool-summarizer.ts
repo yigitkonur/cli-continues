@@ -1,9 +1,9 @@
 /**
  * Shared tool call summarizer — formatting helpers + SummaryCollector.
  * Each parser normalizes its raw tool events and uses these utilities
- * for consistent, concise summaries across all 5 CLIs.
+ * for consistent, concise summaries across all 7 CLIs.
  */
-import type { ToolSample, ToolUsageSummary } from '../types/index.js';
+import type { StructuredToolSample, ToolSample, ToolUsageSummary } from '../types/index.js';
 
 // ── Formatting Helpers ──────────────────────────────────────────────────────
 
@@ -89,32 +89,65 @@ export function subagentSummary(desc: string, type?: string): string {
 
 // ── SummaryCollector ────────────────────────────────────────────────────────
 
+/** Per-category sample limits — captures enough for rich rendering without bloat */
+const CATEGORY_SAMPLE_LIMITS: Record<string, number> = {
+  Bash: 8,
+  shell: 8,
+  Write: 5,
+  write: 5,
+  Edit: 5,
+  edit: 5,
+  Read: 20,
+  read: 20,
+  Grep: 10,
+  Glob: 10,
+  WebSearch: 10,
+  WebFetch: 10,
+  Task: 5,
+  TaskOutput: 5,
+  AskUserQuestion: 5,
+};
+const DEFAULT_SAMPLE_LIMIT = 5;
+
+/** Options for SummaryCollector.add() */
+export interface AddSampleOptions {
+  /** Structured data for rich rendering */
+  data?: StructuredToolSample;
+  /** File path associated with this invocation */
+  filePath?: string;
+  /** Whether this invocation modified the file */
+  isWrite?: boolean;
+  /** Whether this invocation resulted in an error */
+  isError?: boolean;
+}
+
 /**
  * Accumulates tool call summaries by category (tool name).
- * Keeps up to `maxSamples` representative samples per category
- * and tracks files modified.
+ * Keeps up to N representative samples per category (category-aware limits)
+ * and tracks files modified and error counts.
  */
 export class SummaryCollector {
-  private data = new Map<string, { count: number; samples: ToolSample[] }>();
+  private data = new Map<string, { count: number; errorCount: number; samples: ToolSample[] }>();
   private files = new Set<string>();
-  private maxSamples: number;
 
-  constructor(maxSamples = 3) {
-    this.maxSamples = maxSamples;
-  }
-
-  /** Add a tool invocation. Optionally tracks file modification. */
-  add(category: string, summary: string, filePath?: string, isWrite?: boolean): void {
+  /** Add a tool invocation. Optionally tracks file modification and errors. */
+  add(category: string, summary: string, opts?: AddSampleOptions): void {
     if (!this.data.has(category)) {
-      this.data.set(category, { count: 0, samples: [] });
+      this.data.set(category, { count: 0, errorCount: 0, samples: [] });
     }
     const entry = this.data.get(category)!;
     entry.count++;
-    if (entry.samples.length < this.maxSamples) {
-      entry.samples.push({ summary });
+    if (opts?.isError) entry.errorCount++;
+
+    const maxSamples = CATEGORY_SAMPLE_LIMITS[category] ?? DEFAULT_SAMPLE_LIMIT;
+    if (entry.samples.length < maxSamples) {
+      const sample: ToolSample = { summary };
+      if (opts?.data) sample.data = opts.data;
+      entry.samples.push(sample);
     }
-    if (isWrite && filePath) {
-      this.files.add(filePath);
+
+    if (opts?.isWrite && opts?.filePath) {
+      this.files.add(opts.filePath);
     }
   }
 
@@ -125,9 +158,10 @@ export class SummaryCollector {
 
   /** Get aggregated tool usage summaries */
   getSummaries(): ToolUsageSummary[] {
-    return Array.from(this.data.entries()).map(([name, { count, samples }]) => ({
+    return Array.from(this.data.entries()).map(([name, { count, errorCount, samples }]) => ({
       name,
       count,
+      ...(errorCount > 0 ? { errorCount } : {}),
       samples,
     }));
   }

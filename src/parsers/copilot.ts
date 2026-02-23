@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import YAML from 'yaml';
 import { logger } from '../logger.js';
-import type { ConversationMessage, SessionContext, UnifiedSession } from '../types/index.js';
+import type { ConversationMessage, SessionContext, ToolUsageSummary, UnifiedSession } from '../types/index.js';
+import { classifyToolName } from '../types/tool-names.js';
 import type { CopilotEvent, CopilotWorkspace } from '../types/schemas.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
@@ -156,17 +157,56 @@ export async function extractCopilotContext(session: UnifiedSession): Promise<Se
     });
   }
 
+  // Extract tool summaries from toolRequests across all events
+  const toolSummaries = extractCopilotToolSummaries(events);
+
   // Generate markdown for injection
-  const markdown = generateHandoffMarkdown(session, recentMessages.slice(-10), filesModified, pendingTasks, []);
+  const markdown = generateHandoffMarkdown(session, recentMessages.slice(-10), filesModified, pendingTasks, toolSummaries);
 
   return {
     session,
     recentMessages: recentMessages.slice(-10),
     filesModified,
     pendingTasks,
-    toolSummaries: [],
+    toolSummaries,
     markdown,
   };
 }
 
-// generateHandoffMarkdown is imported from ../utils/markdown.js
+/**
+ * Extract tool usage summaries from Copilot events' toolRequests arrays.
+ * Copilot doesn't provide tool results, so we capture names and arguments only.
+ */
+function extractCopilotToolSummaries(events: CopilotEvent[]): ToolUsageSummary[] {
+  const toolCounts = new Map<string, { count: number; samples: Array<{ summary: string; data?: import('../types/index.js').StructuredToolSample }> }>();
+
+  for (const event of events) {
+    if (event.type !== 'assistant.message') continue;
+    const toolRequests = event.data?.toolRequests || [];
+    for (const tr of toolRequests) {
+      const name = tr.name || 'unknown';
+      const category = classifyToolName(name);
+      if (!category) continue; // skip internal tools
+
+      if (!toolCounts.has(name)) {
+        toolCounts.set(name, { count: 0, samples: [] });
+      }
+      const entry = toolCounts.get(name)!;
+      entry.count++;
+
+      if (entry.samples.length < 5) {
+        const argsStr = tr.arguments ? JSON.stringify(tr.arguments).slice(0, 100) : '';
+        entry.samples.push({
+          summary: argsStr ? `${name}(${argsStr})` : name,
+          data: { category: 'mcp', toolName: name, ...(argsStr ? { params: argsStr } : {}) },
+        });
+      }
+    }
+  }
+
+  return Array.from(toolCounts.entries()).map(([name, { count, samples }]) => ({
+    name,
+    count,
+    samples,
+  }));
+}

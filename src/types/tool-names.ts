@@ -64,3 +64,39 @@ export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'reque
 
 /** Tools to skip — internal bookkeeping, no useful handoff context */
 export const SKIP_TOOLS: ReadonlySet<string> = new Set(['TaskStop', 'ExitPlanMode', 'TodoWrite']);
+
+// ── Tool Sample Classification ──────────────────────────────────────────────
+
+/** Category for structured tool sample data — discriminant for StructuredToolSample union */
+export type ToolSampleCategory =
+  | 'shell'
+  | 'read'
+  | 'write'
+  | 'edit'
+  | 'grep'
+  | 'glob'
+  | 'search'
+  | 'fetch'
+  | 'task'
+  | 'ask'
+  | 'mcp';
+
+/**
+ * Classify a raw tool invocation name into a ToolSampleCategory.
+ * Returns `undefined` for tools that should be skipped (internal bookkeeping).
+ * Returns `'mcp'` for unrecognized / MCP-namespaced tools.
+ */
+export function classifyToolName(name: string): ToolSampleCategory | undefined {
+  if (SKIP_TOOLS.has(name)) return undefined;
+  if (SHELL_TOOLS.has(name)) return 'shell';
+  if (READ_TOOLS.has(name)) return 'read';
+  if (WRITE_TOOLS.has(name)) return 'write';
+  if (EDIT_TOOLS.has(name)) return 'edit';
+  if (GREP_TOOLS.has(name)) return 'grep';
+  if (GLOB_TOOLS.has(name)) return 'glob';
+  if (SEARCH_TOOLS.has(name)) return 'search';
+  if (FETCH_TOOLS.has(name)) return 'fetch';
+  if (TASK_TOOLS.has(name) || TASK_OUTPUT_TOOLS.has(name)) return 'task';
+  if (ASK_TOOLS.has(name)) return 'ask';
+  return 'mcp';
+}

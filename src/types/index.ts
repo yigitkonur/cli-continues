@@ -3,11 +3,11 @@
  */
 
 // Import SessionSource locally (used by UnifiedSession below) and re-export
-import type { SessionSource } from './tool-names.js';
+import type { SessionSource, ToolSampleCategory } from './tool-names.js';
 
 // Re-export shared content block types
 export type { ContentBlock, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock } from './content-blocks.js';
-export { type SessionSource, TOOL_NAMES } from './tool-names.js';
+export { type SessionSource, type ToolSampleCategory, TOOL_NAMES } from './tool-names.js';
 
 /** Unified session metadata */
 export interface UnifiedSession {
@@ -48,14 +48,123 @@ export interface ConversationMessage {
 /** Tool call information */
 export interface ToolCall {
   name: string;
+  /** Unique call ID for matching call → result (Anthropic-format sessions) */
+  id?: string;
   arguments?: Record<string, unknown>;
   result?: string;
+  /** Whether the tool call succeeded. Absent when status is unknown. */
+  success?: boolean;
 }
+
+// ── Structured Tool Sample Data ─────────────────────────────────────────────
+// Discriminated union on `category`. Each tool type captures what matters.
+
+export interface ShellSampleData {
+  category: 'shell';
+  command: string;
+  exitCode?: number;
+  /** Last N lines of stdout (joined with \n). Omitted if empty. */
+  stdoutTail?: string;
+  /** True when command exited non-zero or tool reported an error. */
+  errored?: boolean;
+}
+
+export interface ReadSampleData {
+  category: 'read';
+  filePath: string;
+  lineStart?: number;
+  lineEnd?: number;
+}
+
+export interface WriteSampleData {
+  category: 'write';
+  filePath: string;
+  isNewFile?: boolean;
+  /** Unified diff capped at maxLines. If truncated, ends with "+N lines truncated". */
+  diff?: string;
+  diffStats?: { added: number; removed: number };
+}
+
+export interface EditSampleData {
+  category: 'edit';
+  filePath: string;
+  /** Unified diff capped at maxLines. If truncated, ends with "+N lines truncated". */
+  diff?: string;
+  diffStats?: { added: number; removed: number };
+}
+
+export interface GrepSampleData {
+  category: 'grep';
+  pattern: string;
+  targetPath?: string;
+  matchCount?: number;
+}
+
+export interface GlobSampleData {
+  category: 'glob';
+  pattern: string;
+  resultCount?: number;
+}
+
+export interface SearchSampleData {
+  category: 'search';
+  query: string;
+}
+
+export interface FetchSampleData {
+  category: 'fetch';
+  url: string;
+  /** First 100 characters of fetched content. */
+  resultPreview?: string;
+}
+
+export interface TaskSampleData {
+  category: 'task';
+  description: string;
+  agentType?: string;
+  /** First 100 characters of task result. */
+  resultSummary?: string;
+}
+
+export interface AskSampleData {
+  category: 'ask';
+  /** Question text, capped at 80 characters. */
+  question: string;
+}
+
+export interface McpSampleData {
+  category: 'mcp';
+  /** Full tool name including namespace (e.g. "mcp__github__list_issues"). */
+  toolName: string;
+  /** Truncated params string (each value capped at 100 chars). */
+  params?: string;
+  /** First 100 characters of tool result. */
+  result?: string;
+}
+
+/**
+ * Discriminated union of all structured tool sample types.
+ * The `category` field is the discriminant — use `switch(data.category)` for narrowing.
+ */
+export type StructuredToolSample =
+  | ShellSampleData
+  | ReadSampleData
+  | WriteSampleData
+  | EditSampleData
+  | GrepSampleData
+  | GlobSampleData
+  | SearchSampleData
+  | FetchSampleData
+  | TaskSampleData
+  | AskSampleData
+  | McpSampleData;
 
 /** One-line concise summary of a single tool invocation */
 export interface ToolSample {
   /** e.g. "$ npm test → exit 0" or "edit src/auth.ts (+5 -2)" */
   summary: string;
+  /** Structured data for rich rendering. Absent for legacy/not-yet-updated parsers. */
+  data?: StructuredToolSample;
 }
 
 /** Aggregated tool usage: unique tool name + count + representative samples */
@@ -64,7 +173,9 @@ export interface ToolUsageSummary {
   name: string;
   /** Number of times this tool was invoked */
   count: number;
-  /** Up to 3 representative samples */
+  /** Number of invocations that ended in error */
+  errorCount?: number;
+  /** Up to N representative samples (N varies by category) */
   samples: ToolSample[];
 }
 

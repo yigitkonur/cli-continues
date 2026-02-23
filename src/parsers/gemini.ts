@@ -95,18 +95,41 @@ function extractToolData(sessionData: GeminiSession): { summaries: ToolUsageSumm
         } else if (resultDisplay?.fileDiff) {
           const lines = resultDisplay.fileDiff.split('\n');
           diffStat = {
-            added: lines.filter((l) => l.startsWith('+')).length,
-            removed: lines.filter((l) => l.startsWith('-')).length,
+            added: lines.filter((l: string) => l.startsWith('+')).length,
+            removed: lines.filter((l: string) => l.startsWith('-')).length,
           };
         }
-        collector.add('write_file', fileSummary('write', fp, diffStat, resultDisplay?.isNewFile), fp, true);
+        const isNewFile = resultDisplay?.isNewFile ?? false;
+        // Capture the actual diff content from Gemini (it provides full diffs)
+        const diff = resultDisplay?.fileDiff || undefined;
+        collector.add('write_file', fileSummary('write', fp, diffStat, isNewFile), {
+          data: {
+            category: 'write',
+            filePath: fp,
+            isNewFile,
+            ...(diff ? { diff } : {}),
+            ...(diffStat ? { diffStats: diffStat } : {}),
+          },
+          filePath: fp,
+          isWrite: true,
+        });
       } else if (name === 'read_file') {
         const fp = (args?.file_path as string) || '';
-        collector.add('read_file', fileSummary('read', fp), fp);
+        collector.add('read_file', fileSummary('read', fp), {
+          data: { category: 'read', filePath: fp },
+          filePath: fp,
+        });
       } else {
         const argsStr = args ? JSON.stringify(args).slice(0, 100) : '';
         const resultStr = result?.[0]?.functionResponse?.response?.output;
-        collector.add(name, mcpSummary(name, argsStr, resultStr));
+        collector.add(name, mcpSummary(name, argsStr, resultStr), {
+          data: {
+            category: 'mcp',
+            toolName: name,
+            ...(argsStr ? { params: argsStr } : {}),
+            ...(resultStr ? { result: String(resultStr).slice(0, 100) } : {}),
+          },
+        });
       }
     }
   }

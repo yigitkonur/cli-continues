@@ -722,6 +722,103 @@ describe('Shared generateHandoffMarkdown', () => {
       expect(ctx.markdown).toContain('You are continuing this session');
     }
   });
+
+  it('renders category-aware tool activity with structured data', () => {
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'claude',
+      cwd: '/tmp',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp',
+    };
+
+    const toolSummaries: import('../types/index.js').ToolUsageSummary[] = [
+      {
+        name: 'Bash',
+        count: 2,
+        errorCount: 1,
+        samples: [
+          {
+            summary: '$ npm test → exit 0',
+            data: { category: 'shell', command: 'npm test', exitCode: 0 },
+          },
+          {
+            summary: '$ npm build → exit 1',
+            data: { category: 'shell', command: 'npm build', exitCode: 1, errored: true, stdoutTail: 'Error: build failed' },
+          },
+        ],
+      },
+      {
+        name: 'Read',
+        count: 2,
+        samples: [
+          {
+            summary: 'read src/app.ts',
+            data: { category: 'read', filePath: 'src/app.ts' },
+          },
+          {
+            summary: 'read src/utils.ts (lines 10-50)',
+            data: { category: 'read', filePath: 'src/utils.ts', lineStart: 10, lineEnd: 50 },
+          },
+        ],
+      },
+      {
+        name: 'Edit',
+        count: 1,
+        samples: [
+          {
+            summary: 'edit src/auth.ts (+2 -1)',
+            data: {
+              category: 'edit',
+              filePath: 'src/auth.ts',
+              diff: '--- a/src/auth.ts\n+++ b/src/auth.ts\n-old line\n+new line1\n+new line2',
+              diffStats: { added: 2, removed: 1 },
+            },
+          },
+        ],
+      },
+      {
+        name: 'Grep',
+        count: 1,
+        samples: [
+          {
+            summary: 'grep "TODO" src/',
+            data: { category: 'grep', pattern: 'TODO', targetPath: 'src/', matchCount: 5 },
+          },
+        ],
+      },
+    ];
+
+    const md = generateHandoffMarkdown(session, [], [], [], toolSummaries);
+
+    // Category headers
+    expect(md).toContain('### Shell (2 calls, 1 errors)');
+    expect(md).toContain('### Read (2 calls)');
+    expect(md).toContain('### Edit (1 calls)');
+    expect(md).toContain('### Grep (1 calls)');
+
+    // Shell: commands and exit codes
+    expect(md).toContain('`$ npm test`');
+    expect(md).toContain('Exit: 0');
+    expect(md).toContain('Exit: 1  **[ERROR]**');
+    expect(md).toContain('Error: build failed');
+
+    // Read: file paths with line ranges
+    expect(md).toContain('`src/app.ts`');
+    expect(md).toContain('`src/utils.ts` (lines 10-50)');
+
+    // Edit: diff blocks
+    expect(md).toContain('```diff');
+    expect(md).toContain('-old line');
+    expect(md).toContain('+new line1');
+
+    // Grep: pattern with match count
+    expect(md).toContain('`"TODO"`');
+    expect(md).toContain('5 matches');
+  });
 });
 
 // ─── All 20 Conversion Path Tests ──────────────────────────────────────────
