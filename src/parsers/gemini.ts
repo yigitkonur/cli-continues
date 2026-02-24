@@ -138,14 +138,34 @@ function extractToolData(sessionData: GeminiSession): { summaries: ToolUsageSumm
           });
           break;
         }
-        case 'edit':
-          collector.add(name, fileSummary('edit', fp), {
-            data: { category: 'edit', filePath: fp },
+        case 'edit': {
+          let diffStat: { added: number; removed: number } | undefined;
+          if (resultDisplay?.diffStat) {
+            diffStat = {
+              added: resultDisplay.diffStat.model_added_lines || 0,
+              removed: resultDisplay.diffStat.model_removed_lines || 0,
+            };
+          } else if (resultDisplay?.fileDiff) {
+            const dLines = resultDisplay.fileDiff.split('\n');
+            diffStat = {
+              added: dLines.filter((l: string) => l.startsWith('+')).length,
+              removed: dLines.filter((l: string) => l.startsWith('-')).length,
+            };
+          }
+          const diff = resultDisplay?.fileDiff || undefined;
+          collector.add(name, fileSummary('edit', fp, diffStat), {
+            data: {
+              category: 'edit',
+              filePath: fp,
+              ...(diff ? { diff } : {}),
+              ...(diffStat ? { diffStats: diffStat } : {}),
+            },
             filePath: fp,
             isWrite: true,
             isError,
           });
           break;
+        }
         case 'grep': {
           const pattern = (args?.pattern as string) || (args?.query as string) || '';
           collector.add(name, `grep "${truncate(pattern, 40)}"`, {
@@ -178,8 +198,25 @@ function extractToolData(sessionData: GeminiSession): { summaries: ToolUsageSumm
             isError,
           });
           break;
+        case 'task': {
+          const desc = (args?.description as string) || (args?.prompt as string) || '';
+          const agentType = (args?.subagent_type as string) || undefined;
+          collector.add(name, `task "${truncate(desc, 60)}"${agentType ? ` (${agentType})` : ''}`, {
+            data: { category: 'task', description: desc, ...(agentType ? { agentType } : {}) },
+            isError,
+          });
+          break;
+        }
+        case 'ask': {
+          const question = truncate((args?.question as string) || (args?.prompt as string) || '', 80);
+          collector.add(name, `ask: "${question}"`, {
+            data: { category: 'ask', question },
+            isError,
+          });
+          break;
+        }
         default: {
-          // task, ask, mcp — fallback to compact format
+          // mcp — fallback to compact format
           const argsStr = args ? JSON.stringify(args).slice(0, 100) : '';
           collector.add(name, mcpSummary(name, argsStr, resultStr), {
             data: {
