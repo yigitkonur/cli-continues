@@ -9,6 +9,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
+import { SHELL_OPTION } from '../utils/platform.js';
 import chalk from 'chalk';
 import * as clack from '@clack/prompts';
 
@@ -44,6 +45,7 @@ function isGhInstalled(): boolean {
     encoding: 'utf-8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 3000,
+    ...SHELL_OPTION,
   });
   return !result.error && result.status === 0;
 }
@@ -53,6 +55,7 @@ function starRepo(): boolean {
     encoding: 'utf-8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 10000,
+    ...SHELL_OPTION,
   });
   return !result.error && result.status === 0;
 }

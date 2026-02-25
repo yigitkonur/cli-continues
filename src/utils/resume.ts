@@ -12,6 +12,7 @@ import {
 } from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
 import { getSourceLabels } from './markdown.js';
+import { SHELL_OPTION, WHICH_CMD } from './platform.js';
 
 /**
  * Resolve mapped + passthrough forward args for cross-tool launches.
@@ -133,7 +134,7 @@ function runCommand(command: string, args: string[], cwd: string, stdinData?: st
     const child = spawn(command, args, {
       cwd,
       stdio: stdinData ? ['pipe', 'inherit', 'inherit'] : 'inherit',
-      shell: false,
+      ...SHELL_OPTION,
     });
 
     if (stdinData && child.stdin) {
@@ -160,7 +161,7 @@ function runCommand(command: string, args: string[], cwd: string, stdinData?: st
  */
 async function isBinaryAvailable(binaryName: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn('which', [binaryName], { stdio: 'ignore' });
+    const child = spawn(WHICH_CMD, [binaryName], { stdio: 'ignore', ...SHELL_OPTION });
     child.on('close', (code) => resolve(code === 0));
     child.on('error', () => resolve(false));
   });

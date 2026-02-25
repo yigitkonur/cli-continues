@@ -13,6 +13,7 @@
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';
+import { WHICH_CMD } from '../utils/platform.js';
 import * as path from 'path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -95,7 +96,7 @@ const handoffFiles: Record<string, string> = {};
  */
 function toolExists(tool: string): boolean {
   try {
-    execSync(`which ${tool}`, { stdio: 'ignore' });
+    execSync(`${WHICH_CMD} ${tool}`, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
