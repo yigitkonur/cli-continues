@@ -25,6 +25,7 @@ import {
   extractKiloCodeContext, parseKiloCodeSessions,
 } from './cline.js';
 import { extractAntigravityContext, parseAntigravitySessions } from './antigravity.js';
+import { extractKimiContext, parseKimiSessions } from './kimi.js';
 
 /**
  * Adapter interface — single contract for all supported CLI tools.
@@ -590,6 +591,20 @@ register({
   nativeResumeArgs: () => [],
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: () => `antigravity`,
+});
+
+// ── Kimi CLI ──────────────────────────────────────────────────────────
+register({
+  name: 'kimi',
+  label: 'Kimi CLI',
+  color: chalk.hex('#00D4AA'),
+  storagePath: '~/.kimi/sessions/',
+  binaryName: 'kimi',
+  parseSessions: parseKimiSessions,
+  extractContext: extractKimiContext,
+  nativeResumeArgs: (s) => ['--session', s.id],
+  crossToolArgs: (prompt) => ['--prompt', prompt + '\n\nWhat would you like me to do next?'],
+  resumeCommandDisplay: (s) => `kimi --session ${s.id}`,
 });
 
 // ── Completeness assertion ──────────────────────────────────────────
