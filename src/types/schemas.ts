@@ -492,6 +492,53 @@ export type DroidCompactionState = z.infer<typeof DroidCompactionStateSchema>;
 export type DroidEvent = z.infer<typeof DroidEventSchema>;
 export type DroidSettings = z.infer<typeof DroidSettingsSchema>;
 
+// ── Kimi ────────────────────────────────────────────────────────────────────
+
+export const KimiMetadataSchema = z
+  .object({
+    session_id: z.string(),
+    title: z.string().optional(),
+    title_generated: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    archived_at: z.string().nullable().optional(),
+    wire_mtime: z.number().optional(),
+  })
+  .passthrough();
+
+export const KimiMessageSchema = z
+  .object({
+    role: z.string(),
+    content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough())]),
+    tool_calls: z
+      .array(
+        z
+          .object({
+            type: z.literal('function'),
+            id: z.string(),
+            function: z.object({
+              name: z.string(),
+              arguments: z.string(),
+            }),
+          })
+          .passthrough(),
+      )
+      .optional(),
+    tool_call_id: z.string().optional(),
+    id: z.number().optional(),
+  })
+  .passthrough();
+
+export const KimiUsageSchema = z
+  .object({
+    role: z.literal('_usage'),
+    token_count: z.number(),
+  })
+  .passthrough();
+
+export type KimiMetadata = z.infer<typeof KimiMetadataSchema>;
+export type KimiMessage = z.infer<typeof KimiMessageSchema>;
+export type KimiUsage = z.infer<typeof KimiUsageSchema>;
+
 // ── Cursor ──────────────────────────────────────────────────────────────────
 
 export const CursorTranscriptLineSchema = z

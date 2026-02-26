@@ -20,6 +20,7 @@ import {
   extractRooCodeContext,
   extractKiloCodeContext,
   extractAntigravityContext,
+  extractKimiContext,
   parseClaudeSessions,
   parseCodexSessions,
   parseCopilotSessions,
@@ -34,13 +35,14 @@ import {
   parseRooCodeSessions,
   parseKiloCodeSessions,
   parseAntigravitySessions,
+  parseKimiSessions,
 } from '../parsers/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
 const RESULTS_DIR = path.join(process.env.HOME || '~', '.continues', 'e2e-test-results');
 fs.mkdirSync(RESULTS_DIR, { recursive: true });
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor', 'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor', 'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi'];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   claude: parseClaudeSessions,
@@ -57,6 +59,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   'roo-code': parseRooCodeSessions,
   'kilo-code': parseKiloCodeSessions,
   antigravity: parseAntigravitySessions,
+  kimi: parseKimiSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -74,6 +77,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   'roo-code': extractRooCodeContext,
   'kilo-code': extractKiloCodeContext,
   antigravity: extractAntigravityContext,
+  kimi: extractKimiContext,
 };
 
 async function main() {
