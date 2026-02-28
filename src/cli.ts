@@ -19,6 +19,7 @@ import { rebuildCommand } from './commands/rebuild.js';
 import { resumeCommand } from './commands/resume-cmd.js';
 import { inspectSession } from './commands/inspect.js';
 import { scanCommand } from './commands/scan.js';
+import { dumpCommand } from './commands/dump.js';
 import { loadConfig, getPreset, mergeConfig } from './config/index.js';
 import { setLogLevel } from './logger.js';
 import { ALL_TOOLS, adapters, SOURCE_HELP } from './parsers/registry.js';
@@ -168,6 +169,18 @@ program
   .description('Force rebuild the session index cache')
   .action(async () => {
     await rebuildCommand(cliContext);
+  });
+
+// Dump sessions to directory
+program
+  .command('dump <source|all> <directory>')
+  .description('Bulk export sessions to markdown or JSON files')
+  .option('--preset <name>', 'Verbosity preset: minimal, standard, verbose, full', 'standard')
+  .option('--json', 'Output as JSON instead of markdown')
+  .option('--limit <number>', 'Limit number of sessions')
+  .option('--rebuild', 'Force rebuild session index')
+  .action(async (sourceOrAll, directory, options) => {
+    await dumpCommand(sourceOrAll, directory, options, cliContext);
   });
 
 // Inspect a session — parsing diagnostics
