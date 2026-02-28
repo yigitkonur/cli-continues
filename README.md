@@ -112,6 +112,30 @@ continues inspect abc123 --preset full --write-md handoff.md   # dump full markd
 continues inspect abc123 --truncate 50                # compact one-liner view
 ```
 
+### Dump (bulk export)
+
+Export all sessions to files for backup, analysis, or archival:
+
+```bash
+# Export all sessions to markdown (default)
+continues dump all ./sessions
+
+# Export specific tool's sessions
+continues dump claude ./sessions/claude
+continues dump gemini ./sessions/gemini
+
+# Export as JSON instead of markdown
+continues dump all ./sessions --json
+
+# Control verbosity with presets
+continues dump all ./sessions --preset full
+
+# Limit number of sessions
+continues dump all ./sessions --limit 50
+```
+
+File naming: `{source}_{id}.md` or `{source}_{id}.json`
+
 ## Verbosity control
 
 Not every handoff needs to be a novel. Four presets control how much detail goes in:
@@ -190,6 +214,7 @@ This works for all 14 tools — bash commands, file reads/writes/edits, grep/glo
 | `continues list` | List sessions (`--source`, `--json`, `--jsonl`, `-n`) |
 | `continues resume <id>` | Resume by ID (`--in <tool>`, `--preset`) |
 | `continues inspect <id>` | Diagnostic view (`--truncate`, `--write-md`, `--preset`) |
+| `continues dump <source\|all> <dir>` | Bulk export sessions (`--json`, `--preset`, `--limit`) |
 | `continues scan` | Discovery stats (`--rebuild`) |
 | `continues rebuild` | Force-rebuild session index |
 | `continues <tool> [n]` | Quick-resume Nth session from any of the 14 tools |
