@@ -603,7 +603,7 @@ register({
   parseSessions: parseKimiSessions,
   extractContext: extractKimiContext,
   nativeResumeArgs: (s) => ['--session', s.id],
-  crossToolArgs: (prompt) => ['--prompt', prompt + '\n\nWhat would you like me to do next?'],
+  crossToolArgs: (prompt) => ['--prompt', prompt],
   resumeCommandDisplay: (s) => `kimi --session ${s.id}`,
 });
 

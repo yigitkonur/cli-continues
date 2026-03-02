@@ -143,8 +143,9 @@ async function readContextFile(sessionDir: string): Promise<KimiMessage[]> {
  */
 function extractFirstUserMessage(messages: KimiMessage[]): string {
   for (const msg of messages) {
-    if (msg.role === 'user' && typeof msg.content === 'string') {
-      return msg.content;
+    if (msg.role === 'user') {
+      const text = extractTextFromBlocks(msg.content as string | Array<{ type: string; text?: string }>);
+      if (text) return text;
     }
   }
   return '';
@@ -416,7 +417,7 @@ export async function extractKimiContext(session: UnifiedSession, config?: Verbo
     }
   }
 
-  const trimmed = recentMessages.slice(-resolvedConfig.recentMessages);
+  const trimmed = recentMessages;
 
   const markdown = generateHandoffMarkdown(
     session,

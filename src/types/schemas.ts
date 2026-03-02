@@ -528,16 +528,8 @@ export const KimiMessageSchema = z
   })
   .passthrough();
 
-export const KimiUsageSchema = z
-  .object({
-    role: z.literal('_usage'),
-    token_count: z.number(),
-  })
-  .passthrough();
-
 export type KimiMetadata = z.infer<typeof KimiMetadataSchema>;
 export type KimiMessage = z.infer<typeof KimiMessageSchema>;
-export type KimiUsage = z.infer<typeof KimiUsageSchema>;
 
 // ── Cursor ──────────────────────────────────────────────────────────────────
 
