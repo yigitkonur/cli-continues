@@ -10,6 +10,7 @@
  * when the fingerprint changes.
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -80,14 +81,17 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     // Compute what the real module would write — import adapters to derive env vars
     // The simplest way: write an index via the fingerprint the module itself expects.
     // We write a fingerprint that matches the current env (all env vars unset in test).
+    const seen = new Set<string>();
     const parts: string[] = [];
     for (const adapter of Object.values(adapters) as Array<{ envVar?: string }>) {
-      if (adapter.envVar) {
+      if (adapter.envVar && !seen.has(adapter.envVar)) {
+        seen.add(adapter.envVar);
         const val = process.env[adapter.envVar] || '';
         parts.push(`${adapter.envVar}=${val}`);
       }
     }
-    const fingerprint = `#env:${parts.sort().join('|')}`;
+    const hash = createHash('sha256').update(parts.sort().join('|')).digest('hex');
+    const fingerprint = `#env:${hash}`;
 
     writeIndex(fingerprint, [makeSession('sess-1')]);
 
@@ -96,14 +100,17 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
 
   it('indexNeedsRebuild returns true when CLAUDE_CONFIG_DIR changes', () => {
     // Write index with current fingerprint (CLAUDE_CONFIG_DIR unset)
+    const seen = new Set<string>();
     const parts: string[] = [];
     for (const adapter of Object.values(adapters) as Array<{ envVar?: string }>) {
-      if (adapter.envVar) {
+      if (adapter.envVar && !seen.has(adapter.envVar)) {
+        seen.add(adapter.envVar);
         const val = process.env[adapter.envVar] || '';
         parts.push(`${adapter.envVar}=${val}`);
       }
     }
-    const fingerprint = `#env:${parts.sort().join('|')}`;
+    const hash = createHash('sha256').update(parts.sort().join('|')).digest('hex');
+    const fingerprint = `#env:${hash}`;
     writeIndex(fingerprint, [makeSession('sess-1')]);
 
     // Now change the env var — fingerprint should mismatch
@@ -131,6 +138,7 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
   });
 
   it('fingerprint line is not parseable as JSON', () => {
-    expect(() => JSON.parse('#env:CLAUDE_CONFIG_DIR=/some/path')).toThrow();
+    const hash = createHash('sha256').update('test').digest('hex');
+    expect(() => JSON.parse(`#env:\${hash}`)).toThrow();
   });
 });
