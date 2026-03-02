@@ -14,19 +14,22 @@ import type {
 import { classifyToolName } from '../types/tool-names.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 import { fileSummary, mcpSummary, SummaryCollector, shellSummary, truncate } from '../utils/tool-summarizer.js';
 
 const qwenHome = process.env.QWEN_HOME || homeDir();
-const QWEN_BASE_DIR = path.join(qwenHome, '.qwen', 'tmp');
+// Qwen Code stores chats under ~/.qwen/projects/<sanitized-cwd>/chats/
+// sanitizeCwd replaces all non-alphanumeric chars with '-'
+const QWEN_PROJECTS_DIR = path.join(qwenHome, '.qwen', 'projects');
 
 // ── ChatRecord types ────────────────────────────────────────────────────────
 // Matches QwenLM/qwen-code ChatRecord interface from chatRecordingService.ts
 
 interface QwenPart {
   text?: string;
+  thought?: boolean;
   functionCall?: { name: string; args: Record<string, unknown> };
-  functionResponse?: { name: string; response: { output?: string } };
+  functionResponse?: { name: string; response: { output?: string; status?: string } };
 }
 
 interface QwenContent {
@@ -37,20 +40,33 @@ interface QwenContent {
 interface QwenToolCallResult {
   displayName?: string;
   status?: string;
-  resultDisplay?: {
-    filePath?: string;
-    fileDiff?: string;
-    diffStat?: { model_added_lines?: number; model_removed_lines?: number };
-    isNewFile?: boolean;
-    type?: string;
-  };
+  resultDisplay?: string | QwenFileDiff | QwenTodoResult;
+}
+
+interface QwenFileDiff {
+  fileName?: string;
+  fileDiff?: string;
+  originalContent?: string | null;
+  diffStat?: { model_added_lines?: number; model_removed_lines?: number };
+  type?: string;
+}
+
+interface QwenTodoResult {
+  type?: string;
+  todos?: unknown[];
 }
 
 interface QwenUsageMetadata {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
+  totalTokenCount?: number;
   cachedContentTokenCount?: number;
   thoughtsTokenCount?: number;
+}
+
+interface QwenSystemPayload {
+  type?: string;
+  summary?: string;
 }
 
 interface QwenChatRecord {
@@ -59,7 +75,7 @@ interface QwenChatRecord {
   sessionId: string;
   timestamp: string;
   type: 'user' | 'assistant' | 'tool_result' | 'system';
-  subtype?: string;
+  subtype?: 'chat_compression' | 'slash_command' | 'ui_telemetry' | 'at_command';
   cwd: string;
   version?: string;
   gitBranch?: string;
@@ -67,6 +83,15 @@ interface QwenChatRecord {
   usageMetadata?: QwenUsageMetadata;
   model?: string;
   toolCallResult?: QwenToolCallResult;
+  systemPayload?: QwenSystemPayload;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Type guard: is resultDisplay a FileDiff object (not a string or todo)? */
+function isFileDiff(rd: string | QwenFileDiff | QwenTodoResult | undefined): rd is QwenFileDiff {
+  if (!rd || typeof rd === 'string') return false;
+  return 'fileName' in rd || 'fileDiff' in rd;
 }
 
 // ── JSONL reading ───────────────────────────────────────────────────────────
@@ -90,12 +115,19 @@ async function readJsonlRecords(filePath: string): Promise<QwenChatRecord[]> {
 
 // ── Text extraction ─────────────────────────────────────────────────────────
 
+/** Extract non-thought text from parts */
 function extractTextFromParts(parts: QwenPart[] | undefined): string {
   if (!parts) return '';
   return parts
-    .filter((p) => p.text)
+    .filter((p) => p.text && !p.thought)
     .map((p) => p.text!)
     .join('\n');
+}
+
+/** Extract thought/reasoning text from parts */
+function extractThoughtsFromParts(parts: QwenPart[] | undefined): string[] {
+  if (!parts) return [];
+  return parts.filter((p) => p.text && p.thought).map((p) => p.text!);
 }
 
 function extractContentText(content: QwenContent | undefined): string {
@@ -108,10 +140,9 @@ function extractContentText(content: QwenContent | undefined): string {
 async function findSessionFiles(): Promise<string[]> {
   const results: string[] = [];
 
-  if (!fs.existsSync(QWEN_BASE_DIR)) return results;
+  if (!fs.existsSync(QWEN_PROJECTS_DIR)) return results;
 
-  for (const projectDir of listSubdirectories(QWEN_BASE_DIR)) {
-    if (path.basename(projectDir) === 'bin') continue;
+  for (const projectDir of listSubdirectories(QWEN_PROJECTS_DIR)) {
     const chatsDir = path.join(projectDir, 'chats');
     if (!fs.existsSync(chatsDir)) continue;
 
@@ -201,23 +232,41 @@ function extractToolData(
 
         const fp = (args?.file_path as string) || (args?.path as string) || '';
 
+        // Try to extract result from a matching functionResponse in the same parts array
+        let resultStr: string | undefined;
+        for (const rp of record.message.parts) {
+          if (rp.functionResponse?.name === name && rp.functionResponse.response?.output) {
+            resultStr = String(rp.functionResponse.response.output);
+            break;
+          }
+        }
+        const isResponseError = record.message.parts.some(
+          (rp) => rp.functionResponse?.name === name && rp.functionResponse.response?.status === 'error',
+        );
+
         switch (category) {
           case 'shell': {
             const cmd = (args?.command as string) || (args?.cmd as string) || '';
-            collector.add(name, shellSummary(cmd), { data: { category: 'shell', command: cmd } });
+            collector.add(name, shellSummary(cmd, resultStr), {
+              data: { category: 'shell', command: cmd, ...(resultStr ? { stdoutTail: resultStr.slice(-500) } : {}) },
+              isError: isResponseError,
+            });
             break;
           }
-          case 'write':
+          case 'write': {
             collector.add(name, fileSummary('write', fp), {
               data: { category: 'write', filePath: fp },
               filePath: fp,
               isWrite: true,
+              isError: isResponseError,
             });
             break;
+          }
           case 'read':
             collector.add(name, fileSummary('read', fp), {
               data: { category: 'read', filePath: fp },
               filePath: fp,
+              isError: isResponseError,
             });
             break;
           case 'edit':
@@ -225,41 +274,71 @@ function extractToolData(
               data: { category: 'edit', filePath: fp },
               filePath: fp,
               isWrite: true,
+              isError: isResponseError,
             });
             break;
           case 'grep': {
             const pattern = (args?.pattern as string) || (args?.query as string) || '';
-            collector.add(name, `grep "${truncate(pattern, 40)}"`, { data: { category: 'grep', pattern } });
+            collector.add(name, `grep "${truncate(pattern, 40)}"`, {
+              data: { category: 'grep', pattern, ...(fp ? { targetPath: fp } : {}) },
+              isError: isResponseError,
+            });
             break;
           }
           case 'glob': {
             const pattern = (args?.pattern as string) || fp;
-            collector.add(name, `glob ${truncate(pattern, 50)}`, { data: { category: 'glob', pattern } });
+            collector.add(name, `glob ${truncate(pattern, 50)}`, {
+              data: { category: 'glob', pattern },
+              isError: isResponseError,
+            });
             break;
           }
           case 'search':
             collector.add(name, `search "${truncate((args?.query as string) || '', 50)}"`, {
               data: { category: 'search', query: (args?.query as string) || '' },
+              isError: isResponseError,
             });
             break;
-          case 'fetch':
-            collector.add(name, `fetch ${truncate((args?.url as string) || '', 60)}`, {
-              data: { category: 'fetch', url: (args?.url as string) || '' },
+          case 'fetch': {
+            const url = (args?.url as string) || '';
+            collector.add(name, `fetch ${truncate(url, 60)}`, {
+              data: {
+                category: 'fetch',
+                url,
+                ...(resultStr ? { resultPreview: resultStr.slice(0, 100) } : {}),
+              },
+              isError: isResponseError,
             });
             break;
+          }
           case 'task': {
             const desc = (args?.description as string) || (args?.prompt as string) || '';
-            collector.add(name, `task "${truncate(desc, 60)}"`, { data: { category: 'task', description: desc } });
+            const agentType = (args?.subagent_type as string) || undefined;
+            collector.add(name, `task "${truncate(desc, 60)}"${agentType ? ` (${agentType})` : ''}`, {
+              data: { category: 'task', description: desc, ...(agentType ? { agentType } : {}) },
+              isError: isResponseError,
+            });
             break;
           }
           case 'ask': {
-            const question = truncate((args?.question as string) || '', 80);
-            collector.add(name, `ask: "${question}"`, { data: { category: 'ask', question } });
+            const question = truncate((args?.question as string) || (args?.prompt as string) || '', 80);
+            collector.add(name, `ask: "${question}"`, {
+              data: { category: 'ask', question },
+              isError: isResponseError,
+            });
             break;
           }
           default: {
             const argsStr = args ? JSON.stringify(args).slice(0, 100) : '';
-            collector.add(name, mcpSummary(name, argsStr), { data: { category: 'mcp', toolName: name } });
+            collector.add(name, mcpSummary(name, argsStr, resultStr), {
+              data: {
+                category: 'mcp',
+                toolName: name,
+                ...(argsStr ? { params: argsStr } : {}),
+                ...(resultStr ? { result: resultStr.slice(0, 100) } : {}),
+              },
+              isError: isResponseError,
+            });
           }
         }
       }
@@ -269,21 +348,41 @@ function extractToolData(
     if (record.type === 'tool_result' && record.toolCallResult) {
       const tcr = record.toolCallResult;
       const displayName = tcr.displayName || '';
-      const fp = tcr.resultDisplay?.filePath || '';
+      const isError = tcr.status ? !['ok', 'success', 'completed'].includes(tcr.status.toLowerCase()) : false;
 
-      if (displayName && fp && tcr.resultDisplay?.fileDiff) {
+      if (displayName && isFileDiff(tcr.resultDisplay)) {
+        const rd = tcr.resultDisplay;
+        const fp = rd.fileName || '';
+
         let diffStat: { added: number; removed: number } | undefined;
-        if (tcr.resultDisplay.diffStat) {
+        if (rd.diffStat) {
           diffStat = {
-            added: tcr.resultDisplay.diffStat.model_added_lines || 0,
-            removed: tcr.resultDisplay.diffStat.model_removed_lines || 0,
+            added: rd.diffStat.model_added_lines || 0,
+            removed: rd.diffStat.model_removed_lines || 0,
+          };
+        } else if (rd.fileDiff) {
+          // Fallback: count +/- lines from fileDiff
+          const lines = rd.fileDiff.split('\n');
+          diffStat = {
+            added: lines.filter((l: string) => l.startsWith('+')).length,
+            removed: lines.filter((l: string) => l.startsWith('-')).length,
           };
         }
-        const isNew = tcr.resultDisplay.isNewFile ?? false;
+
+        // isNewFile is determined by originalContent === null
+        const isNew = rd.originalContent === null;
+        const diff = rd.fileDiff || undefined;
         collector.add(displayName, fileSummary(isNew ? 'write' : 'edit', fp, diffStat, isNew), {
-          data: { category: isNew ? 'write' : 'edit', filePath: fp },
+          data: {
+            category: isNew ? 'write' : 'edit',
+            filePath: fp,
+            isNewFile: isNew,
+            ...(diff ? { diff } : {}),
+            ...(diffStat ? { diffStats: diffStat } : {}),
+          },
           filePath: fp,
           isWrite: true,
+          isError,
         });
       }
     }
@@ -296,11 +395,20 @@ function extractToolData(
 
 function extractSessionNotes(records: QwenChatRecord[]): SessionNotes {
   const notes: SessionNotes = {};
+  const reasoning: string[] = [];
 
   for (const record of records) {
     if (record.type !== 'assistant') continue;
 
     if (record.model && !notes.model) notes.model = record.model;
+
+    // Extract reasoning from thought parts
+    if (record.message?.parts && reasoning.length < 5) {
+      for (const thought of extractThoughtsFromParts(record.message.parts)) {
+        if (reasoning.length >= 5) break;
+        if (thought.length > 10) reasoning.push(truncate(thought, 200));
+      }
+    }
 
     if (record.usageMetadata) {
       if (!notes.tokenUsage) notes.tokenUsage = { input: 0, output: 0 };
@@ -317,6 +425,7 @@ function extractSessionNotes(records: QwenChatRecord[]): SessionNotes {
     }
   }
 
+  if (reasoning.length > 0) notes.reasoning = reasoning;
   return notes;
 }
 
@@ -337,7 +446,7 @@ export async function parseQwenCodeSessions(): Promise<UnifiedSession[]> {
         id: meta.sessionId,
         source: 'qwen-code',
         cwd: meta.cwd,
-        repo: '',
+        repo: extractRepoFromCwd(meta.cwd),
         branch: meta.gitBranch,
         lines: meta.lineCount,
         bytes: fileStats.size,
@@ -369,9 +478,26 @@ export async function extractQwenCodeContext(
   const toolData = extractToolData(records, resolvedConfig);
   const sessionNotes = extractSessionNotes(records);
 
-  // Extract recent messages (last N user/assistant records)
+  // Extract recent messages and pending tasks from the tail
   const messageRecords = records.filter((r) => r.type === 'user' || r.type === 'assistant');
   for (const record of messageRecords.slice(-resolvedConfig.recentMessages * 2)) {
+    // Extract pending tasks from thought parts
+    if (record.type === 'assistant' && record.message?.parts && pendingTasks.length < 5) {
+      for (const thought of extractThoughtsFromParts(record.message.parts)) {
+        if (pendingTasks.length >= 5) break;
+        const lower = thought.toLowerCase();
+        if (
+          lower.includes('todo') ||
+          lower.includes('next') ||
+          lower.includes('remaining') ||
+          lower.includes('need to') ||
+          lower.includes('next step')
+        ) {
+          pendingTasks.push(truncate(thought, 200));
+        }
+      }
+    }
+
     const text = extractContentText(record.message);
     if (!text) continue;
 

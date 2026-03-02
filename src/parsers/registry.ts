@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import type { VerbosityConfig } from '../config/index.js';
+import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { TOOL_NAMES } from '../types/tool-names.js';
 import {
   type FlagOccurrence,
@@ -9,23 +9,26 @@ import {
   type ForwardMapResult,
   normalizeAgentSandbox,
 } from '../utils/forward-flags.js';
+import { extractAmpContext, parseAmpSessions } from './amp.js';
+import { extractAntigravityContext, parseAntigravitySessions } from './antigravity.js';
 import { extractClaudeContext, parseClaudeSessions } from './claude.js';
+import {
+  extractClineContext,
+  extractKiloCodeContext,
+  extractRooCodeContext,
+  parseClineSessions,
+  parseKiloCodeSessions,
+  parseRooCodeSessions,
+} from './cline.js';
 import { extractCodexContext, parseCodexSessions } from './codex.js';
 import { extractCopilotContext, parseCopilotSessions } from './copilot.js';
+import { extractCrushContext, parseCrushSessions } from './crush.js';
 import { extractCursorContext, parseCursorSessions } from './cursor.js';
 import { extractDroidContext, parseDroidSessions } from './droid.js';
 import { extractGeminiContext, parseGeminiSessions } from './gemini.js';
-import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
-import { extractAmpContext, parseAmpSessions } from './amp.js';
-import { extractKiroContext, parseKiroSessions } from './kiro.js';
-import { extractCrushContext, parseCrushSessions } from './crush.js';
-import {
-  extractClineContext, parseClineSessions,
-  extractRooCodeContext, parseRooCodeSessions,
-  extractKiloCodeContext, parseKiloCodeSessions,
-} from './cline.js';
-import { extractAntigravityContext, parseAntigravitySessions } from './antigravity.js';
 import { extractKimiContext, parseKimiSessions } from './kimi.js';
+import { extractKiroContext, parseKiroSessions } from './kiro.js';
+import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 
 /**
@@ -613,14 +616,14 @@ register({
   name: 'qwen-code',
   label: 'Qwen Code',
   color: chalk.hex('#6366F1'),
-  storagePath: '~/.qwen/tmp/*/chats/',
+  storagePath: '~/.qwen/projects/*/chats/',
   envVar: 'QWEN_HOME',
   binaryName: 'qwen',
   parseSessions: parseQwenCodeSessions,
   extractContext: extractQwenCodeContext,
-  nativeResumeArgs: () => ['--continue'],
+  nativeResumeArgs: (s) => ['--resume', s.id],
   crossToolArgs: (prompt) => [prompt],
-  resumeCommandDisplay: () => `qwen --continue`,
+  resumeCommandDisplay: (s) => `qwen --resume ${s.id}`,
   mapHandoffFlags: mapGeminiFlags,
 });
 

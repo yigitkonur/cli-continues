@@ -996,12 +996,14 @@ export function createKimiFixture(): FixtureDir {
 
 /**
  * Create a temporary directory with Qwen Code session fixtures
- * Storage: ~/.qwen/tmp/<sha256-hash>/chats/<sessionId>.jsonl
+ * Storage: ~/.qwen/projects/<sanitized-cwd>/chats/<sessionId>.jsonl
+ * sanitizeCwd replaces [^a-zA-Z0-9] with '-'
  */
 export function createQwenCodeFixture(): FixtureDir {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-qwen-code-'));
-  const projectHash = createHash('sha256').update('/home/user/project').digest('hex');
-  const chatsDir = path.join(root, projectHash, 'chats');
+  // sanitizeCwd('/home/user/project') → '-home-user-project'
+  const sanitizedCwd = '/home/user/project'.replace(/[^a-zA-Z0-9]/g, '-');
+  const chatsDir = path.join(root, sanitizedCwd, 'chats');
   fs.mkdirSync(chatsDir, { recursive: true });
 
   const sessionId = 'test-qwen-code-session-1';
@@ -1029,15 +1031,35 @@ export function createQwenCodeFixture(): FixtureDir {
       message: {
         role: 'model',
         parts: [
+          { text: 'Let me think about this...', thought: true },
           { text: 'I found the issue in login.ts. The token validation was missing.' },
           { functionCall: { name: 'read_file', args: { file_path: 'login.ts' } } },
         ],
       },
-      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200 },
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200, thoughtsTokenCount: 50 },
+    }),
+    JSON.stringify({
+      uuid: '00000000-0000-0000-0000-000000000005',
+      parentUuid: '00000000-0000-0000-0000-000000000002',
+      sessionId,
+      timestamp: '2026-01-15T10:00:07.000Z',
+      type: 'tool_result',
+      cwd: '/home/user/project',
+      version: '1.0.0',
+      toolCallResult: {
+        displayName: 'Edit',
+        status: 'ok',
+        resultDisplay: {
+          fileName: 'login.ts',
+          fileDiff: '+  validateToken(token);\n-  // missing validation',
+          originalContent: '// missing validation',
+          diffStat: { model_added_lines: 1, model_removed_lines: 1 },
+        },
+      },
     }),
     JSON.stringify({
       uuid: '00000000-0000-0000-0000-000000000003',
-      parentUuid: '00000000-0000-0000-0000-000000000002',
+      parentUuid: '00000000-0000-0000-0000-000000000005',
       sessionId,
       timestamp: '2026-01-15T10:00:10.000Z',
       type: 'user',

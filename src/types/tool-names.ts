@@ -36,6 +36,8 @@ export const SHELL_TOOLS: ReadonlySet<string> = new Set([
   'bash',
   'terminal',
   'run_terminal_command',
+  'run_shell_command',
+  'Shell',
   'exec_command',
   'shell_command',
   'Execute',
@@ -48,13 +50,38 @@ export const READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'ReadFile', 'rea
 export const WRITE_TOOLS: ReadonlySet<string> = new Set(['Write', 'WriteFile', 'write_file', 'Create', 'create_file']);
 
 /** File edit/patch tools */
-export const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'EditFile', 'edit_file', 'apply_diff', 'apply_patch', 'ApplyPatch']);
+export const EDIT_TOOLS: ReadonlySet<string> = new Set([
+  'Edit',
+  'EditFile',
+  'edit_file',
+  'edit',
+  'apply_diff',
+  'apply_patch',
+  'ApplyPatch',
+  'replace',
+]);
 
 /** Search/grep tools */
-export const GREP_TOOLS: ReadonlySet<string> = new Set(['Grep', 'grep', 'codebase_search']);
+export const GREP_TOOLS: ReadonlySet<string> = new Set([
+  'Grep',
+  'grep',
+  'grep_search',
+  'codebase_search',
+  'search_file_content',
+  'SearchFiles',
+]);
 
 /** Glob/directory listing tools */
-export const GLOB_TOOLS: ReadonlySet<string> = new Set(['Glob', 'glob', 'list_directory', 'file_search', 'LS']);
+export const GLOB_TOOLS: ReadonlySet<string> = new Set([
+  'Glob',
+  'glob',
+  'list_directory',
+  'ListFiles',
+  'file_search',
+  'LS',
+  'FindFiles',
+  'ReadFolder',
+]);
 
 /** Web search tools */
 export const SEARCH_TOOLS: ReadonlySet<string> = new Set(['WebSearch', 'web_search', 'web_search_call']);
@@ -72,7 +99,21 @@ export const TASK_OUTPUT_TOOLS: ReadonlySet<string> = new Set(['TaskOutput']);
 export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'request_user_input']);
 
 /** Tools to skip — internal bookkeeping, no useful handoff context */
-export const SKIP_TOOLS: ReadonlySet<string> = new Set(['TaskStop', 'ExitPlanMode', 'TodoWrite', 'update_plan', 'view_image']);
+export const SKIP_TOOLS: ReadonlySet<string> = new Set([
+  'TaskStop',
+  'ExitPlanMode',
+  'exit_plan_mode',
+  'TodoWrite',
+  'todo_write',
+  'SaveMemory',
+  'save_memory',
+  'Skill',
+  'skill',
+  'Lsp',
+  'lsp',
+  'update_plan',
+  'view_image',
+]);
 
 // ── Tool Sample Classification ──────────────────────────────────────────────
 

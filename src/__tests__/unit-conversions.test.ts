@@ -848,7 +848,7 @@ beforeAll(() => {
     cwd: '/home/user/project',
     repo: 'user/project',
     branch: 'main',
-    lines: 4,
+    lines: 5,
     bytes: fs.statSync(qwenCodeFile).size,
     createdAt: now,
     updatedAt: now,
