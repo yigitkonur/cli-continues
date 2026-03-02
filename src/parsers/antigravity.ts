@@ -1,29 +1,28 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as fsp from 'node:fs/promises';
+import * as path from 'node:path';
+import * as readline from 'node:readline';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
-import type {
-  ConversationMessage,
-  SessionContext,
-  SessionSource,
-  UnifiedSession,
-} from '../types/index.js';
+import type { ConversationMessage, SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
 
 const ANTIGRAVITY_BASE_DIR = path.join(
   process.env.GEMINI_CLI_HOME || homeDir(),
-  '.gemini', 'antigravity', 'code_tracker'
+  '.gemini',
+  'antigravity',
+  'code_tracker',
 );
 
 const SOURCE_NAME: SessionSource = 'antigravity';
 
-// ⚠️  FORMAT NOTE: This parser handles JSONL conversation logs from Antigravity's
+// ⚠️  FORMAT NOTE: This parser handles JSON conversation logs from Antigravity's
 // code_tracker directory. Real Antigravity installations may also store raw file
 // snapshots (binary/text diffs) in code_tracker/ — those are NOT parsed here.
-// This parser only processes *.jsonl files containing {type, content, timestamp} entries.
+// This parser processes *.json (and legacy *.jsonl) files containing {type, content, timestamp} entries.
 
 /** Shape of a single line entry after stripping the binary prefix */
 interface AntigravityEntry {
@@ -35,7 +34,7 @@ interface AntigravityEntry {
 // ── Line Parsing ────────────────────────────────────────────────────────────
 
 /**
- * Strip binary/protobuf prefix bytes that precede the JSON on each JSONL line.
+ * Strip binary/protobuf prefix bytes that precede the JSON on each session file line.
  * Returns the substring starting from the first `{`, or null if none found.
  */
 function stripBinaryPrefix(line: string): string | null {
@@ -45,7 +44,7 @@ function stripBinaryPrefix(line: string): string | null {
 }
 
 /**
- * Parse a single JSONL line into an entry.
+ * Parse a single line into an entry.
  * Returns null for empty lines, lines without JSON, or invalid payloads.
  */
 function parseLine(line: string): AntigravityEntry | null {
@@ -55,12 +54,7 @@ function parseLine(line: string): AntigravityEntry | null {
 
   try {
     const obj = JSON.parse(json);
-    if (
-      typeof obj === 'object' &&
-      obj !== null &&
-      typeof obj.type === 'string' &&
-      typeof obj.content === 'string'
-    ) {
+    if (typeof obj === 'object' && obj !== null && typeof obj.type === 'string' && typeof obj.content === 'string') {
       return {
         type: obj.type,
         timestamp: typeof obj.timestamp === 'string' ? obj.timestamp : '',
@@ -75,18 +69,22 @@ function parseLine(line: string): AntigravityEntry | null {
 
 // ── File I/O ────────────────────────────────────────────────────────────────
 
-/** Read and parse all entries from an Antigravity JSONL file */
-function parseJSONLFile(filePath: string): AntigravityEntry[] {
+/** Read and parse all entries from an Antigravity session file (streamed) */
+async function parseSessionFile(filePath: string): Promise<AntigravityEntry[]> {
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({
+      input: stream,
+      crlfDelay: Number.POSITIVE_INFINITY,
+    });
     const entries: AntigravityEntry[] = [];
-    for (const line of raw.split('\n')) {
+    for await (const line of rl) {
       const entry = parseLine(line);
       if (entry) entries.push(entry);
     }
     return entries;
   } catch (err) {
-    logger.debug('antigravity: failed to read JSONL file', filePath, err);
+    logger.debug('antigravity: failed to read session file', filePath, err);
     return [];
   }
 }
@@ -95,32 +93,41 @@ function parseJSONLFile(filePath: string): AntigravityEntry[] {
 function parseTimestamp(ts: string, fallback: Date): Date {
   if (!ts) return fallback;
   const d = new Date(ts);
-  return isNaN(d.getTime()) ? fallback : d;
+  return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
-/** Find all *.jsonl session files under the code_tracker project dirs */
-async function findSessionFiles(): Promise<string[]> {
+/** Tuple returned by findSessionFiles — captures the project directory at discovery time */
+interface SessionFileEntry {
+  filePath: string;
+  projectDir: string;
+}
+
+/** Find all *.json / *.jsonl session files under the code_tracker project dirs */
+async function findSessionFiles(): Promise<SessionFileEntry[]> {
   if (!fs.existsSync(ANTIGRAVITY_BASE_DIR)) return [];
 
-  const results: string[] = [];
+  const results: SessionFileEntry[] = [];
   for (const projectDir of listSubdirectories(ANTIGRAVITY_BASE_DIR)) {
-    results.push(
-      ...findFiles(projectDir, {
-        match: (entry) => entry.name.endsWith('.jsonl'),
-        recursive: false,
-      }),
-    );
+    for (const filePath of findFiles(projectDir, {
+      match: (entry) => entry.name.endsWith('.json') || entry.name.endsWith('.jsonl'),
+      recursive: true,
+    })) {
+      results.push({ filePath, projectDir });
+    }
   }
   return results;
 }
 
 /**
- * Derive project name from the JSONL file's parent directory.
+ * Derive project name from the discovered project directory.
  * "no_repo" falls back to "antigravity".
+ * Strips trailing _<hex-hash> suffix (e.g., "marketing_c6b0a246..." → "marketing").
  */
-function projectNameFromPath(filePath: string): string {
-  const dirName = path.basename(path.dirname(filePath));
-  return dirName === 'no_repo' ? 'antigravity' : dirName;
+function projectNameFromDir(projectDir: string): string {
+  const dirName = path.basename(projectDir);
+  if (dirName === 'no_repo') return 'antigravity';
+  const hashSuffix = dirName.match(/_[0-9a-f]{8,}$/);
+  return hashSuffix ? dirName.slice(0, hashSuffix.index) : dirName;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -132,17 +139,19 @@ export async function parseAntigravitySessions(): Promise<UnifiedSession[]> {
   const files = await findSessionFiles();
   const sessions: UnifiedSession[] = [];
 
-  for (const filePath of files) {
+  for (const { filePath, projectDir } of files) {
     try {
-      const entries = parseJSONLFile(filePath);
+      const entries = await parseSessionFile(filePath);
       const relevant = entries.filter((e) => e.type === 'user' || e.type === 'assistant');
       if (relevant.length === 0) continue;
 
-      const fileStats = fs.statSync(filePath);
+      const fileStats = await fsp.stat(filePath);
       const mtime = fileStats.mtime;
 
-      const sessionId = path.basename(filePath, '.jsonl');
-      const projectName = projectNameFromPath(filePath);
+      let sessionId = path.basename(filePath);
+      if (sessionId.endsWith('.json')) sessionId = sessionId.slice(0, -5);
+      else if (sessionId.endsWith('.jsonl')) sessionId = sessionId.slice(0, -6);
+      const projectName = projectNameFromDir(projectDir);
 
       const firstUser = relevant.find((e) => e.type === 'user');
       const summary = firstUser ? cleanSummary(firstUser.content) : undefined;
@@ -181,13 +190,14 @@ export async function extractAntigravityContext(
   config?: VerbosityConfig,
 ): Promise<SessionContext> {
   const resolvedConfig = config ?? getPreset('standard');
-  const entries = parseJSONLFile(session.originalPath);
+  const entries = await parseSessionFile(session.originalPath);
 
   let fallbackDate = session.updatedAt;
   try {
-    fallbackDate = fs.statSync(session.originalPath).mtime;
-  } catch {
-    // Use session.updatedAt if file is gone
+    const stat = await fsp.stat(session.originalPath);
+    fallbackDate = stat.mtime;
+  } catch (err) {
+    logger.debug('antigravity: stat failed, using session.updatedAt', err);
   }
 
   const allMessages: ConversationMessage[] = [];
@@ -205,10 +215,10 @@ export async function extractAntigravityContext(
   const markdown = generateHandoffMarkdown(
     session,
     recentMessages,
-    [],  // filesModified — not tracked by Antigravity
-    [],  // pendingTasks — not tracked by Antigravity
-    [],  // toolSummaries — no tool calls in Antigravity
-    undefined,  // sessionNotes — no tokens/reasoning
+    [], // filesModified — not tracked by Antigravity
+    [], // pendingTasks — not tracked by Antigravity
+    [], // toolSummaries — no tool calls in Antigravity
+    undefined, // sessionNotes — no tokens/reasoning
     resolvedConfig,
   );
 
