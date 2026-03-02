@@ -508,7 +508,9 @@ export const KimiMetadataSchema = z
 export const KimiMessageSchema = z
   .object({
     role: z.string(),
-    content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough())]).optional(),
+    content: z
+      .union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough())])
+      .optional(),
     tool_calls: z
       .array(
         z
@@ -545,6 +547,103 @@ export const CursorTranscriptLineSchema = z
   .passthrough();
 
 export type CursorTranscriptLine = z.infer<typeof CursorTranscriptLineSchema>;
+
+// ── Qwen Code ──────────────────────────────────────────────────────────────
+
+export const QwenPartSchema = z
+  .object({
+    text: z.string().optional(),
+    thought: z.boolean().optional(),
+    functionCall: z
+      .object({
+        name: z.string(),
+        args: z.record(z.string(), z.unknown()).optional(),
+      })
+      .passthrough()
+      .optional(),
+    functionResponse: z
+      .object({
+        name: z.string(),
+        response: z
+          .object({
+            output: z.string().optional(),
+            status: z.string().optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type QwenPart = z.infer<typeof QwenPartSchema>;
+
+export const QwenContentSchema = z
+  .object({
+    role: z.string().optional(),
+    parts: z.array(QwenPartSchema).optional(),
+  })
+  .passthrough();
+
+export type QwenContent = z.infer<typeof QwenContentSchema>;
+
+export const QwenFileDiffSchema = z
+  .object({
+    fileName: z.string().optional(),
+    fileDiff: z.string().optional(),
+    originalContent: z.union([z.string(), z.null()]).optional(),
+    diffStat: z
+      .object({
+        model_added_lines: z.number().optional(),
+        model_removed_lines: z.number().optional(),
+      })
+      .passthrough()
+      .optional(),
+    type: z.string().optional(),
+  })
+  .passthrough();
+
+export type QwenFileDiff = z.infer<typeof QwenFileDiffSchema>;
+
+export const QwenToolCallResultSchema = z
+  .object({
+    displayName: z.string().optional(),
+    status: z.string().optional(),
+    resultDisplay: z.union([z.string(), QwenFileDiffSchema, z.record(z.string(), z.unknown())]).optional(),
+  })
+  .passthrough();
+
+export const QwenUsageMetadataSchema = z
+  .object({
+    promptTokenCount: z.number().optional(),
+    candidatesTokenCount: z.number().optional(),
+    totalTokenCount: z.number().optional(),
+    cachedContentTokenCount: z.number().optional(),
+    thoughtsTokenCount: z.number().optional(),
+  })
+  .passthrough();
+
+export const QwenChatRecordSchema = z
+  .object({
+    uuid: z.string(),
+    parentUuid: z.union([z.string(), z.null()]),
+    sessionId: z.string(),
+    timestamp: z.string(),
+    type: z.enum(['user', 'assistant', 'tool_result', 'system']),
+    subtype: z.string().optional(),
+    cwd: z.string(),
+    version: z.string().optional(),
+    gitBranch: z.string().optional(),
+    message: QwenContentSchema.optional(),
+    usageMetadata: QwenUsageMetadataSchema.optional(),
+    model: z.string().optional(),
+    toolCallResult: QwenToolCallResultSchema.optional(),
+    systemPayload: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type QwenChatRecord = z.infer<typeof QwenChatRecordSchema>;
 
 // ── Serialized Session (Index JSONL) ────────────────────────────────────────
 

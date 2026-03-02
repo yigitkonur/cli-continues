@@ -851,7 +851,7 @@ export function createKiloCodeFixture(): FixtureDir {
 }
 
 /**
- * Create a temporary directory with Antigravity session fixtures (JSON with type/content/timestamp)
+ * Create a temporary directory with Antigravity session fixtures (JSONL with type/content/timestamp)
  */
 export function createAntigravityFixture(): FixtureDir {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-antigravity-'));
@@ -879,7 +879,7 @@ export function createAntigravityFixture(): FixtureDir {
     }),
   ];
 
-  fs.writeFileSync(path.join(root, 'session.json'), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'session.jsonl'), lines.join('\n') + '\n');
 
   return {
     root,

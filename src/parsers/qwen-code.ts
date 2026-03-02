@@ -11,6 +11,8 @@ import type {
   ToolUsageSummary,
   UnifiedSession,
 } from '../types/index.js';
+import { QwenChatRecordSchema } from '../types/schemas.js';
+import type { QwenChatRecord, QwenContent, QwenFileDiff, QwenPart } from '../types/schemas.js';
 import { classifyToolName } from '../types/tool-names.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
@@ -22,74 +24,11 @@ const qwenHome = process.env.QWEN_HOME || homeDir();
 // sanitizeCwd replaces all non-alphanumeric chars with '-'
 const QWEN_PROJECTS_DIR = path.join(qwenHome, '.qwen', 'projects');
 
-// -- ChatRecord types ---------------------------------------------------------
-
-interface QwenPart {
-  text?: string;
-  thought?: boolean;
-  functionCall?: { name: string; args: Record<string, unknown> };
-  functionResponse?: { name: string; response: { output?: string; status?: string } };
-}
-
-interface QwenContent {
-  role?: string;
-  parts?: QwenPart[];
-}
-
-interface QwenToolCallResult {
-  displayName?: string;
-  status?: string;
-  resultDisplay?: string | QwenFileDiff | QwenTodoResult;
-}
-
-interface QwenFileDiff {
-  fileName?: string;
-  fileDiff?: string;
-  originalContent?: string | null;
-  diffStat?: { model_added_lines?: number; model_removed_lines?: number };
-  type?: string;
-}
-
-interface QwenTodoResult {
-  type?: string;
-  todos?: unknown[];
-}
-
-interface QwenUsageMetadata {
-  promptTokenCount?: number;
-  candidatesTokenCount?: number;
-  totalTokenCount?: number;
-  cachedContentTokenCount?: number;
-  thoughtsTokenCount?: number;
-}
-
-interface QwenSystemPayload {
-  type?: string;
-  summary?: string;
-}
-
-interface QwenChatRecord {
-  uuid: string;
-  parentUuid: string | null;
-  sessionId: string;
-  timestamp: string;
-  type: 'user' | 'assistant' | 'tool_result' | 'system';
-  subtype?: 'chat_compression' | 'slash_command' | 'ui_telemetry' | 'at_command';
-  cwd: string;
-  version?: string;
-  gitBranch?: string;
-  message?: QwenContent;
-  usageMetadata?: QwenUsageMetadata;
-  model?: string;
-  toolCallResult?: QwenToolCallResult;
-  systemPayload?: QwenSystemPayload;
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Type guard: is resultDisplay a FileDiff object (not a string or todo)? */
-function isFileDiff(rd: string | QwenFileDiff | QwenTodoResult | undefined): rd is QwenFileDiff {
-  if (!rd || typeof rd === 'string') return false;
+function isFileDiff(rd: unknown): rd is QwenFileDiff {
+  if (!rd || typeof rd !== 'object') return false;
   return 'fileName' in rd || 'fileDiff' in rd;
 }
 
@@ -110,7 +49,8 @@ async function readJsonlRecords(filePath: string): Promise<QwenChatRecord[]> {
   for await (const line of rl) {
     if (!line.trim()) continue;
     try {
-      records.push(JSON.parse(line) as QwenChatRecord);
+      const parsed = QwenChatRecordSchema.safeParse(JSON.parse(line));
+      if (parsed.success) records.push(parsed.data);
     } catch {
       logger.debug('qwen-code: skipping malformed JSONL line in', filePath);
     }
@@ -196,7 +136,9 @@ async function extractSessionMeta(filePath: string): Promise<{
     lineCount++;
 
     try {
-      const record = JSON.parse(line) as QwenChatRecord;
+      const parsed = QwenChatRecordSchema.safeParse(JSON.parse(line));
+      if (!parsed.success) continue;
+      const record = parsed.data;
 
       if (!sessionId && record.sessionId) sessionId = record.sessionId;
       if (!cwd && record.cwd) cwd = record.cwd;
