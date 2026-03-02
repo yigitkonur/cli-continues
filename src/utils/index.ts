@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger.js';
@@ -20,14 +21,17 @@ const ENV_FINGERPRINT_PREFIX = '#env:';
  * When any of these env vars change, the cached index must be rebuilt.
  */
 function computeEnvFingerprint(): string {
+  const seen = new Set<string>();
   const parts: string[] = [];
   for (const adapter of Object.values(adapters)) {
-    if (adapter.envVar) {
+    if (adapter.envVar && !seen.has(adapter.envVar)) {
+      seen.add(adapter.envVar);
       const val = process.env[adapter.envVar] || '';
       parts.push(`${adapter.envVar}=${val}`);
     }
   }
-  return parts.sort().join('|');
+  // Hash to avoid leaking user-specific paths in the on-disk cache
+  return createHash('sha256').update(parts.sort().join('|')).digest('hex');
 }
 
 /**

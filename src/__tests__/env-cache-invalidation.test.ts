@@ -10,6 +10,7 @@
  * when the fingerprint changes.
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -131,6 +132,7 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
   });
 
   it('fingerprint line is not parseable as JSON', () => {
-    expect(() => JSON.parse('#env:CLAUDE_CONFIG_DIR=/some/path')).toThrow();
+    const hash = createHash('sha256').update('test').digest('hex');
+    expect(() => JSON.parse(`#env:\${hash}`)).toThrow();
   });
 });

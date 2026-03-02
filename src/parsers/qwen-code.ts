@@ -22,76 +22,19 @@ const qwenHome = process.env.QWEN_HOME || homeDir();
 // sanitizeCwd replaces all non-alphanumeric chars with '-'
 const QWEN_PROJECTS_DIR = path.join(qwenHome, '.qwen', 'projects');
 
-// ── ChatRecord types ────────────────────────────────────────────────────────
-// Matches QwenLM/qwen-code ChatRecord interface from chatRecordingService.ts
-
-interface QwenPart {
-  text?: string;
-  thought?: boolean;
-  functionCall?: { name: string; args: Record<string, unknown> };
-  functionResponse?: { name: string; response: { output?: string; status?: string } };
-}
-
-interface QwenContent {
-  role?: string;
-  parts?: QwenPart[];
-}
-
-interface QwenToolCallResult {
-  displayName?: string;
-  status?: string;
-  resultDisplay?: string | QwenFileDiff | QwenTodoResult;
-}
-
-interface QwenFileDiff {
-  fileName?: string;
-  fileDiff?: string;
-  originalContent?: string | null;
-  diffStat?: { model_added_lines?: number; model_removed_lines?: number };
-  type?: string;
-}
-
-interface QwenTodoResult {
-  type?: string;
-  todos?: unknown[];
-}
-
-interface QwenUsageMetadata {
-  promptTokenCount?: number;
-  candidatesTokenCount?: number;
-  totalTokenCount?: number;
-  cachedContentTokenCount?: number;
-  thoughtsTokenCount?: number;
-}
-
-interface QwenSystemPayload {
-  type?: string;
-  summary?: string;
-}
-
-interface QwenChatRecord {
-  uuid: string;
-  parentUuid: string | null;
-  sessionId: string;
-  timestamp: string;
-  type: 'user' | 'assistant' | 'tool_result' | 'system';
-  subtype?: 'chat_compression' | 'slash_command' | 'ui_telemetry' | 'at_command';
-  cwd: string;
-  version?: string;
-  gitBranch?: string;
-  message?: QwenContent;
-  usageMetadata?: QwenUsageMetadata;
-  model?: string;
-  toolCallResult?: QwenToolCallResult;
-  systemPayload?: QwenSystemPayload;
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Type guard: is resultDisplay a FileDiff object (not a string or todo)? */
-function isFileDiff(rd: string | QwenFileDiff | QwenTodoResult | undefined): rd is QwenFileDiff {
+/** Type guard: is resultDisplay a FileDiff object (not a string)? */
+function isFileDiff(rd: QwenChatRecord['toolCallResult'] extends { resultDisplay?: infer R } ? R : never): rd is QwenFileDiff {
   if (!rd || typeof rd === 'string') return false;
   return 'fileName' in rd || 'fileDiff' in rd;
+}
+
+/** Parse a timestamp string defensively, falling back to a given Date */
+function parseTimestamp(ts: string, fallback: Date): Date {
+  if (!ts) return fallback;
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? fallback : d;
 }
 
 // ── JSONL reading ───────────────────────────────────────────────────────────
@@ -220,10 +163,13 @@ function extractToolData(
   config?: VerbosityConfig,
 ): { summaries: ToolUsageSummary[]; filesModified: string[] } {
   const collector = new SummaryCollector(config);
+  const processedCallUuids = new Set<string>();
 
   for (const record of records) {
     // Extract from functionCall parts in assistant messages
     if (record.type === 'assistant' && record.message?.parts) {
+      const hasFunctionCalls = record.message.parts.some((p) => p.functionCall);
+      if (hasFunctionCalls) processedCallUuids.add(record.uuid);
       for (const part of record.message.parts) {
         if (!part.functionCall) continue;
         const { name, args } = part.functionCall;
@@ -344,8 +290,9 @@ function extractToolData(
       }
     }
 
-    // Extract from tool_result records with enriched metadata
+    // Extract from tool_result records with enriched metadata (skip if parent already processed via functionCall)
     if (record.type === 'tool_result' && record.toolCallResult) {
+      if (record.parentUuid && processedCallUuids.has(record.parentUuid)) continue;
       const tcr = record.toolCallResult;
       const displayName = tcr.displayName || '';
       const isError = tcr.status ? !['ok', 'success', 'completed'].includes(tcr.status.toLowerCase()) : false;
@@ -431,6 +378,43 @@ function extractSessionNotes(records: QwenChatRecord[]): SessionNotes {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
+/** Reconstruct main conversation path by walking from latest leaf back via parentUuid */
+function reconstructMainPath(records: QwenChatRecord[]): QwenChatRecord[] {
+  if (records.length === 0) return [];
+
+  // Build parent→children map and uuid→record map
+  const byUuid = new Map<string, QwenChatRecord>();
+  const parentUuids = new Set<string>();
+
+  for (const r of records) {
+    byUuid.set(r.uuid, r);
+    if (r.parentUuid) parentUuids.add(r.parentUuid);
+  }
+
+  // Find the latest leaf (record with no children, latest timestamp)
+  let latestLeaf = records[records.length - 1]; // fallback
+  let latestTime = 0;
+  for (const r of records) {
+    if (!parentUuids.has(r.uuid)) {
+      const t = new Date(r.timestamp).getTime();
+      if (!Number.isNaN(t) && t > latestTime) {
+        latestTime = t;
+        latestLeaf = r;
+      }
+    }
+  }
+
+  // Walk back from leaf to root via parentUuid
+  const pathResult: QwenChatRecord[] = [];
+  let current: QwenChatRecord | undefined = latestLeaf;
+  while (current) {
+    pathResult.unshift(current);
+    current = current.parentUuid ? byUuid.get(current.parentUuid) : undefined;
+  }
+
+  return pathResult;
+}
+
 export async function parseQwenCodeSessions(): Promise<UnifiedSession[]> {
   const files = await findSessionFiles();
   const sessions: UnifiedSession[] = [];
@@ -450,8 +434,8 @@ export async function parseQwenCodeSessions(): Promise<UnifiedSession[]> {
         branch: meta.gitBranch,
         lines: meta.lineCount,
         bytes: fileStats.size,
-        createdAt: new Date(meta.firstTimestamp),
-        updatedAt: new Date(meta.lastTimestamp),
+        createdAt: parseTimestamp(meta.firstTimestamp, fileStats.mtime),
+        updatedAt: parseTimestamp(meta.lastTimestamp, fileStats.mtime),
         originalPath: filePath,
         summary: cleanSummary(meta.firstUserMessage) || undefined,
         model: meta.model,
@@ -478,8 +462,9 @@ export async function extractQwenCodeContext(
   const toolData = extractToolData(records, resolvedConfig);
   const sessionNotes = extractSessionNotes(records);
 
-  // Extract recent messages and pending tasks from the tail
-  const messageRecords = records.filter((r) => r.type === 'user' || r.type === 'assistant');
+  // Extract recent messages and pending tasks from main conversation path
+  const mainPath = reconstructMainPath(records);
+  const messageRecords = mainPath.filter((r) => r.type === 'user' || r.type === 'assistant');
   for (const record of messageRecords.slice(-resolvedConfig.recentMessages * 2)) {
     // Extract pending tasks from thought parts
     if (record.type === 'assistant' && record.message?.parts && pendingTasks.length < 5) {
