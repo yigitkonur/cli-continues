@@ -1,6 +1,7 @@
 /**
- * Test fixtures - sanitized session data for all 5 tools
+ * Test fixtures - sanitized session data for supported parsers
  */
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -869,6 +870,113 @@ export function createAntigravityFixture(): FixtureDir {
   ];
 
   fs.writeFileSync(path.join(root, 'session.jsonl'), lines.join('\n') + '\n');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
+ * Create a temporary directory with Kimi session fixtures
+ *
+ * Mirrors Kimi CLI's share-dir layout:
+ *   ~/.kimi/kimi.json
+ *   ~/.kimi/sessions/<md5(work_dir)>/<session_id>/{context.jsonl, metadata.json, wire.jsonl, state.json}
+ */
+export function createKimiFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-kimi-'));
+  const kimiDir = path.join(root, '.kimi');
+
+  const workDirPath = '/home/user/project';
+  const sessionId = 'test-kimi-session-1';
+  const workDirHash = createHash('md5').update(workDirPath, 'utf8').digest('hex');
+  const sessionDir = path.join(kimiDir, 'sessions', workDirHash, sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  // ~/.kimi/kimi.json — work dir index used for resolving cwd from workdir hash
+  fs.writeFileSync(
+    path.join(kimiDir, 'kimi.json'),
+    JSON.stringify(
+      {
+        work_dirs: [{ path: workDirPath, kaos: 'local', last_session_id: sessionId }],
+      },
+      null,
+      2,
+    ),
+  );
+
+  // context.jsonl — includes string + block-array content plus special markers
+  const contextLines = [
+    JSON.stringify({
+      role: 'user',
+      content: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      content: [
+        { type: 'think', think: 'Need to inspect login.ts and validate token flow first.' },
+        { type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' },
+      ],
+      tool_calls: [
+        {
+          type: 'function',
+          id: 'tc-001',
+          function: {
+            name: 'ReadFile',
+            arguments: JSON.stringify({ file_path: '/home/user/project/login.ts' }),
+          },
+        },
+      ],
+    }),
+    JSON.stringify({ role: '_usage', token_count: 256 }),
+    JSON.stringify({ role: '_checkpoint', id: 0 }),
+    JSON.stringify({
+      role: 'user',
+      content: 'Great, please also add error handling',
+    }),
+    JSON.stringify({
+      role: 'assistant',
+      content: 'Done. I added try-catch blocks and proper error messages.',
+    }),
+  ];
+  fs.writeFileSync(path.join(sessionDir, 'context.jsonl'), contextLines.join('\n') + '\n');
+
+  // metadata.json — optional in Kimi, but included here for schema/compat coverage
+  fs.writeFileSync(
+    path.join(sessionDir, 'metadata.json'),
+    JSON.stringify(
+      {
+        session_id: sessionId,
+        title: 'Fix auth bug',
+        title_generated: false,
+        archived: false,
+        archived_at: null,
+        wire_mtime: null,
+      },
+      null,
+      2,
+    ),
+  );
+
+  // wire.jsonl/state.json — present in real Kimi CLI session directories
+  fs.writeFileSync(
+    path.join(sessionDir, 'wire.jsonl'),
+    `${JSON.stringify({ timestamp: 1736935200, message: { type: 'TurnBegin', payload: { user_input: 'Fix the authentication bug in login.ts' } } })}\n`,
+  );
+  fs.writeFileSync(
+    path.join(sessionDir, 'state.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        approval: { yolo: false, auto_approve_actions: [] },
+        dynamic_subagents: [],
+        additional_dirs: [],
+      },
+      null,
+      2,
+    ),
+  );
 
   return {
     root,

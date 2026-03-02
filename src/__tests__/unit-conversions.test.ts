@@ -19,6 +19,7 @@ import {
   createCursorFixture,
   createDroidFixture,
   createGeminiFixture,
+  createKimiFixture,
   createKiloCodeFixture,
   createKiroFixture,
   createOpenCodeSqliteFixture,
@@ -331,6 +332,38 @@ function parseAntigravityFixtureMessages(filePath: string): ConversationMessage[
   return messages;
 }
 
+function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.trim().split('\n');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.role !== 'user' && parsed.role !== 'assistant') continue;
+
+      const text =
+        typeof parsed.content === 'string'
+          ? parsed.content
+          : (parsed.content || [])
+              .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+              .map((b: any) => b.text)
+              .join('\n');
+
+      if (!text) continue;
+
+      messages.push({
+        role: parsed.role,
+        content: text,
+      });
+    } catch {
+      /* skip */
+    }
+  }
+
+  return messages;
+}
+
 // ─── Fixture Data ────────────────────────────────────────────────────────────
 
 // Derive from registry — automatically picks up new tools
@@ -352,6 +385,7 @@ beforeAll(() => {
   fixtures.cursor = createCursorFixture();
   fixtures.amp = createAmpFixture();
   fixtures.kiro = createKiroFixture();
+  fixtures.kimi = createKimiFixture();
   fixtures.cline = createClineFixture();
   fixtures['roo-code'] = createRooCodeFixture();
   fixtures['kilo-code'] = createKiloCodeFixture();
@@ -746,26 +780,26 @@ beforeAll(() => {
     markdown: generateHandoffMarkdown(antigravitySession, antigravityMsgs, [], [], []),
   };
 
-  // Kimi — inline context (fixture coverage is handled in kimi-parser.test.ts)
+  // Kimi
+  const kimiContextFile = fs
+    .readdirSync(fixtures.kimi.root, { recursive: true })
+    .map((f) => path.join(fixtures.kimi.root, f as string))
+    .find((f) => f.endsWith(`${path.sep}context.jsonl`) || f.endsWith('/context.jsonl'))!;
+  const kimiSessionDir = path.dirname(kimiContextFile);
   const kimiSession: UnifiedSession = {
-    id: 'test-kimi-session-1',
+    id: path.basename(kimiSessionDir),
     source: 'kimi',
     cwd: '/home/user/project',
     repo: 'user/project',
-    lines: 4,
-    bytes: 650,
+    lines: 6,
+    bytes: fs.statSync(kimiContextFile).size,
     createdAt: now,
     updatedAt: now,
-    originalPath: '/tmp/kimi-mock',
+    originalPath: kimiSessionDir,
     summary: 'Fix auth bug',
     model: 'kimi-k2.5',
   };
-  const kimiMsgs: ConversationMessage[] = [
-    { role: 'user', content: 'Fix the authentication bug in login.ts' },
-    { role: 'assistant', content: 'I found the issue in login.ts. The token validation was missing.' },
-    { role: 'user', content: 'Great, please also add error handling' },
-    { role: 'assistant', content: 'Done. I added try-catch blocks and proper error messages.' },
-  ];
+  const kimiMsgs = parseKimiFixtureMessages(kimiContextFile);
   contexts.kimi = {
     session: kimiSession,
     recentMessages: kimiMsgs,
