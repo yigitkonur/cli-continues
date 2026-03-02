@@ -1,4 +1,5 @@
 import { adapters } from '../parsers/registry.js';
+import * as os from 'os';
 import type {
   ConversationMessage,
   SessionNotes,
@@ -25,6 +26,13 @@ import {
 } from '../types/tool-names.js';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
+
+/** Replace home directory prefix with ~ and escape backticks for safe markdown inline code */
+const _home = os.homedir();
+export function safePath(p: string): string {
+  const tildified = p.startsWith(_home) ? '~' + p.slice(_home.length) : p;
+  return tildified.replace(/`/g, '\\`');
+}
 
 /** Human-readable labels for each session source — derived lazily from the adapter registry */
 let _sourceLabels: Record<string, string> | null = null;
@@ -120,6 +128,10 @@ export function generateHandoffMarkdown(
     `| **Session ID** | \`${session.id}\` |`,
     `| **Working Directory** | \`${session.cwd}\` |`,
   ];
+
+  if (session.originalPath) {
+    lines.push(`| **Session File** | \`${safePath(session.originalPath)}\` |`);
+  }
 
   if (session.repo) {
     lines.push(`| **Repository** | ${session.repo}${session.branch ? ` @ \`${session.branch}\`` : ''} |`);
@@ -230,6 +242,20 @@ export function generateHandoffMarkdown(
       lines.push(`- [ ] ${task}`);
     }
     lines.push('');
+    lines.push('');
+  }
+
+  if (session.originalPath) {
+    lines.push('## Session Origin');
+    lines.push('');
+    lines.push(`This session was extracted from **${labels[session.source] || session.source}** session data.`);
+    lines.push(`- **Session file**: \`${safePath(session.originalPath)}\``);
+    lines.push(`- **Session ID**: \`${session.id}\``);
+    if (session.cwd) {
+      lines.push(`- **Project directory**: \`${session.cwd}\``);
+    }
+    lines.push('');
+    lines.push('> To access the raw session data, inspect the file path above.');
     lines.push('');
   }
 

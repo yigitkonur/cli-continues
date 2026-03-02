@@ -11,7 +11,7 @@ import {
   resolveTargetForwarding,
 } from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
-import { getSourceLabels } from './markdown.js';
+import { getSourceLabels, safePath } from './markdown.js';
 import { SHELL_OPTION, WHICH_CMD } from './platform.js';
 
 /**
@@ -76,7 +76,8 @@ function buildInlinePrompt(context: SessionContext, session: UnifiedSession): st
   const sourceLabel = getSourceLabels()[session.source] || session.source;
 
   // Simple intro — the handoff markdown already has the full table, conversation, and closing directive
-  const intro = `I'm continuing a coding session from **${sourceLabel}**. Here's the full context:\n\n---\n\n`;
+  const sessionFileRef = session.originalPath ? ` (original session: \`${safePath(session.originalPath)}\`)` : '';
+  const intro = `I'm continuing a coding session from **${sourceLabel}**${sessionFileRef}. Here's the full context:\n\n---\n\n`;
 
   return intro + context.markdown;
 }
@@ -97,6 +98,7 @@ function buildReferencePrompt(session: UnifiedSession): string {
     `|--------|-------|`,
     `| Previous tool | ${sourceLabel} |`,
     `| Working directory | \`${session.cwd}\` |`,
+    session.originalPath ? `| Original session file | \`${safePath(session.originalPath)}\` |` : '',
     `| Context file | \`.continues-handoff.md\` |`,
     session.summary ? `| Last task | ${session.summary.slice(0, 80)} |` : '',
     ``,

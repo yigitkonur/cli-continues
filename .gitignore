@@ -6,6 +6,15 @@ dist/
 .continues-handoff.md
 .agent-workspace/
 stress-test-output.log
+# Generated / local tooling
+.agents/
+.claude/skills/
+.greptile/
+.superset/
+.windsurf/
+AGENTS.md
+REVIEW.md
+skills-lock.json
 .claude/CLAUDE.md
 .claude/settings.local.json
 .emdash.json
