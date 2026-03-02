@@ -745,6 +745,35 @@ beforeAll(() => {
     toolSummaries: [],
     markdown: generateHandoffMarkdown(antigravitySession, antigravityMsgs, [], [], []),
   };
+
+  // Kimi — inline context (fixture coverage is handled in kimi-parser.test.ts)
+  const kimiSession: UnifiedSession = {
+    id: 'test-kimi-session-1',
+    source: 'kimi',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 4,
+    bytes: 650,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: '/tmp/kimi-mock',
+    summary: 'Fix auth bug',
+    model: 'kimi-k2.5',
+  };
+  const kimiMsgs: ConversationMessage[] = [
+    { role: 'user', content: 'Fix the authentication bug in login.ts' },
+    { role: 'assistant', content: 'I found the issue in login.ts. The token validation was missing.' },
+    { role: 'user', content: 'Great, please also add error handling' },
+    { role: 'assistant', content: 'Done. I added try-catch blocks and proper error messages.' },
+  ];
+  contexts.kimi = {
+    session: kimiSession,
+    recentMessages: kimiMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(kimiSession, kimiMsgs, [], [], []),
+  };
 });
 
 afterAll(() => {

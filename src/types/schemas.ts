@@ -500,8 +500,8 @@ export const KimiMetadataSchema = z
     title: z.string().optional(),
     title_generated: z.boolean().optional(),
     archived: z.boolean().optional(),
-    archived_at: z.string().nullable().optional(),
-    wire_mtime: z.number().optional(),
+    archived_at: z.union([z.number(), z.string(), z.null()]).optional(),
+    wire_mtime: z.number().nullable().optional(),
   })
   .passthrough();
 

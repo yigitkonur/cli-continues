@@ -29,6 +29,7 @@ import {
   GeminiMessageSchema,
   GeminiSessionSchema,
   GeminiToolCallSchema,
+  KimiMetadataSchema,
   OpenCodeMessageSchema,
   OpenCodeSessionSchema,
   SerializedSessionSchema,
@@ -40,14 +41,14 @@ import { EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS, TOOL_NAMES, WRITE_TOOLS } from '..
 // ── tool-names.ts ────────────────────────────────────────────────────────────
 
 describe('TOOL_NAMES', () => {
-  it('contains exactly 14 tools', () => {
-    expect(TOOL_NAMES).toHaveLength(14);
+  it('contains exactly 15 tools', () => {
+    expect(TOOL_NAMES).toHaveLength(15);
   });
 
   it('includes all known tools', () => {
     const expected: SessionSource[] = [
       'claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid', 'cursor',
-      'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity',
+      'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi',
     ];
     expect([...TOOL_NAMES]).toEqual(expected);
   });
@@ -628,6 +629,28 @@ describe('CursorTranscriptLineSchema', () => {
       message: { content: [{ type: 'text', text: 'prompt' }] },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ── Kimi schemas ─────────────────────────────────────────────────────────────
+
+describe('KimiMetadataSchema', () => {
+  it('accepts nullable wire_mtime and numeric archived_at', () => {
+    const result = KimiMetadataSchema.safeParse({
+      session_id: 'kimi-session-1',
+      archived_at: 1735086302.21,
+      wire_mtime: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts legacy/string archived_at values', () => {
+    const result = KimiMetadataSchema.safeParse({
+      session_id: 'kimi-session-2',
+      archived_at: '2026-01-01T12:00:00.000Z',
+      wire_mtime: 1735086302.21,
+    });
+    expect(result.success).toBe(true);
   });
 });
 
