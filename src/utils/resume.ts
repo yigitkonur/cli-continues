@@ -49,14 +49,23 @@ export async function crossToolResume(
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
   const localPath = path.join(cwd, '.continues-handoff.md');
+  let handoffWritten = false;
   try {
     fs.writeFileSync(localPath, context.markdown);
+    handoffWritten = true;
   } catch (err) {
     logger.debug('resume: failed to write handoff file', localPath, err);
   }
 
   // Also save to global directory as backup
   saveContext(context);
+
+  // On Windows the prompt references .continues-handoff.md — the write must succeed
+  if (IS_WINDOWS && !handoffWritten) {
+    throw new Error(
+      `Failed to write handoff file to ${localPath}. Cross-tool resume on Windows requires this file. Check directory permissions.`,
+    );
+  }
 
   // Build prompt based on mode
   const prompt = IS_WINDOWS

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { UnifiedSession } from '../types/index.js';
+import { TOOL_NAMES } from '../types/tool-names.js';
 import { buildWindowsSafePrompt } from '../utils/resume.js';
 
 // Minimal session stub for testing
-function stubSession(source: string): UnifiedSession {
+function stubSession(source: UnifiedSession['source']): UnifiedSession {
   return {
     id: 'test-id',
-    source: source as UnifiedSession['source'],
+    source,
     summary: 'Test session',
     cwd: '/test/dir',
     updatedAt: new Date(),
@@ -48,7 +49,7 @@ describe('buildWindowsSafePrompt', () => {
   });
 
   it('should be safe for all supported tools', () => {
-    const tools = ['claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid', 'cursor'];
+    const tools = TOOL_NAMES;
     for (const tool of tools) {
       const prompt = buildWindowsSafePrompt(stubSession(tool));
       expect(CMD_METACHARACTERS.test(prompt)).toBe(false);
