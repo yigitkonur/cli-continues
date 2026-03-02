@@ -12,7 +12,7 @@ import {
 } from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
 import { getSourceLabels, safePath } from './markdown.js';
-import { SHELL_OPTION, WHICH_CMD } from './platform.js';
+import { IS_WINDOWS, SHELL_OPTION, WHICH_CMD } from './platform.js';
 
 /**
  * Resolve mapped + passthrough forward args for cross-tool launches.
@@ -49,8 +49,10 @@ export async function crossToolResume(
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
   const localPath = path.join(cwd, '.continues-handoff.md');
+  let handoffWritten = false;
   try {
     fs.writeFileSync(localPath, context.markdown);
+    handoffWritten = true;
   } catch (err) {
     logger.debug('resume: failed to write handoff file', localPath, err);
   }
@@ -58,8 +60,19 @@ export async function crossToolResume(
   // Also save to global directory as backup
   saveContext(context);
 
+  // On Windows the prompt references .continues-handoff.md — the write must succeed
+  if (IS_WINDOWS && !handoffWritten) {
+    throw new Error(
+      `Failed to write handoff file to ${localPath}. Cross-tool resume on Windows requires this file. Check directory permissions.`,
+    );
+  }
+
   // Build prompt based on mode
-  const prompt = mode === 'inline' ? buildInlinePrompt(context, session) : buildReferencePrompt(session);
+  const prompt = IS_WINDOWS
+    ? buildWindowsSafePrompt(session)
+    : mode === 'inline'
+      ? buildInlinePrompt(context, session)
+      : buildReferencePrompt(session);
 
   const adapter = adapters[target];
   if (!adapter) throw new Error(`Unknown target: ${target}`);
@@ -106,6 +119,21 @@ function buildReferencePrompt(session: UnifiedSession): string {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * Build a single-line, cmd.exe-safe prompt for Windows cross-tool handoff.
+ *
+ * On Windows, `spawn()` with `shell: true` passes args through `cmd.exe`,
+ * which treats embedded newlines as command separators and splits on shell
+ * metacharacters (`|`, `&`, `>`, `<`, `^`, `%`, `!`, backticks, `"`).
+ * Additionally, `cmd.exe` has an 8191-character command-line limit.
+ *
+ * Since `.continues-handoff.md` is already written to the project directory,
+ * this prompt simply instructs the target tool to read that file.
+ */
+export function buildWindowsSafePrompt(session: UnifiedSession): string {
+  return `Continuing a coding session from ${session.source}. Read the file .continues-handoff.md in the current directory for full context and continue where it left off.`;
 }
 
 /**
