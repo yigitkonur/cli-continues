@@ -20,6 +20,7 @@ export const TOOL_NAMES = Object.freeze([
   'kilo-code',
   'antigravity',
   'kimi',
+  'qwen-code',
 ] as const);
 
 /** Source CLI tool — derived from TOOL_NAMES, never defined manually */

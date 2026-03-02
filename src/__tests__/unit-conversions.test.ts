@@ -19,10 +19,11 @@ import {
   createCursorFixture,
   createDroidFixture,
   createGeminiFixture,
-  createKimiFixture,
   createKiloCodeFixture,
+  createKimiFixture,
   createKiroFixture,
   createOpenCodeSqliteFixture,
+  createQwenCodeFixture,
   createRooCodeFixture,
   type FixtureDir,
 } from './fixtures/index.js';
@@ -314,19 +315,15 @@ function parseAntigravityFixtureMessages(filePath: string): ConversationMessage[
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line);
-      const text = (parsed.parts || [])
-        .filter((p: any) => p.text)
-        .map((p: any) => p.text)
-        .join('\n');
-      if (!text) continue;
+      if (typeof parsed.content !== 'string' || !parsed.content) continue;
 
-      if (parsed.role === 'user') {
-        messages.push({ role: 'user', content: text });
-      } else if (parsed.role === 'model') {
-        messages.push({ role: 'assistant', content: text });
+      if (parsed.type === 'user') {
+        messages.push({ role: 'user', content: parsed.content });
+      } else if (parsed.type === 'assistant') {
+        messages.push({ role: 'assistant', content: parsed.content });
       }
     } catch {
-      /* skip */
+      // skip malformed lines
     }
   }
   return messages;
@@ -364,6 +361,36 @@ function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
   return messages;
 }
 
+function parseQwenCodeFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.trim().split('\n');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
+
+      const text = (parsed.message?.parts || [])
+        .filter((p: any) => p?.text)
+        .map((p: any) => p.text)
+        .join('\n');
+
+      if (!text) continue;
+
+      messages.push({
+        role: parsed.type === 'user' ? 'user' : 'assistant',
+        content: text,
+        timestamp: parsed.timestamp ? new Date(parsed.timestamp) : undefined,
+      });
+    } catch {
+      /* skip */
+    }
+  }
+
+  return messages;
+}
+
 // ─── Fixture Data ────────────────────────────────────────────────────────────
 
 // Derive from registry — automatically picks up new tools
@@ -390,6 +417,7 @@ beforeAll(() => {
   fixtures['roo-code'] = createRooCodeFixture();
   fixtures['kilo-code'] = createKiloCodeFixture();
   fixtures.antigravity = createAntigravityFixture();
+  fixtures['qwen-code'] = createQwenCodeFixture();
 
   // Build contexts from fixtures
   const now = new Date();
@@ -757,7 +785,7 @@ beforeAll(() => {
   const antigravityFile = fs
     .readdirSync(fixtures.antigravity.root)
     .map((f) => path.join(fixtures.antigravity.root, f as string))
-    .find((f) => f.endsWith('.jsonl'))!;
+    .find((f) => f.endsWith('.json') || f.endsWith('.jsonl'))!;
   const antigravitySession: UnifiedSession = {
     id: 'test-antigravity-session-1',
     source: 'antigravity',
@@ -807,6 +835,35 @@ beforeAll(() => {
     pendingTasks: [],
     toolSummaries: [],
     markdown: generateHandoffMarkdown(kimiSession, kimiMsgs, [], [], []),
+  };
+
+  // Qwen Code
+  const qwenCodeFile = fs
+    .readdirSync(fixtures['qwen-code'].root, { recursive: true })
+    .map((f) => path.join(fixtures['qwen-code'].root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
+  const qwenCodeSession: UnifiedSession = {
+    id: 'test-qwen-code-session-1',
+    source: 'qwen-code',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    branch: 'main',
+    lines: 4,
+    bytes: fs.statSync(qwenCodeFile).size,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: qwenCodeFile,
+    summary: 'Fix auth bug',
+    model: 'qwen3-coder',
+  };
+  const qwenCodeMsgs = parseQwenCodeFixtureMessages(qwenCodeFile);
+  contexts['qwen-code'] = {
+    session: qwenCodeSession,
+    recentMessages: qwenCodeMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
   };
 });
 
@@ -1083,7 +1140,13 @@ describe('Shared generateHandoffMarkdown', () => {
           },
           {
             summary: '$ npm build → exit 1',
-            data: { category: 'shell', command: 'npm build', exitCode: 1, errored: true, stdoutTail: 'Error: build failed' },
+            data: {
+              category: 'shell',
+              command: 'npm build',
+              exitCode: 1,
+              errored: true,
+              stdoutTail: 'Error: build failed',
+            },
           },
         ],
       },
@@ -1381,7 +1444,9 @@ describe('MCP namespace grouping', () => {
       {
         name: 'mcp__github__list_issues',
         count: 3,
-        samples: [{ summary: 'list_issues()', data: { category: 'mcp' as const, toolName: 'mcp__github__list_issues' } }],
+        samples: [
+          { summary: 'list_issues()', data: { category: 'mcp' as const, toolName: 'mcp__github__list_issues' } },
+        ],
       },
       {
         name: 'mcp__github__create_pr',

@@ -15,5 +15,6 @@ export {
 } from './cline.js';
 export { extractAntigravityContext, parseAntigravitySessions } from './antigravity.js';
 export { extractKimiContext, parseKimiSessions } from './kimi.js';
+export { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 export type { ToolAdapter } from './registry.js';
 export { ALL_TOOLS, adapters, SOURCE_HELP } from './registry.js';

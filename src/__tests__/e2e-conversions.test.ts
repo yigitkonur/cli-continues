@@ -32,6 +32,7 @@ import {
   extractKiloCodeContext,
   extractAntigravityContext,
   extractKimiContext,
+  extractQwenCodeContext,
   parseClaudeSessions,
   parseCodexSessions,
   parseCopilotSessions,
@@ -47,10 +48,11 @@ import {
   parseKiloCodeSessions,
   parseAntigravitySessions,
   parseKimiSessions,
+  parseQwenCodeSessions,
 } from '../parsers/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
-const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor', 'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi'];
+const ALL_SOURCES: SessionSource[] = ['claude', 'copilot', 'gemini', 'codex', 'opencode', 'droid', 'cursor', 'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi', 'qwen-code'];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   claude: parseClaudeSessions,
@@ -68,6 +70,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   'kilo-code': parseKiloCodeSessions,
   antigravity: parseAntigravitySessions,
   kimi: parseKimiSessions,
+  'qwen-code': parseQwenCodeSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -86,6 +89,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   'kilo-code': extractKiloCodeContext,
   antigravity: extractAntigravityContext,
   kimi: extractKimiContext,
+  'qwen-code': extractQwenCodeContext,
 };
 
 // Results directory
@@ -276,6 +280,7 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
           'kilo-code': 'Kilo Code',
           antigravity: 'Antigravity',
           kimi: 'Kimi CLI',
+          'qwen-code': 'Qwen Code',
         };
         const sourceLabel = sourceLabels[source];
 

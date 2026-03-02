@@ -26,6 +26,7 @@ import {
 } from './cline.js';
 import { extractAntigravityContext, parseAntigravitySessions } from './antigravity.js';
 import { extractKimiContext, parseKimiSessions } from './kimi.js';
+import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 
 /**
  * Adapter interface — single contract for all supported CLI tools.
@@ -605,6 +606,22 @@ register({
   nativeResumeArgs: (s) => ['--session', s.id],
   crossToolArgs: (prompt) => ['--prompt', prompt],
   resumeCommandDisplay: (s) => `kimi --session ${s.id}`,
+});
+
+// ── Qwen Code ────────────────────────────────────────────────────────
+register({
+  name: 'qwen-code',
+  label: 'Qwen Code',
+  color: chalk.hex('#6366F1'),
+  storagePath: '~/.qwen/tmp/*/chats/',
+  envVar: 'QWEN_HOME',
+  binaryName: 'qwen',
+  parseSessions: parseQwenCodeSessions,
+  extractContext: extractQwenCodeContext,
+  nativeResumeArgs: () => ['--continue'],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: () => `qwen --continue`,
+  mapHandoffFlags: mapGeminiFlags,
 });
 
 // ── Completeness assertion ──────────────────────────────────────────

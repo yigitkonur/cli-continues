@@ -41,14 +41,14 @@ import { EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS, TOOL_NAMES, WRITE_TOOLS } from '..
 // ── tool-names.ts ────────────────────────────────────────────────────────────
 
 describe('TOOL_NAMES', () => {
-  it('contains exactly 15 tools', () => {
-    expect(TOOL_NAMES).toHaveLength(15);
+  it('contains exactly 16 tools', () => {
+    expect(TOOL_NAMES).toHaveLength(16);
   });
 
   it('includes all known tools', () => {
     const expected: SessionSource[] = [
       'claude', 'codex', 'copilot', 'gemini', 'opencode', 'droid', 'cursor',
-      'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi',
+      'amp', 'kiro', 'crush', 'cline', 'roo-code', 'kilo-code', 'antigravity', 'kimi', 'qwen-code',
     ];
     expect([...TOOL_NAMES]).toEqual(expected);
   });

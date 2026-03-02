@@ -851,25 +851,35 @@ export function createKiloCodeFixture(): FixtureDir {
 }
 
 /**
- * Create a temporary directory with Antigravity session fixtures (JSONL with role/parts)
+ * Create a temporary directory with Antigravity session fixtures (JSON with type/content/timestamp)
  */
 export function createAntigravityFixture(): FixtureDir {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-antigravity-'));
 
   const lines = [
-    JSON.stringify({ role: 'user', parts: [{ text: 'Fix the authentication bug in login.ts' }] }),
     JSON.stringify({
-      role: 'model',
-      parts: [{ text: 'I found the issue in login.ts. The token validation was missing.' }],
+      type: 'user',
+      content: 'Fix the authentication bug in login.ts',
+      timestamp: '2025-02-25T10:00:00Z',
     }),
-    JSON.stringify({ role: 'user', parts: [{ text: 'Great, please also add error handling' }] }),
     JSON.stringify({
-      role: 'model',
-      parts: [{ text: 'Done. I added try-catch blocks and proper error messages.' }],
+      type: 'assistant',
+      content: 'I found the issue in login.ts. The token validation was missing.',
+      timestamp: '2025-02-25T10:00:05Z',
+    }),
+    JSON.stringify({
+      type: 'user',
+      content: 'Great, please also add error handling',
+      timestamp: '2025-02-25T10:01:00Z',
+    }),
+    JSON.stringify({
+      type: 'assistant',
+      content: 'Done. I added try-catch blocks and proper error messages.',
+      timestamp: '2025-02-25T10:01:10Z',
     }),
   ];
 
-  fs.writeFileSync(path.join(root, 'session.jsonl'), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'session.json'), lines.join('\n') + '\n');
 
   return {
     root,
@@ -977,6 +987,81 @@ export function createKimiFixture(): FixtureDir {
       2,
     ),
   );
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
+ * Create a temporary directory with Qwen Code session fixtures
+ * Storage: ~/.qwen/tmp/<sha256-hash>/chats/<sessionId>.jsonl
+ */
+export function createQwenCodeFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-qwen-code-'));
+  const projectHash = createHash('sha256').update('/home/user/project').digest('hex');
+  const chatsDir = path.join(root, projectHash, 'chats');
+  fs.mkdirSync(chatsDir, { recursive: true });
+
+  const sessionId = 'test-qwen-code-session-1';
+  const lines = [
+    JSON.stringify({
+      uuid: '00000000-0000-0000-0000-000000000001',
+      parentUuid: null,
+      sessionId,
+      timestamp: '2026-01-15T10:00:01.000Z',
+      type: 'user',
+      cwd: '/home/user/project',
+      version: '1.0.0',
+      gitBranch: 'main',
+      message: { role: 'user', parts: [{ text: 'Fix the authentication bug in login.ts' }] },
+    }),
+    JSON.stringify({
+      uuid: '00000000-0000-0000-0000-000000000002',
+      parentUuid: '00000000-0000-0000-0000-000000000001',
+      sessionId,
+      timestamp: '2026-01-15T10:00:05.000Z',
+      type: 'assistant',
+      cwd: '/home/user/project',
+      version: '1.0.0',
+      model: 'qwen3-coder',
+      message: {
+        role: 'model',
+        parts: [
+          { text: 'I found the issue in login.ts. The token validation was missing.' },
+          { functionCall: { name: 'read_file', args: { file_path: 'login.ts' } } },
+        ],
+      },
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 200 },
+    }),
+    JSON.stringify({
+      uuid: '00000000-0000-0000-0000-000000000003',
+      parentUuid: '00000000-0000-0000-0000-000000000002',
+      sessionId,
+      timestamp: '2026-01-15T10:00:10.000Z',
+      type: 'user',
+      cwd: '/home/user/project',
+      version: '1.0.0',
+      message: { role: 'user', parts: [{ text: 'Great, please also add error handling' }] },
+    }),
+    JSON.stringify({
+      uuid: '00000000-0000-0000-0000-000000000004',
+      parentUuid: '00000000-0000-0000-0000-000000000003',
+      sessionId,
+      timestamp: '2026-01-15T10:00:15.000Z',
+      type: 'assistant',
+      cwd: '/home/user/project',
+      version: '1.0.0',
+      model: 'qwen3-coder',
+      message: {
+        role: 'model',
+        parts: [{ text: 'Done. I added try-catch blocks and proper error messages.' }],
+      },
+    }),
+  ];
+
+  fs.writeFileSync(path.join(chatsDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
 
   return {
     root,
