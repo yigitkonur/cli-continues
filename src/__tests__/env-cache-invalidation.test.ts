@@ -13,129 +13,124 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-// We test the index module's exported functions directly.
-// The module reads `adapters` from registry — we mock that to avoid loading all parsers.
+// Create the fake home eagerly so it's ready before any mock evaluates
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'continues-env-test-'));
+
+afterAll(() => {
+  fs.rmSync(fakeHome, { recursive: true, force: true });
+});
+
+// Mock homeDir() BEFORE importing the index module — the module evaluates
+// CONTINUES_DIR = path.join(homeDir(), '.continues') at import time.
+vi.mock('../utils/parser-helpers.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../utils/parser-helpers.js')>();
+  return {
+    ...orig,
+    homeDir: () => fakeHome,
+  };
+});
+
+// Now import the module under test — it will resolve INDEX_FILE under fakeHome.
+const { indexNeedsRebuild, loadIndex, ensureDirectories } = await import('../utils/index.js');
+const { adapters } = await import('../parsers/registry.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-let tmpDir: string;
+function indexFilePath(): string {
+  return path.join(fakeHome, '.continues', 'sessions.jsonl');
+}
 
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'continues-env-test-'));
-});
+function writeIndex(fingerprint: string, sessions: Record<string, unknown>[]): void {
+  ensureDirectories();
+  const lines = sessions.map((s) => JSON.stringify(s));
+  fs.writeFileSync(indexFilePath(), fingerprint + '\n' + lines.join('\n') + '\n');
+}
+
+function makeSession(id: string, source = 'claude'): Record<string, unknown> {
+  return {
+    id,
+    source,
+    cwd: '/tmp/project',
+    repo: 'test/repo',
+    branch: 'main',
+    lines: 10,
+    bytes: 500,
+    createdAt: '2025-06-01T00:00:00.000Z',
+    updatedAt: '2025-06-01T00:00:00.000Z',
+    originalPath: `/tmp/${id}.jsonl`,
+  };
+}
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  vi.restoreAllMocks();
+  // Clean the index file between tests
+  try { fs.unlinkSync(indexFilePath()); } catch (_) { /* file may not exist */ }
+  vi.unstubAllEnvs();
 });
 
+// ── Tests ────────────────────────────────────────────────────────────────────
+
 describe('env fingerprint cache invalidation (issue #18)', () => {
-  it('indexNeedsRebuild returns true when env fingerprint changes', async () => {
-    // We directly test the logic: write an index file with one fingerprint,
-    // then check that changing the env var triggers a rebuild.
-    const indexFile = path.join(tmpDir, 'sessions.jsonl');
-
-    // Simulate an index written with CLAUDE_CONFIG_DIR unset
-    const fingerprintNoEnv = '#env:CLAUDE_CONFIG_DIR=|GEMINI_CLI_HOME=|QWEN_HOME=|XDG_DATA_HOME=';
-    const sessionLine = JSON.stringify({
-      id: 'test-session',
-      source: 'claude',
-      cwd: '/tmp/project',
-      repo: 'test/repo',
-      branch: 'main',
-      lines: 10,
-      bytes: 500,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      originalPath: '/tmp/test.jsonl',
-    });
-    fs.writeFileSync(indexFile, `${fingerprintNoEnv}\n${sessionLine}\n`);
-
-    // Read the first line — should be the fingerprint
-    const content = fs.readFileSync(indexFile, 'utf8');
-    const firstLine = content.split('\n')[0];
-    expect(firstLine).toMatch(/^#env:/);
-
-    // Simulate "env changed" — a different fingerprint
-    const fingerprintWithEnv = '#env:CLAUDE_CONFIG_DIR=/home/user/.claude-work|GEMINI_CLI_HOME=|QWEN_HOME=|XDG_DATA_HOME=';
-    expect(fingerprintNoEnv).not.toBe(fingerprintWithEnv);
+  it('indexNeedsRebuild returns true when no index file exists', () => {
+    expect(indexNeedsRebuild()).toBe(true);
   });
 
-  it('loadIndex skips the fingerprint line when loading sessions', async () => {
-    const indexFile = path.join(tmpDir, 'sessions.jsonl');
-
-    const fingerprint = '#env:CLAUDE_CONFIG_DIR=';
-    const session1 = JSON.stringify({
-      id: 'sess-1',
-      source: 'claude',
-      cwd: '/tmp/a',
-      repo: 'a/b',
-      branch: 'main',
-      lines: 5,
-      bytes: 300,
-      createdAt: '2025-01-01T00:00:00.000Z',
-      updatedAt: '2025-01-01T00:00:00.000Z',
-      originalPath: '/tmp/a.jsonl',
-    });
-    const session2 = JSON.stringify({
-      id: 'sess-2',
-      source: 'codex',
-      cwd: '/tmp/b',
-      repo: 'c/d',
-      branch: 'dev',
-      lines: 10,
-      bytes: 600,
-      createdAt: '2025-01-02T00:00:00.000Z',
-      updatedAt: '2025-01-02T00:00:00.000Z',
-      originalPath: '/tmp/b.jsonl',
-    });
-
-    fs.writeFileSync(indexFile, `${fingerprint}\n${session1}\n${session2}\n`);
-
-    // Read and parse manually (same logic as loadIndex)
-    const content = fs.readFileSync(indexFile, 'utf8');
-    const lines = content.trim().split('\n').filter((l) => l && !l.startsWith('#env:'));
-
-    expect(lines).toHaveLength(2);
-
-    const parsed1 = JSON.parse(lines[0]);
-    expect(parsed1.id).toBe('sess-1');
-
-    const parsed2 = JSON.parse(lines[1]);
-    expect(parsed2.id).toBe('sess-2');
-  });
-
-  it('fingerprint line is not parsed as JSON session data', () => {
-    // Ensure that if the fingerprint line is accidentally fed to JSON.parse,
-    // it doesn't produce a valid session object
-    const fingerprint = '#env:CLAUDE_CONFIG_DIR=/some/path';
-    expect(() => JSON.parse(fingerprint)).toThrow();
-  });
-
-  it('different env var values produce different fingerprints', () => {
-    // Simulate fingerprint computation
-    const compute = (envVars: Record<string, string>) => {
-      const adaptersWithEnvVar = [
-        { envVar: 'CLAUDE_CONFIG_DIR' },
-        { envVar: 'GEMINI_CLI_HOME' },
-        { envVar: 'XDG_DATA_HOME' },
-      ];
-      const parts: string[] = [];
-      for (const adapter of adaptersWithEnvVar) {
-        const val = envVars[adapter.envVar] || '';
+  it('indexNeedsRebuild returns false when index is fresh and fingerprint matches', () => {
+    // Compute what the real module would write — import adapters to derive env vars
+    // The simplest way: write an index via the fingerprint the module itself expects.
+    // We write a fingerprint that matches the current env (all env vars unset in test).
+    const parts: string[] = [];
+    for (const adapter of Object.values(adapters) as Array<{ envVar?: string }>) {
+      if (adapter.envVar) {
+        const val = process.env[adapter.envVar] || '';
         parts.push(`${adapter.envVar}=${val}`);
       }
-      return parts.sort().join('|');
-    };
+    }
+    const fingerprint = `#env:${parts.sort().join('|')}`;
 
-    const fp1 = compute({});
-    const fp2 = compute({ CLAUDE_CONFIG_DIR: '/home/user/.claude-work' });
-    const fp3 = compute({ CLAUDE_CONFIG_DIR: '/home/user/.claude-work', GEMINI_CLI_HOME: '/opt/gemini' });
+    writeIndex(fingerprint, [makeSession('sess-1')]);
 
-    expect(fp1).not.toBe(fp2);
-    expect(fp2).not.toBe(fp3);
-    expect(fp1).not.toBe(fp3);
+    expect(indexNeedsRebuild()).toBe(false);
+  });
+
+  it('indexNeedsRebuild returns true when CLAUDE_CONFIG_DIR changes', () => {
+    // Write index with current fingerprint (CLAUDE_CONFIG_DIR unset)
+    const parts: string[] = [];
+    for (const adapter of Object.values(adapters) as Array<{ envVar?: string }>) {
+      if (adapter.envVar) {
+        const val = process.env[adapter.envVar] || '';
+        parts.push(`${adapter.envVar}=${val}`);
+      }
+    }
+    const fingerprint = `#env:${parts.sort().join('|')}`;
+    writeIndex(fingerprint, [makeSession('sess-1')]);
+
+    // Now change the env var — fingerprint should mismatch
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '/home/user/.claude-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
+  it('loadIndex skips the fingerprint line and returns only sessions', () => {
+    writeIndex('#env:CLAUDE_CONFIG_DIR=', [
+      makeSession('sess-1', 'claude'),
+      makeSession('sess-2', 'codex'),
+    ]);
+
+    const sessions = loadIndex();
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].id).toBe('sess-1');
+    expect(sessions[1].id).toBe('sess-2');
+    expect(sessions[0].createdAt).toBeInstanceOf(Date);
+  });
+
+  it('loadIndex returns empty array for non-existent file', () => {
+    expect(loadIndex()).toEqual([]);
+  });
+
+  it('fingerprint line is not parseable as JSON', () => {
+    expect(() => JSON.parse('#env:CLAUDE_CONFIG_DIR=/some/path')).toThrow();
   });
 });

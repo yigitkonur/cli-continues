@@ -35,13 +35,8 @@ function computeEnvFingerprint(): string {
  */
 function readStoredFingerprint(): string | null {
   try {
-    const fd = fs.openSync(INDEX_FILE, 'r');
-    const buf = Buffer.alloc(1024);
-    const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
-    fs.closeSync(fd);
-    const head = buf.toString('utf8', 0, bytesRead);
-    const newlineIdx = head.indexOf('\n');
-    const firstLine = newlineIdx >= 0 ? head.slice(0, newlineIdx) : head;
+    const content = fs.readFileSync(INDEX_FILE, 'utf8');
+    const firstLine = content.slice(0, content.indexOf('\n'));
     if (firstLine.startsWith(ENV_FINGERPRINT_PREFIX)) {
       return firstLine.slice(ENV_FINGERPRINT_PREFIX.length);
     }
