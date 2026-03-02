@@ -445,9 +445,9 @@ register({
   binaryName: 'gemini',
   parseSessions: parseGeminiSessions,
   extractContext: extractGeminiContext,
-  nativeResumeArgs: () => ['--continue'],
+  nativeResumeArgs: () => ['--resume'],
   crossToolArgs: (prompt) => [prompt],
-  resumeCommandDisplay: () => `gemini --continue`,
+  resumeCommandDisplay: () => `gemini --resume`,
   mapHandoffFlags: mapGeminiFlags,
 });
 
@@ -462,7 +462,7 @@ register({
   parseSessions: parseOpenCodeSessions,
   extractContext: extractOpenCodeContext,
   nativeResumeArgs: (s) => ['--session', s.id],
-  crossToolArgs: (prompt) => ['--prompt', prompt],
+  crossToolArgs: (prompt) => ['run', prompt],
   resumeCommandDisplay: (s) => `opencode --session ${s.id}`,
   mapHandoffFlags: mapOpenCodeFlags,
 });

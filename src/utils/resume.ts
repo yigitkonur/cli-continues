@@ -12,7 +12,7 @@ import {
 } from './forward-flags.js';
 import { extractContext, saveContext } from './index.js';
 import { getSourceLabels, safePath } from './markdown.js';
-import { IS_WINDOWS, SHELL_OPTION, WHICH_CMD } from './platform.js';
+import { IS_WINDOWS, WHICH_CMD } from './platform.js';
 
 /**
  * Resolve mapped + passthrough forward args for cross-tool launches.
@@ -161,11 +161,16 @@ export async function resume(
  */
 function runCommand(command: string, args: string[], cwd: string, stdinData?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: stdinData ? ['pipe', 'inherit', 'inherit'] : 'inherit',
-      ...SHELL_OPTION,
-    });
+    const stdio: import('node:child_process').StdioOptions = stdinData
+      ? ['pipe', 'inherit', 'inherit']
+      : 'inherit';
+
+    // On Windows, invoke cmd.exe explicitly to handle .cmd/.bat shims.
+    // Args stay in the array — no shell:true (avoids DEP0190), no string
+    // concatenation (avoids command-injection risk).
+    const child = IS_WINDOWS
+      ? spawn(process.env.ComSpec ?? 'cmd.exe', ['/c', command, ...args], { cwd, stdio })
+      : spawn(command, args, { cwd, stdio });
 
     if (stdinData && child.stdin) {
       child.stdin.write(stdinData);
@@ -191,7 +196,7 @@ function runCommand(command: string, args: string[], cwd: string, stdinData?: st
  */
 async function isBinaryAvailable(binaryName: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn(WHICH_CMD, [binaryName], { stdio: 'ignore', ...SHELL_OPTION });
+    const child = spawn(WHICH_CMD, [binaryName], { stdio: 'ignore' });
     child.on('close', (code) => resolve(code === 0));
     child.on('error', () => resolve(false));
   });
