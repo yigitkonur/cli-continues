@@ -97,7 +97,6 @@ describe('cross-tool forwarding', () => {
     expect(resolved.mappedArgs).toEqual(['--dangerously-allow-all']);
     expect(resolved.passthroughArgs).toEqual([]);
   });
-
   it('maps kiro yolo-like forwarding into --trust-all-tools', () => {
     const resolved = resolveCrossToolForwarding('kiro', {
       rawArgs: ['--yolo', '--agent', 'reviewer'],
