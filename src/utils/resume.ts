@@ -25,10 +25,6 @@ export function resolveCrossToolForwarding(
   return resolveTargetForwarding(target, adapter?.mapHandoffFlags, options);
 }
 
-function hasOption(args: string[], ...flags: string[]): boolean {
-  return args.some((token) => flags.some((flag) => token === flag || token.startsWith(`${flag}=`)));
-}
-
 function hasConfigOverride(args: string[], key: string): boolean {
   const keyPrefix = `${key}=`;
 
@@ -55,67 +51,23 @@ function hasConfigOverride(args: string[], key: string): boolean {
 }
 
 export function getDefaultHandoffInitArgs(target: SessionSource, forwardedArgs: string[] = []): string[] {
-  switch (target) {
-    case 'claude': {
-      return hasOption(forwardedArgs, '--dangerously-skip-permissions') ? [] : ['--dangerously-skip-permissions'];
-    }
-    case 'codex': {
-      const defaults: string[] = [];
+  if (target !== 'codex') return [];
 
-      if (!hasConfigOverride(forwardedArgs, 'model_reasoning_effort')) {
-        defaults.push('-c', 'model_reasoning_effort="high"');
-      }
+  const defaults: string[] = [];
 
-      const hasUnsafeAuto = hasOption(forwardedArgs, '--dangerously-bypass-approvals-and-sandbox', '--full-auto');
-
-      if (!hasUnsafeAuto && !hasOption(forwardedArgs, '--ask-for-approval', '-a')) {
-        defaults.push('--ask-for-approval', 'never');
-      }
-
-      if (!hasUnsafeAuto && !hasOption(forwardedArgs, '--sandbox', '-s')) {
-        defaults.push('--sandbox', 'danger-full-access');
-      }
-
-      if (!hasConfigOverride(forwardedArgs, 'model_reasoning_summary')) {
-        defaults.push('-c', 'model_reasoning_summary="detailed"');
-      }
-
-      if (!hasConfigOverride(forwardedArgs, 'model_supports_reasoning_summaries')) {
-        defaults.push('-c', 'model_supports_reasoning_summaries=true');
-      }
-
-      return defaults;
-    }
-    case 'copilot': {
-      return hasOption(forwardedArgs, '--allow-all', '--yolo') ? [] : ['--allow-all'];
-    }
-    case 'gemini': {
-      return hasOption(forwardedArgs, '--yolo', '-y', '--approval-mode') ? [] : ['--yolo'];
-    }
-    case 'cursor': {
-      return hasOption(forwardedArgs, '--yolo', '--force', '-f') ? [] : ['--yolo'];
-    }
-    case 'droid': {
-      return hasOption(forwardedArgs, '--skip-permissions-unsafe', '--auto') ? [] : ['--skip-permissions-unsafe'];
-    }
-    case 'kimi': {
-      return hasOption(forwardedArgs, '--yolo', '-y', '--yes') ? [] : ['--yolo'];
-    }
-    case 'amp': {
-      return hasOption(forwardedArgs, '--dangerously-allow-all') ? [] : ['--dangerously-allow-all'];
-    }
-    case 'kiro': {
-      return hasOption(forwardedArgs, '--trust-all-tools') ? [] : ['--trust-all-tools'];
-    }
-    case 'crush': {
-      return hasOption(forwardedArgs, '--yolo', '-y') ? [] : ['--yolo'];
-    }
-    case 'qwen-code': {
-      return hasOption(forwardedArgs, '--yolo', '-y', '--approval-mode') ? [] : ['--yolo'];
-    }
-    default:
-      return [];
+  if (!hasConfigOverride(forwardedArgs, 'model_reasoning_effort')) {
+    defaults.push('-c', 'model_reasoning_effort="high"');
   }
+
+  if (!hasConfigOverride(forwardedArgs, 'model_reasoning_summary')) {
+    defaults.push('-c', 'model_reasoning_summary="detailed"');
+  }
+
+  if (!hasConfigOverride(forwardedArgs, 'model_supports_reasoning_summaries')) {
+    defaults.push('-c', 'model_supports_reasoning_summaries=true');
+  }
+
+  return defaults;
 }
 
 /**
