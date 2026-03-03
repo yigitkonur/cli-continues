@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset, loadConfig } from '../config/index.js';
 import { logger } from '../logger.js';
 import { ALL_TOOLS, adapters } from '../parsers/registry.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
@@ -13,6 +15,12 @@ import {
 import { extractContext, saveContext } from './index.js';
 import { getSourceLabels, safePath } from './markdown.js';
 import { IS_WINDOWS, WHICH_CMD } from './platform.js';
+
+export interface HandoffContextOptions {
+  preset?: string;
+  configPath?: string;
+  chain?: boolean;
+}
 
 /**
  * Resolve mapped + passthrough forward args for cross-tool launches.
@@ -70,6 +78,34 @@ export function getDefaultHandoffInitArgs(target: SessionSource, forwardedArgs: 
   return defaults;
 }
 
+function resolveHandoffConfig(options?: HandoffContextOptions): VerbosityConfig {
+  const loaded = loadConfig(options?.configPath);
+
+  let config = loaded;
+  if (options?.preset) {
+    try {
+      config = getPreset(options.preset);
+    } catch {
+      // Keep loaded config when an invalid preset is provided.
+    }
+  }
+
+  if (options?.chain === false) {
+    config = {
+      ...config,
+      agents: {
+        ...config.agents,
+        claude: {
+          ...config.agents.claude,
+          chainCompactedHistory: false,
+        },
+      },
+    };
+  }
+
+  return config;
+}
+
 /**
  * Resume a session using native CLI commands
  */
@@ -88,8 +124,9 @@ export async function crossToolResume(
   target: SessionSource,
   mode: 'inline' | 'reference' = 'inline',
   forwarding?: HandoffForwardingOptions,
+  contextOptions?: HandoffContextOptions,
 ): Promise<void> {
-  const context = await extractContext(session);
+  const context = await extractContext(session, resolveHandoffConfig(contextOptions));
   const cwd = session.cwd || process.cwd();
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
@@ -194,6 +231,7 @@ export async function resume(
   target?: SessionSource,
   mode: 'inline' | 'reference' = 'inline',
   forwarding?: HandoffForwardingOptions,
+  contextOptions?: HandoffContextOptions,
 ): Promise<void> {
   const actualTarget = target || session.source;
 
@@ -202,7 +240,7 @@ export async function resume(
     await nativeResume(session);
   } else {
     // Different tool - use cross-tool injection
-    await crossToolResume(session, actualTarget, mode, forwarding);
+    await crossToolResume(session, actualTarget, mode, forwarding, contextOptions);
   }
 }
 

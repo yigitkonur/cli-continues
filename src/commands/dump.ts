@@ -22,6 +22,8 @@ export async function dumpCommand(
     json?: boolean;
     limit?: string;
     rebuild?: boolean;
+    configPath?: string;
+    chain?: boolean;
   },
   context: { isTTY: boolean },
 ): Promise<void> {
@@ -81,7 +83,20 @@ export async function dumpCommand(
     try {
       config = getPreset(presetName);
     } catch {
-      config = loadConfig();
+      config = loadConfig(options.configPath);
+    }
+
+    if (options.chain === false) {
+      config = {
+        ...config,
+        agents: {
+          ...config.agents,
+          claude: {
+            ...config.agents.claude,
+            chainCompactedHistory: false,
+          },
+        },
+      };
     }
 
     // Export sessions

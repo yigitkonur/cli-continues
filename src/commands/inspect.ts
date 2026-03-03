@@ -626,7 +626,7 @@ function renderTruncated(
  */
 export async function inspectSession(
   sessionIdOrShort: string,
-  opts: { preset?: string; truncate?: number; writeMd?: string | boolean },
+  opts: { preset?: string; truncate?: number; writeMd?: string | boolean; chain?: boolean },
 ): Promise<void> {
   // 1. Find session
   const session = await findSession(sessionIdOrShort);
@@ -643,6 +643,19 @@ export async function inspectSession(
   } catch {
     // Fall back to loaded config if preset name is invalid
     config = loadConfig();
+  }
+
+  if (opts.chain === false) {
+    config = {
+      ...config,
+      agents: {
+        ...config.agents,
+        claude: {
+          ...config.agents.claude,
+          chainCompactedHistory: false,
+        },
+      },
+    };
   }
 
   // 2. Read raw events (format-aware)

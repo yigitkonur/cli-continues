@@ -97,19 +97,6 @@ describe('cross-tool forwarding', () => {
     expect(resolved.mappedArgs).toEqual(['--dangerously-allow-all']);
     expect(resolved.passthroughArgs).toEqual([]);
   });
-
-  it('consumes unsupported approval and permission forwarding for opencode', () => {
-    const resolved = resolveCrossToolForwarding('opencode', {
-      rawArgs: ['--approval-mode', 'plan', '--permission-mode', 'plan'],
-    });
-
-    expect(resolved.mappedArgs).toEqual([]);
-    expect(resolved.passthroughArgs).toEqual([]);
-    expect(resolved.warnings).toContain(
-      'OpenCode: auto-approval, permission, and sandbox forwarding flags are not supported and were ignored.',
-    );
-  });
-
   it('maps kiro yolo-like forwarding into --trust-all-tools', () => {
     const resolved = resolveCrossToolForwarding('kiro', {
       rawArgs: ['--yolo', '--agent', 'reviewer'],
@@ -135,6 +122,18 @@ describe('cross-tool forwarding', () => {
 
     expect(resolved.mappedArgs).toEqual(['--approval-mode', 'yolo']);
     expect(resolved.passthroughArgs).toEqual([]);
+  });
+
+  it('consumes unsupported approval and permission forwarding for opencode', () => {
+    const resolved = resolveCrossToolForwarding('opencode', {
+      rawArgs: ['--approval-mode', 'plan', '--permission-mode', 'plan'],
+    });
+
+    expect(resolved.mappedArgs).toEqual([]);
+    expect(resolved.passthroughArgs).toEqual([]);
+    expect(resolved.warnings).toContain(
+      'OpenCode: auto-approval, permission, and sandbox forwarding flags are not supported and were ignored.',
+    );
   });
 
   it('does not apply dangerous default init flags for handoff targets', () => {

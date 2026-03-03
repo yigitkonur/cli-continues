@@ -6,7 +6,7 @@ import type { ClaudeMessage } from '../types/schemas.js';
 import { extractTextFromBlocks, isRealUserMessage } from '../utils/content.js';
 import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
-import { generateHandoffMarkdown } from '../utils/markdown.js';
+import { generateHandoffMarkdown, safePath } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 import {
   type AnthropicMessage,
@@ -127,6 +127,133 @@ interface QueueOperationEntry {
   description: string;
   taskType?: string;
   operation: string;
+  status?: string;
+}
+
+interface TaskStatusEntry {
+  taskId: string;
+  status?: string;
+  taskType?: string;
+  description?: string;
+  source: 'queue' | 'user_notification' | 'task_output';
+}
+
+function extractTagValue(text: string, tags: string[]): string | undefined {
+  for (const tag of tags) {
+    const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    if (m?.[1]) return m[1].trim();
+  }
+  return undefined;
+}
+
+function extractTaskStatusesFromTaggedText(
+  text: string,
+  source: TaskStatusEntry['source'],
+): TaskStatusEntry[] {
+  const statuses: TaskStatusEntry[] = [];
+  const notificationBlocks = text.match(/<task-notification>[\s\S]*?<\/task-notification>/gi);
+
+  const parseBlock = (block: string): TaskStatusEntry | null => {
+    const taskId = extractTagValue(block, ['task-id', 'task_id']);
+    if (!taskId) return null;
+
+    return {
+      taskId,
+      status: extractTagValue(block, ['status']),
+      taskType: extractTagValue(block, ['task-type', 'task_type']),
+      description: extractTagValue(block, ['summary', 'description']),
+      source,
+    };
+  };
+
+  if (notificationBlocks && notificationBlocks.length > 0) {
+    for (const block of notificationBlocks) {
+      const parsed = parseBlock(block);
+      if (parsed) statuses.push(parsed);
+    }
+    return statuses;
+  }
+
+  const single = parseBlock(text);
+  if (single) statuses.push(single);
+  return statuses;
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => {
+      const block = item as Record<string, unknown>;
+      return typeof block?.text === 'string' ? block.text : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function isTerminalTaskStatus(status?: string): boolean {
+  if (!status) return false;
+  const normalized = status.toLowerCase().trim();
+  return new Set(['completed', 'complete', 'success', 'succeeded', 'done', 'failed', 'error', 'killed', 'cancelled', 'canceled', 'timeout', 'timed_out']).has(normalized);
+}
+
+function isCompletedTaskStatus(status?: string): boolean {
+  if (!status) return false;
+  const normalized = status.toLowerCase().trim();
+  return new Set(['completed', 'complete', 'success', 'succeeded', 'done']).has(normalized);
+}
+
+function extractUserTaskNotifications(messages: ClaudeMessage[]): TaskStatusEntry[] {
+  const statuses: TaskStatusEntry[] = [];
+
+  for (const msg of messages) {
+    if (msg.type !== 'user') continue;
+    const content = msg.message?.content;
+    if (typeof content === 'string') {
+      statuses.push(...extractTaskStatusesFromTaggedText(content, 'user_notification'));
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+
+    for (const block of content) {
+      if (block.type !== 'text' || !block.text) continue;
+      statuses.push(...extractTaskStatusesFromTaggedText(block.text, 'user_notification'));
+    }
+  }
+
+  return statuses;
+}
+
+function extractTaskOutputStatuses(messages: ClaudeMessage[]): TaskStatusEntry[] {
+  const statuses: TaskStatusEntry[] = [];
+  const toolUseById = new Map<string, { name: string }>();
+
+  for (const msg of messages) {
+    const content = msg.message?.content;
+    if (!Array.isArray(content)) continue;
+
+    for (const block of content as Array<Record<string, unknown>>) {
+      if (block.type === 'tool_use') {
+        const id = block.id as string | undefined;
+        const name = block.name as string | undefined;
+        if (id && name) toolUseById.set(id, { name });
+        continue;
+      }
+
+      if (block.type !== 'tool_result') continue;
+      const toolUseId = block.tool_use_id as string | undefined;
+      if (!toolUseId) continue;
+
+      const toolUse = toolUseById.get(toolUseId);
+      if (!toolUse || toolUse.name !== 'TaskOutput') continue;
+
+      const text = extractToolResultText(block.content);
+      if (!text) continue;
+      statuses.push(...extractTaskStatusesFromTaggedText(text, 'task_output'));
+    }
+  }
+
+  return statuses;
 }
 
 /**
@@ -142,6 +269,21 @@ function parseQueueOperations(messages: ClaudeMessage[]): QueueOperationEntry[] 
     const contentStr = (raw.content as string) || '';
     if (!contentStr) continue;
 
+    // XML-style task notifications (or tagged task payloads) often appear here.
+    const taggedStatuses = extractTaskStatusesFromTaggedText(contentStr, 'queue');
+    if (taggedStatuses.length > 0) {
+      for (const status of taggedStatuses) {
+        entries.push({
+          taskId: status.taskId,
+          description: status.description || '',
+          taskType: status.taskType,
+          operation,
+          status: status.status,
+        });
+      }
+      continue;
+    }
+
     try {
       const parsed = JSON.parse(contentStr) as Record<string, unknown>;
       const taskId = (parsed.task_id as string) || '';
@@ -152,10 +294,21 @@ function parseQueueOperations(messages: ClaudeMessage[]): QueueOperationEntry[] 
           description,
           taskType: (parsed.task_type as string) || undefined,
           operation,
+          status: (parsed.status as string) || undefined,
         });
       }
     } catch {
-      logger.debug('claude: malformed queue-operation content', contentStr.slice(0, 100));
+      const taskId = contentStr.match(/"task_id"\s*:\s*"([^"]+)"/)?.[1];
+      if (taskId) {
+        entries.push({
+          taskId,
+          description: contentStr.match(/"description"\s*:\s*"([^"]+)"/)?.[1] || '',
+          taskType: contentStr.match(/"task_type"\s*:\s*"([^"]+)"/)?.[1],
+          operation,
+        });
+      } else {
+        logger.debug('claude: malformed queue-operation content', contentStr.slice(0, 100));
+      }
     }
   }
   return entries;
@@ -180,6 +333,10 @@ function isTerminationMessage(text: string): boolean {
  */
 async function extractSubagentResult(filePath: string): Promise<{ text: string | null; status: 'completed' | 'killed'; toolCallCount: number }> {
   try {
+    if (!fs.existsSync(filePath)) {
+      return { text: null, status: 'killed', toolCallCount: 0 };
+    }
+
     const subMsgs = await readJsonlFile<ClaudeMessage>(filePath);
     let toolCallCount = 0;
     let lastSubstantialText: string | null = null;
@@ -282,6 +439,92 @@ function readToolResultsDir(sessionDir: string): string[] {
   }
 
   return notes;
+}
+
+function hasCompactionCue(messages: ClaudeMessage[]): boolean {
+  if (messages.some((m) => m.isCompactSummary)) return true;
+
+  const continuationPattern = /(continued from a previous conversation|ran out of context|summary below covers|conversation compacted)/i;
+  for (const msg of messages) {
+    if (msg.type !== 'user' && msg.type !== 'assistant') continue;
+    const text = extractTextFromBlocks(msg.message?.content);
+    if (text && continuationPattern.test(text)) return true;
+  }
+
+  return false;
+}
+
+async function extractLatestCompactSummary(filePath: string, maxChars: number): Promise<string | undefined> {
+  const messages = await readJsonlFile<ClaudeMessage>(filePath);
+  let compact: string | undefined;
+  for (const msg of messages) {
+    if (!msg.isCompactSummary || !msg.message?.content) continue;
+    const text = extractTextFromBlocks(msg.message.content);
+    if (text) compact = truncate(text, maxChars);
+  }
+  return compact;
+}
+
+async function resolvePreviousClaudeSessions(session: UnifiedSession, maxDepth: number): Promise<UnifiedSession[]> {
+  if (maxDepth <= 0) return [];
+  const allSessions = await parseClaudeSessions();
+  const candidates = allSessions
+    .filter((s) => s.id !== session.id && s.cwd === session.cwd)
+    .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+
+  const selected: UnifiedSession[] = [];
+  const visited = new Set([session.id]);
+  let cursorTime = session.createdAt.getTime() || session.updatedAt.getTime();
+
+  for (const candidate of candidates) {
+    if (selected.length >= maxDepth) break;
+    if (visited.has(candidate.id)) continue;
+    if (candidate.updatedAt.getTime() > cursorTime) continue;
+
+    selected.push(candidate);
+    visited.add(candidate.id);
+    cursorTime = candidate.createdAt.getTime() || candidate.updatedAt.getTime();
+  }
+
+  return selected;
+}
+
+async function buildChainedHistoryPrefix(
+  session: UnifiedSession,
+  messages: ClaudeMessage[],
+  cfg: VerbosityConfig,
+): Promise<string | undefined> {
+  if (!cfg.agents.claude.chainCompactedHistory) return undefined;
+  if (!hasCompactionCue(messages)) return undefined;
+
+  const previous = await resolvePreviousClaudeSessions(session, cfg.agents.claude.chainMaxDepth);
+  if (previous.length === 0) return undefined;
+
+  const lines: string[] = [
+    '# Previous Session Chain Context',
+    '',
+    'The current Claude session appears compacted; best-effort predecessor sessions are included below.',
+    '',
+    '## Chained Previous Sessions',
+    '',
+  ];
+
+  const ordered = [...previous].reverse(); // oldest → newest for readable timeline
+  for (const [index, prev] of ordered.entries()) {
+    lines.push(`### ${index + 1}. ${prev.id} (${prev.updatedAt.toISOString().slice(0, 16).replace('T', ' ')})`);
+    lines.push(`- **Session file**: \`${safePath(prev.originalPath)}\``);
+    if (prev.summary) {
+      lines.push(`- **Summary**: ${truncate(prev.summary, cfg.agents.claude.chainSummaryChars)}`);
+    }
+
+    const compact = await extractLatestCompactSummary(prev.originalPath, cfg.agents.claude.chainSummaryChars);
+    if (compact) {
+      lines.push(`- **Compact summary**: ${compact}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
 }
 
 /**
@@ -447,11 +690,23 @@ export async function extractClaudeContext(
     // Session dir = {project_dir}/{session_id}/ (not just dirname of the .jsonl)
     const sessionDir = session.originalPath.replace(/\.jsonl$/, '');
     const queueOps = parseQueueOperations(messages);
+    const userTaskStatuses = extractUserTaskNotifications(messages);
+    const taskOutputStatuses = extractTaskOutputStatuses(messages);
 
-    // Track which task_ids completed (have a "dequeue" or "complete" operation)
-    const completedIds = new Set(
-      queueOps.filter((op) => op.operation !== 'enqueue').map((op) => op.taskId),
-    );
+    // Terminal states can come from queue ops, user task notifications, or TaskOutput payloads.
+    const terminalTaskIds = new Set<string>();
+    const completedTaskIds = new Set<string>();
+
+    for (const op of queueOps) {
+      if (op.operation !== 'enqueue') terminalTaskIds.add(op.taskId);
+      if (isTerminalTaskStatus(op.status)) terminalTaskIds.add(op.taskId);
+      if (isCompletedTaskStatus(op.status)) completedTaskIds.add(op.taskId);
+    }
+
+    for (const statusEntry of [...userTaskStatuses, ...taskOutputStatuses]) {
+      if (isTerminalTaskStatus(statusEntry.status)) terminalTaskIds.add(statusEntry.taskId);
+      if (isCompletedTaskStatus(statusEntry.status)) completedTaskIds.add(statusEntry.taskId);
+    }
 
     // Deduplicate: keep only unique task_ids (first enqueue wins for description)
     const seen = new Set<string>();
@@ -465,9 +720,14 @@ export async function extractClaudeContext(
     let subagentCount = 0;
     for (const task of uniqueTasks) {
       if (subagentCount >= cfg.task.maxSamples) break;
+      // Only local_agent tasks are backed by subagent transcript files.
+      if (task.taskType && task.taskType !== 'local_agent') continue;
 
       const subagentPath = path.join(sessionDir, 'subagents', `agent-${task.taskId}.jsonl`);
-      const { text, status, toolCallCount } = await extractSubagentResult(subagentPath);
+      const { text, status: extractedStatus, toolCallCount } = await extractSubagentResult(subagentPath);
+      const status = !text && completedTaskIds.has(task.taskId)
+        ? 'completed'
+        : extractedStatus;
 
       // Always populate structured subagentResults
       if (!sessionNotes.subagentResults) sessionNotes.subagentResults = [];
@@ -484,7 +744,7 @@ export async function extractClaudeContext(
         if (!sessionNotes.reasoning) sessionNotes.reasoning = [];
         sessionNotes.reasoning.push(`Subagent "${task.description}": ${truncate(text, cfg.task.subagentResultChars)}`);
         subagentCount++;
-      } else if (!completedIds.has(task.taskId)) {
+      } else if (!terminalTaskIds.has(task.taskId)) {
         // Incomplete/killed subagent — add to pending tasks
         if (cfg.pendingTasks.extractFromSubagents && pendingTasks.length < cfg.pendingTasks.maxTasks) {
           pendingTasks.push(`Incomplete subagent: ${task.description}`);
@@ -525,22 +785,25 @@ export async function extractClaudeContext(
   }
 
   const finalMessages = recentMessages.slice(-cfg.recentMessages);
+  const dedupedPendingTasks = Array.from(new Set(pendingTasks)).slice(0, cfg.pendingTasks.maxTasks);
 
-  const markdown = generateHandoffMarkdown(
+  const baseMarkdown = generateHandoffMarkdown(
     session,
     finalMessages,
     filesModified,
-    pendingTasks,
+    dedupedPendingTasks,
     toolSummaries,
     sessionNotes,
     cfg,
   );
+  const chainPrefix = await buildChainedHistoryPrefix(session, messages, cfg);
+  const markdown = chainPrefix ? `${chainPrefix}\n\n---\n\n${baseMarkdown}` : baseMarkdown;
 
   return {
     session,
     recentMessages: finalMessages,
     filesModified,
-    pendingTasks,
+    pendingTasks: dedupedPendingTasks,
     toolSummaries,
     sessionNotes,
     markdown,

@@ -346,6 +346,25 @@ describe('extractAnthropicToolData', () => {
     expect(summaries[0].name).toBe('mcp__github-server___list-issues');
   });
 
+  it('tracks files modified by mcp__morph__edit_file', () => {
+    const messages: AnthropicMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'mcp__morph__edit_file',
+            input: { path: '/tmp/edited-by-morph.ts', instruction: 'edit file', code_edit: '...' },
+          },
+        ],
+      },
+    ];
+
+    const { filesModified } = extractAnthropicToolData(messages);
+    expect(filesModified).toContain('/tmp/edited-by-morph.ts');
+  });
+
   it('handles empty messages', () => {
     const { summaries, filesModified } = extractAnthropicToolData([]);
     expect(summaries).toEqual([]);
@@ -492,10 +511,10 @@ describe('classifyToolName', () => {
 
   it('returns undefined for skip tools', () => {
     expect(classifyToolName('TodoWrite')).toBeUndefined();
-    expect(classifyToolName('ExitPlanMode')).toBeUndefined();
   });
 
   it('returns mcp for unknown tools', () => {
+    expect(classifyToolName('ExitPlanMode')).toBe('mcp');
     expect(classifyToolName('mcp__github__list_issues')).toBe('mcp');
     expect(classifyToolName('some-custom-tool')).toBe('mcp');
     expect(classifyToolName('unknown_tool')).toBe('mcp');

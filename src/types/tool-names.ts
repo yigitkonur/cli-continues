@@ -101,8 +101,6 @@ export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'reque
 /** Tools to skip — internal bookkeeping, no useful handoff context */
 export const SKIP_TOOLS: ReadonlySet<string> = new Set([
   'TaskStop',
-  'ExitPlanMode',
-  'exit_plan_mode',
   'TodoWrite',
   'todo_write',
   'SaveMemory',

@@ -13,7 +13,7 @@ import { selectTargetTool, showForwardingWarnings } from './_shared.js';
  */
 export async function resumeCommand(
   sessionId: string,
-  options: { in?: string; reference?: boolean; noTui?: boolean },
+  options: { in?: string; reference?: boolean; noTui?: boolean; preset?: string; configPath?: string; chain?: boolean },
   context: { isTTY: boolean },
   forwarding?: HandoffForwardingOptions,
 ): Promise<void> {
@@ -48,6 +48,7 @@ export async function resumeCommand(
 
     const target = options.in as SessionSource | undefined;
     const mode = options.reference ? ('reference' as const) : ('inline' as const);
+    const contextOptions = { preset: options.preset, configPath: options.configPath, chain: options.chain };
 
     const forwardingFor = (candidateTarget: SessionSource | undefined): HandoffForwardingOptions | undefined => {
       if (!candidateTarget || candidateTarget === session.source) return undefined;
@@ -67,7 +68,7 @@ export async function resumeCommand(
       console.log();
 
       if (session.cwd) process.chdir(session.cwd);
-      await resume(session, target, mode, effectiveForwarding);
+      await resume(session, target, mode, effectiveForwarding, contextOptions);
       return;
     }
 
@@ -91,7 +92,7 @@ export async function resumeCommand(
       clack.outro(`Launching ${selectedTarget}`);
 
       if (session.cwd) process.chdir(session.cwd);
-      await resume(session, selectedTarget, mode, effectiveForwarding);
+      await resume(session, selectedTarget, mode, effectiveForwarding, contextOptions);
     } else {
       // Target specified, just resume
       const effectiveForwarding = forwardingFor(target);
@@ -105,7 +106,7 @@ export async function resumeCommand(
       console.log();
 
       if (session.cwd) process.chdir(session.cwd);
-      await resume(session, target, mode, effectiveForwarding);
+      await resume(session, target, mode, effectiveForwarding, contextOptions);
     }
   } catch (error) {
     if (clack.isCancel(error)) {

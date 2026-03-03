@@ -334,6 +334,15 @@ export function extractAnthropicToolData(
             ...(result ? { result: result.slice(0, config.mcp.resultChars) } : {}),
           };
           collector.add(name, mcpSummary(name, JSON.stringify(input).slice(0, config.mcp.paramChars), result?.slice(0, 80)), { data });
+
+          // Some MCP tools mutate local files (e.g. mcp__morph__edit_file).
+          // Track those paths in filesModified so handoff reflects all edits.
+          if (name === 'mcp__morph__edit_file') {
+            const mcpPath = (input.path as string) || (input.file_path as string) || '';
+            if (mcpPath) {
+              collector.trackFile(mcpPath);
+            }
+          }
         }
       } else {
         // Generic/unknown tool — treat as MCP-like
