@@ -12,15 +12,14 @@ import { createRequire } from 'node:module';
 import * as clack from '@clack/prompts';
 import { Command } from 'commander';
 import { getExtraCommandArgs } from './commands/_shared.js';
+import { dumpCommand } from './commands/dump.js';
+import { inspectSession } from './commands/inspect.js';
 import { listCommand } from './commands/list.js';
 import { interactivePick } from './commands/pick.js';
 import { resumeBySource } from './commands/quick-resume.js';
 import { rebuildCommand } from './commands/rebuild.js';
 import { resumeCommand } from './commands/resume-cmd.js';
-import { inspectSession } from './commands/inspect.js';
 import { scanCommand } from './commands/scan.js';
-import { dumpCommand } from './commands/dump.js';
-import { loadConfig, getPreset, mergeConfig } from './config/index.js';
 import { setLogLevel } from './logger.js';
 import { ALL_TOOLS, adapters, SOURCE_HELP } from './parsers/registry.js';
 
@@ -79,7 +78,7 @@ program
   .option('--verbose', 'Show info-level logs')
   .option('--debug', 'Show debug-level logs')
   .option('--config <path>', 'Path to .continues.yml config file')
-  .option('--preset <name>', 'Verbosity preset: minimal, standard, verbose, full', 'standard')
+  .option('--preset <name>', 'Verbosity preset for inspect/dump output: minimal, standard, verbose, full', 'standard')
   .helpOption('-h, --help', 'Display help for command')
   .hook('preAction', () => {
     const opts = program.opts();
@@ -89,17 +88,38 @@ program
   .addHelpText(
     'after',
     `
-Examples:
-  $ continues                      # Interactive TUI picker
-  $ continues list                 # List all sessions
-  $ continues list --source claude # Filter by source
-  $ continues list --json          # JSON output for scripting
-  $ continues resume abc123        # Resume by ID
-  $ continues resume abc123 --in gemini  # Cross-tool handoff
-  $ continues scan                 # Show session discovery stats
+Quick start:
+  $ continues
+  $ npx continues --preset full
+  $ continues claude 1
 
-Short aliases:
-  cont (binary alias)
+Core workflows:
+  $ continues list
+  $ continues list --source claude --limit 25
+  $ continues list --jsonl | jq '.source'
+  $ continues resume abc123
+  $ continues resume abc123 --in gemini
+  $ continues scan --rebuild
+
+Inspect & export:
+  $ continues inspect abc123 --preset full
+  $ continues inspect abc123 --preset verbose --write-md handoff.md
+  $ continues dump all ./out --preset verbose
+  $ continues dump claude ./out --json --limit 50
+
+Preset guide:
+  minimal  -> shortest output (token-saving / quick skim)
+  standard -> balanced default for daily usage
+  verbose  -> extra context + richer tool activity detail
+  full     -> maximum detail for handoff, debugging, and audits
+
+Power tips:
+  - Use --all to bypass current-directory filtering in pick mode
+  - Forward raw args to target tools after -- (example: continues claude 1 -- --help)
+  - Combine --config .continues.yml with --preset for project defaults + per-run overrides
+
+Aliases:
+  cont -> continues
   ls   -> list
   r    -> resume
 `,
@@ -175,7 +195,7 @@ program
 program
   .command('dump <source|all> <directory>')
   .description('Bulk export sessions to markdown or JSON files')
-  .option('--preset <name>', 'Verbosity preset: minimal, standard, verbose, full', 'standard')
+  .option('--preset <name>', 'Verbosity preset for export detail: minimal, standard, verbose, full', 'standard')
   .option('--json', 'Output as JSON instead of markdown')
   .option('--limit <number>', 'Limit number of sessions')
   .option('--rebuild', 'Force rebuild session index')

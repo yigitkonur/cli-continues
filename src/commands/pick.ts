@@ -2,8 +2,8 @@ import * as clack from '@clack/prompts';
 import chalk from 'chalk';
 import { showBanner } from '../display/banner.js';
 import { formatSessionForSelect, sourceColors } from '../display/format.js';
-import { maybePromptGithubStar } from '../display/star-prompt.js';
 import { showNoSessionsHelp } from '../display/help.js';
+import { maybePromptGithubStar } from '../display/star-prompt.js';
 import type { SessionSource, UnifiedSession } from '../types/index.js';
 import type { HandoffForwardingOptions } from '../utils/forward-flags.js';
 import { getAllSessions, getSessionsBySource } from '../utils/index.js';
@@ -26,7 +26,7 @@ export async function interactivePick(
       return;
     }
 
-    showBanner(context.version, context.supportsColor);
+    await showBanner(context.version, context.supportsColor);
     await maybePromptGithubStar();
     clack.intro(chalk.bold('continue') + chalk.cyan.bold('s') + chalk.gray(' — session picker'));
 
