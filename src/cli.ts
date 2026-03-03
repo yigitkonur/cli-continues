@@ -79,6 +79,7 @@ program
   .option('--debug', 'Show debug-level logs')
   .option('--config <path>', 'Path to .continues.yml config file')
   .option('--preset <name>', 'Verbosity preset for inspect/dump output: minimal, standard, verbose, full', 'standard')
+  .option('--no-chain', 'Disable compacted-session chaining in handoff extraction')
   .helpOption('-h, --help', 'Display help for command')
   .hook('preAction', () => {
     const opts = program.opts();
@@ -127,7 +128,17 @@ Aliases:
 
 // Default command - Interactive TUI
 program.option('-a, --all', 'Show all sessions globally (skip directory filtering)').action(async (options) => {
-  await interactivePick({ all: options.all, forwardArgs: tailArgs }, cliContext);
+  const globalOptions = program.opts();
+  await interactivePick(
+    {
+      all: options.all,
+      forwardArgs: tailArgs,
+      preset: globalOptions.preset as string | undefined,
+      configPath: globalOptions.config as string | undefined,
+      chain: globalOptions.chain as boolean | undefined,
+    },
+    cliContext,
+  );
 });
 
 // Pick command (explicit TUI)
@@ -142,7 +153,17 @@ program
   .allowExcessArguments(true)
   .action(async (options, command: Command) => {
     const rawForwardArgs = getExtraCommandArgs(command, 0);
-    await interactivePick({ ...options, forwardArgs: [...rawForwardArgs, ...tailArgs] }, cliContext);
+    const globalOptions = program.opts();
+    await interactivePick(
+      {
+        ...options,
+        forwardArgs: [...rawForwardArgs, ...tailArgs],
+        preset: globalOptions.preset as string | undefined,
+        configPath: globalOptions.config as string | undefined,
+        chain: globalOptions.chain as boolean | undefined,
+      },
+      cliContext,
+    );
   });
 
 // List sessions command
@@ -171,7 +192,18 @@ program
   .allowExcessArguments(true)
   .action(async (sessionId, options, command: Command) => {
     const rawForwardArgs = getExtraCommandArgs(command, 1);
-    await resumeCommand(sessionId, options, cliContext, { rawArgs: rawForwardArgs, tailArgs });
+    const globalOptions = program.opts();
+    await resumeCommand(
+      sessionId,
+      {
+        ...options,
+        preset: globalOptions.preset as string | undefined,
+        configPath: globalOptions.config as string | undefined,
+        chain: globalOptions.chain as boolean | undefined,
+      },
+      cliContext,
+      { rawArgs: rawForwardArgs, tailArgs },
+    );
   });
 
 // Scan command
@@ -200,7 +232,17 @@ program
   .option('--limit <number>', 'Limit number of sessions')
   .option('--rebuild', 'Force rebuild session index')
   .action(async (sourceOrAll, directory, options) => {
-    await dumpCommand(sourceOrAll, directory, options, cliContext);
+    const globalOptions = program.opts();
+    await dumpCommand(
+      sourceOrAll,
+      directory,
+      {
+        ...options,
+        configPath: globalOptions.config as string | undefined,
+        chain: globalOptions.chain as boolean | undefined,
+      },
+      cliContext,
+    );
   });
 
 // Inspect a session — parsing diagnostics
@@ -211,8 +253,10 @@ program
   .option('--write-md [path]', 'Write markdown output to file')
   .action(async (sessionId: string, opts: { truncate?: number; writeMd?: string | boolean }) => {
     // Inherit --preset from global options (subcommand duplication causes Commander scoping bug)
-    const globalPreset = program.opts().preset as string | undefined;
-    await inspectSession(sessionId, { ...opts, preset: globalPreset });
+    const globalOptions = program.opts();
+    const globalPreset = globalOptions.preset as string | undefined;
+    const globalChain = globalOptions.chain as boolean | undefined;
+    await inspectSession(sessionId, { ...opts, preset: globalPreset, chain: globalChain });
   });
 
 // Quick resume commands for each tool — generated from the adapter registry

@@ -97,6 +97,9 @@ const ClaudeAgentConfigSchema = z.object({
   parseSubagents: z.boolean().default(true),
   parseToolResultsDir: z.boolean().default(true),
   separateHumanFromToolResults: z.boolean().default(true),
+  chainCompactedHistory: z.boolean().default(true),
+  chainMaxDepth: z.number().int().min(0).default(2),
+  chainSummaryChars: z.number().int().min(0).default(800),
 });
 
 const AgentFlagsSchema = z.record(z.string(), z.union([z.boolean(), z.number(), z.string()]));
@@ -201,6 +204,9 @@ const MINIMAL_PRESET: VerbosityConfig = {
       parseSubagents: false,
       parseToolResultsDir: false,
       separateHumanFromToolResults: false,
+      chainCompactedHistory: true,
+      chainMaxDepth: 1,
+      chainSummaryChars: 300,
     },
   },
 };
@@ -273,6 +279,9 @@ const STANDARD_PRESET: VerbosityConfig = {
       parseSubagents: true,
       parseToolResultsDir: true,
       separateHumanFromToolResults: true,
+      chainCompactedHistory: true,
+      chainMaxDepth: 2,
+      chainSummaryChars: 800,
     },
   },
 };
@@ -345,6 +354,9 @@ const VERBOSE_PRESET: VerbosityConfig = {
       parseSubagents: true,
       parseToolResultsDir: true,
       separateHumanFromToolResults: true,
+      chainCompactedHistory: true,
+      chainMaxDepth: 4,
+      chainSummaryChars: 2000,
     },
   },
 };
@@ -417,6 +429,9 @@ const FULL_PRESET: VerbosityConfig = {
       parseSubagents: true,
       parseToolResultsDir: true,
       separateHumanFromToolResults: true,
+      chainCompactedHistory: true,
+      chainMaxDepth: 8,
+      chainSummaryChars: 5000,
     },
   },
 };

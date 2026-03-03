@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger.js';
 import { adapters } from '../parsers/registry.js';
+import type { VerbosityConfig } from '../config/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { homeDir } from './parser-helpers.js';
 
@@ -185,10 +186,10 @@ export async function findSession(id: string): Promise<UnifiedSession | null> {
 /**
  * Extract context from a session based on its source
  */
-export async function extractContext(session: UnifiedSession): Promise<SessionContext> {
+export async function extractContext(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
   const adapter = adapters[session.source];
   if (!adapter) throw new Error(`Unknown session source: ${session.source}`);
-  return adapter.extractContext(session);
+  return adapter.extractContext(session, config);
 }
 
 /**

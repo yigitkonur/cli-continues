@@ -1427,6 +1427,35 @@ describe('cache/thinking token breakdown rendering', () => {
   });
 });
 
+describe('subagent status rendering', () => {
+  const baseSession: UnifiedSession = {
+    id: 'test-subagent-status',
+    source: 'claude',
+    cwd: '/tmp/test',
+    lines: 10,
+    bytes: 500,
+    createdAt: new Date('2025-01-01'),
+    updatedAt: new Date('2025-01-01'),
+    originalPath: '/tmp/test.jsonl',
+  };
+
+  it('renders completed-without-result as success (not warning)', () => {
+    const md = generateHandoffMarkdown(baseSession, [], [], [], [], {
+      subagentResults: [
+        {
+          taskId: 'a1',
+          description: 'Watch CI run until completion',
+          status: 'completed',
+          toolCallCount: 0,
+        },
+      ],
+    });
+
+    expect(md).toContain('✅ Completed');
+    expect(md).not.toContain('⚠️ Completed');
+  });
+});
+
 describe('MCP namespace grouping', () => {
   const baseSession: UnifiedSession = {
     id: 'test-mcp-ns',

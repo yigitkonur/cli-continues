@@ -15,7 +15,16 @@ import { checkSingleToolAutoResume, selectTargetTool, showForwardingWarnings } f
  * Main interactive TUI command
  */
 export async function interactivePick(
-  options: { source?: string; noTui?: boolean; rebuild?: boolean; all?: boolean; forwardArgs?: string[] },
+  options: {
+    source?: string;
+    noTui?: boolean;
+    rebuild?: boolean;
+    all?: boolean;
+    forwardArgs?: string[];
+    preset?: string;
+    configPath?: string;
+    chain?: boolean;
+  },
   context: { isTTY: boolean; supportsColor: boolean; version: string },
 ): Promise<void> {
   try {
@@ -87,7 +96,13 @@ export async function interactivePick(
       clack.outro(`Launching ${targetTool}`);
 
       if (session.cwd) process.chdir(session.cwd);
-      await resume(session, targetTool, 'inline', forwarding);
+      await resume(
+        session,
+        targetTool,
+        'inline',
+        forwarding,
+        { preset: options.preset, configPath: options.configPath, chain: options.chain },
+      );
       return;
     }
 
@@ -233,7 +248,13 @@ export async function interactivePick(
 
     // Change to session's working directory and resume
     if (session.cwd) process.chdir(session.cwd);
-    await resume(session, targetTool, 'inline', forwarding);
+    await resume(
+      session,
+      targetTool,
+      'inline',
+      forwarding,
+      { preset: options.preset, configPath: options.configPath, chain: options.chain },
+    );
   } catch (error) {
     if (clack.isCancel(error)) {
       clack.cancel('Cancelled');

@@ -722,6 +722,8 @@ function renderSubagentResults(results: SubagentResult[], config: VerbosityConfi
       for (const line of text.split('\n')) {
         lines.push(`> ${line}`);
       }
+    } else if (r.status === 'completed') {
+      lines.push('> ✅ Completed');
     } else {
       // Non-completed: show status
       lines.push(`> \u26a0\ufe0f ${capitalize(r.status)}`);
