@@ -274,18 +274,42 @@ function mapDroidFlags(context: ForwardFlagMapContext): ForwardMapResult {
   const fullAutoOccurrences = context.all('fullAuto');
   const askOccurrences = context.all('askForApproval');
   const sandboxOccurrences = context.all('sandbox');
+  const approvalModeOccurrences = context.all('approvalMode');
+  const approvalMode = context.latestString('approvalMode')?.toLowerCase();
   const askForApproval = context.latestString('askForApproval')?.toLowerCase();
 
-  if (autoOccurrences.length > 0 || fullAutoOccurrences.length > 0 || askForApproval === 'never') {
-    context.consume(...autoOccurrences, ...fullAutoOccurrences, ...askOccurrences, ...sandboxOccurrences);
+  if (
+    autoOccurrences.length > 0 ||
+    fullAutoOccurrences.length > 0 ||
+    askForApproval === 'never' ||
+    approvalMode === 'yolo'
+  ) {
+    context.consume(
+      ...autoOccurrences,
+      ...fullAutoOccurrences,
+      ...askOccurrences,
+      ...sandboxOccurrences,
+      ...approvalModeOccurrences,
+    );
     args.push('--skip-permissions-unsafe');
 
     if (askOccurrences.length > 0 && askForApproval && askForApproval !== 'never') {
       warnings.push('Droid precedence: auto-approve mapping overrides unsupported ask-for-approval values.');
     }
-  } else if (askOccurrences.length > 0 || sandboxOccurrences.length > 0) {
-    context.consume(...askOccurrences, ...sandboxOccurrences);
-    warnings.push('Droid: --ask-for-approval and --sandbox are not supported by droid exec and were ignored.');
+
+    if (approvalModeOccurrences.length > 0 && approvalMode && approvalMode !== 'yolo') {
+      warnings.push('Droid: --approval-mode is not supported by droid exec and was ignored.');
+    }
+  } else if (askOccurrences.length > 0 || sandboxOccurrences.length > 0 || approvalModeOccurrences.length > 0) {
+    context.consume(...askOccurrences, ...sandboxOccurrences, ...approvalModeOccurrences);
+
+    if (askOccurrences.length > 0 || sandboxOccurrences.length > 0) {
+      warnings.push('Droid: --ask-for-approval and --sandbox are not supported by droid exec and were ignored.');
+    }
+
+    if (approvalModeOccurrences.length > 0 && approvalMode !== 'yolo') {
+      warnings.push('Droid: --approval-mode is not supported by droid exec and was ignored.');
+    }
   }
 
   const model = context.latestString('model');
@@ -311,15 +335,28 @@ function mapOpenCodeFlags(context: ForwardFlagMapContext): ForwardMapResult {
   const fullAutoOccurrences = context.all('fullAuto');
   const askOccurrences = context.all('askForApproval');
   const sandboxOccurrences = context.all('sandbox');
+  const approvalModeOccurrences = context.all('approvalMode');
+  const permissionModeOccurrences = context.all('permissionMode');
 
   if (
     autoOccurrences.length > 0 ||
     fullAutoOccurrences.length > 0 ||
     askOccurrences.length > 0 ||
-    sandboxOccurrences.length > 0
+    sandboxOccurrences.length > 0 ||
+    approvalModeOccurrences.length > 0 ||
+    permissionModeOccurrences.length > 0
   ) {
-    context.consume(...autoOccurrences, ...fullAutoOccurrences, ...askOccurrences, ...sandboxOccurrences);
-    warnings.push('OpenCode: auto-approval and sandbox forwarding flags are not supported and were ignored.');
+    context.consume(
+      ...autoOccurrences,
+      ...fullAutoOccurrences,
+      ...askOccurrences,
+      ...sandboxOccurrences,
+      ...approvalModeOccurrences,
+      ...permissionModeOccurrences,
+    );
+    warnings.push(
+      'OpenCode: auto-approval, permission, and sandbox forwarding flags are not supported and were ignored.',
+    );
   }
 
   const model = context.latestString('model');
@@ -351,18 +388,42 @@ function mapAmpFlags(context: ForwardFlagMapContext): ForwardMapResult {
   const fullAutoOccurrences = context.all('fullAuto');
   const askOccurrences = context.all('askForApproval');
   const sandboxOccurrences = context.all('sandbox');
+  const approvalModeOccurrences = context.all('approvalMode');
+  const approvalMode = context.latestString('approvalMode')?.toLowerCase();
   const askForApproval = context.latestString('askForApproval')?.toLowerCase();
 
-  if (autoOccurrences.length > 0 || fullAutoOccurrences.length > 0 || askForApproval === 'never') {
-    context.consume(...autoOccurrences, ...fullAutoOccurrences, ...askOccurrences, ...sandboxOccurrences);
+  if (
+    autoOccurrences.length > 0 ||
+    fullAutoOccurrences.length > 0 ||
+    askForApproval === 'never' ||
+    approvalMode === 'yolo'
+  ) {
+    context.consume(
+      ...autoOccurrences,
+      ...fullAutoOccurrences,
+      ...askOccurrences,
+      ...sandboxOccurrences,
+      ...approvalModeOccurrences,
+    );
     args.push('--dangerously-allow-all');
 
     if (askOccurrences.length > 0 && askForApproval && askForApproval !== 'never') {
       warnings.push('Amp precedence: auto-approve mapping overrides unsupported ask-for-approval values.');
     }
-  } else if (askOccurrences.length > 0 || sandboxOccurrences.length > 0) {
-    context.consume(...askOccurrences, ...sandboxOccurrences);
-    warnings.push('Amp: --ask-for-approval and --sandbox are not supported and were ignored.');
+
+    if (approvalModeOccurrences.length > 0 && approvalMode && approvalMode !== 'yolo') {
+      warnings.push('Amp: --approval-mode is not supported and was ignored.');
+    }
+  } else if (askOccurrences.length > 0 || sandboxOccurrences.length > 0 || approvalModeOccurrences.length > 0) {
+    context.consume(...askOccurrences, ...sandboxOccurrences, ...approvalModeOccurrences);
+
+    if (askOccurrences.length > 0 || sandboxOccurrences.length > 0) {
+      warnings.push('Amp: --ask-for-approval and --sandbox are not supported and were ignored.');
+    }
+
+    if (approvalModeOccurrences.length > 0 && approvalMode) {
+      warnings.push('Amp: --approval-mode is not supported and was ignored.');
+    }
   }
 
   return { mappedArgs: args, warnings };
