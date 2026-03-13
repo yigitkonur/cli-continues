@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { IS_WINDOWS } from './platform.js';
 
 /**
  * Derive cwd from a slug directory name using recursive backtracking.
@@ -11,13 +12,30 @@ import * as fs from 'fs';
 export function cwdFromSlug(slug: string): string {
   const parts = slug.split('-');
   let best: string | null = null;
+  const isDriveSlug = parts.length > 0 && /^[A-Za-z]$/.test(parts[0] || '');
+
+  function candidatePaths(segments: string[]): string[] {
+    const unixPath = '/' + segments.join('/');
+    if (segments.length > 0 && /^[A-Za-z]$/.test(segments[0] || '')) {
+      const drive = segments[0].toUpperCase();
+      const rest = segments.slice(1).join('/');
+      const winPath = rest ? `${drive}:/${rest}` : `${drive}:/`;
+      // On Windows prefer drive-letter paths; on Unix keep legacy order.
+      return IS_WINDOWS ? [winPath, unixPath] : [unixPath, winPath];
+    }
+    return [unixPath];
+  }
 
   function resolve(idx: number, segments: string[]): void {
     if (best) return; // already found a match
 
     if (idx >= parts.length) {
-      const p = '/' + segments.join('/');
-      if (fs.existsSync(p)) best = p;
+      for (const p of candidatePaths(segments)) {
+        if (fs.existsSync(p)) {
+          best = p;
+          break;
+        }
+      }
       return;
     }
 
@@ -41,7 +59,15 @@ export function cwdFromSlug(slug: string): string {
   }
 
   resolve(0, []);
-  return best || '/' + slug.replace(/-/g, '/');
+  if (best) return best;
+
+  if (isDriveSlug) {
+    const drive = parts[0].toUpperCase();
+    const rest = parts.slice(1).join('/');
+    return rest ? `${drive}:/${rest}` : `${drive}:/`;
+  }
+
+  return '/' + slug.replace(/-/g, '/');
 }
 
 /**
