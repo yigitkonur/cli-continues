@@ -21,8 +21,13 @@ describe('cwdFromSlug', () => {
     fs.rmSync(base, { recursive: true, force: true });
   });
 
-  it('falls back to drive-letter path format when no candidate exists', () => {
+  itWindows('falls back to drive-letter path format when no candidate exists', () => {
     expect(cwdFromSlug('D-Workspace-project-alpha')).toBe('D:/Workspace/project/alpha');
+  });
+
+  it('falls back to Unix path format for drive-letter-like slugs on non-Windows', () => {
+    if (process.platform === 'win32') return;
+    expect(cwdFromSlug('D-Workspace-project-alpha')).toBe('/D/Workspace/project/alpha');
   });
 
   it('keeps Unix fallback behavior for non-drive slugs', () => {

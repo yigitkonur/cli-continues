@@ -61,7 +61,7 @@ export function cwdFromSlug(slug: string): string {
   resolve(0, []);
   if (best) return best;
 
-  if (isDriveSlug) {
+  if (isDriveSlug && IS_WINDOWS) {
     const drive = parts[0].toUpperCase();
     const rest = parts.slice(1).join('/');
     return rest ? `${drive}:/${rest}` : `${drive}:/`;
