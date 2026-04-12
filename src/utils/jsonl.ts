@@ -182,10 +182,16 @@ export async function getFileStats(filePath: string): Promise<{ lines: number; b
 
     for await (const chunk of stream) {
       const buffer = chunk as Buffer;
-      for (const byte of buffer) {
-        if (byte === 10) lines++;
+      let offset = 0;
+      let newlineIndex = buffer.indexOf(10, offset);
+      while (newlineIndex !== -1) {
+        lines++;
+        offset = newlineIndex + 1;
+        newlineIndex = buffer.indexOf(10, offset);
       }
-      lastByte = buffer[buffer.length - 1];
+      if (buffer.length > 0) {
+        lastByte = buffer[buffer.length - 1];
+      }
     }
 
     if (lastByte !== 10) lines++;

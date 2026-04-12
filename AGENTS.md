@@ -17,7 +17,7 @@ Agent behavior instructions for `continues` — the cross-tool AI session handof
 - **Logging**: use `logger` from `src/logger.ts` for all diagnostic output. Never use bare `console.log`/`console.warn`/`console.error` in library code. TUI display goes through `@clack/prompts` or `chalk` via the display layer.
 - **Error types**: throw typed errors from `src/errors.ts` on user-facing paths, not bare `new Error()`.
 - **Tool activity**: use `SummaryCollector` from `src/utils/tool-summarizer.ts` in every parser. Do not build `ToolUsageSummary[]` arrays manually.
-- **JSONL**: stream with `readline.createInterface`, never `fs.readFileSync` + `split('\n')`.
+- **JSONL**: use the shared streaming helpers in `src/utils/jsonl.ts`, never `fs.readFileSync` + `split('\n')`.
 - **SQLite** (OpenCode, Crush parsers): use built-in `node:sqlite` — do not add third-party SQLite dependencies.
 - **Biome rules in force**: `noEmptyBlockStatements` (error), `noUnusedImports` (error), `useConst` (error). Empty `catch {}` blocks fail the linter; use `catch (err) { logger.debug(...) }` instead.
 
@@ -45,7 +45,7 @@ All five steps are required. Missing any one is a bug. See `CLAUDE.md` for detai
 
 - **Writing to tool storage directories** — the tool is read-only. Any write to `~/.claude/`, `~/.codex/`, etc. is a severe bug.
 - **`exec()` with string interpolation** — always use `spawn()` with an argument array in `resume.ts`. Session IDs and paths can contain shell metacharacters.
-- **`fs.readFileSync`/`fs.writeFileSync` in parsers** — these block the event loop. Use async fs APIs or `readline`.
+- **`fs.readFileSync`/`fs.writeFileSync` in parsers** — these block the event loop. Use async fs APIs or shared streaming helpers.
 - **Duplicating parser-helpers** — `cleanSummary`, `extractRepoFromCwd`, `homeDir` live in `src/utils/parser-helpers.ts`. Import them; do not reimplement.
 - **Hardcoding tool names** — derive from `TOOL_NAMES` or `SessionSource`. Never write `if (tool === 'claude' || tool === 'codex' || ...)`.
 - **Importing `node:sqlite` outside OpenCode/Crush parsers** — SQLite is only needed for those two tools. Do not spread this dependency.
