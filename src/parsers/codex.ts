@@ -1,5 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type {
   ConversationMessage,
@@ -9,13 +11,11 @@ import type {
   UnifiedSession,
 } from '../types/index.js';
 import type { CodexMessage, CodexSessionMeta } from '../types/schemas.js';
+import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepo, homeDir } from '../utils/parser-helpers.js';
-import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
 import {
   extractExitCode,
   mcpSummary,
@@ -29,6 +29,9 @@ import {
 const CODEX_SESSIONS_DIR = process.env.CODEX_HOME
   ? path.join(process.env.CODEX_HOME, 'sessions')
   : path.join(homeDir(), '.codex', 'sessions');
+
+const MAX_EXACT_LINE_COUNT_BYTES = 1024 * 1024;
+const MAX_METADATA_SCAN_BYTES = 1024 * 1024;
 
 /**
  * Find all Codex session files recursively
@@ -49,26 +52,34 @@ async function parseSessionInfo(filePath: string): Promise<{
   let meta: CodexSessionMeta | null = null;
   let firstUserMessage = '';
 
-  await scanJsonlHead(filePath, 150, (parsed) => {
-    const msg = parsed as Record<string, unknown>;
+  await scanJsonlHead(
+    filePath,
+    150,
+    (parsed) => {
+      const msg = parsed as Record<string, unknown>;
 
-    if (msg.type === 'session_meta' && !meta) {
-      meta = msg as unknown as CodexSessionMeta;
-    }
-
-    if (!firstUserMessage && msg.type === 'event_msg') {
-      const payload = msg.payload as Record<string, unknown> | undefined;
-      if (payload?.type === 'user_message') {
-        firstUserMessage = (payload.message as string) || '';
+      if (msg.type === 'session_meta' && !meta) {
+        meta = msg as unknown as CodexSessionMeta;
       }
-    }
 
-    if (!firstUserMessage && msg.type === 'message' && (msg as Record<string, unknown>).role === 'user') {
-      firstUserMessage = typeof msg.content === 'string' ? (msg.content as string) : '';
-    }
+      if (!firstUserMessage && msg.type === 'event_msg') {
+        const payload = msg.payload as Record<string, unknown> | undefined;
+        if (payload?.type === 'user_message') {
+          firstUserMessage = (payload.message as string) || '';
+        }
+      }
 
-    return 'continue';
-  });
+      if (!firstUserMessage && msg.type === 'message' && (msg as Record<string, unknown>).role === 'user') {
+        firstUserMessage = typeof msg.content === 'string' ? (msg.content as string) : '';
+      }
+
+      if (meta && firstUserMessage) {
+        return 'stop';
+      }
+      return 'continue';
+    },
+    { maxBytes: MAX_METADATA_SCAN_BYTES },
+  );
 
   return { meta, firstUserMessage };
 }
@@ -101,8 +112,11 @@ export async function parseCodexSessions(): Promise<UnifiedSession[]> {
       if (!parsed) continue;
 
       const { meta, firstUserMessage } = await parseSessionInfo(filePath);
-      const stats = await getFileStats(filePath);
       const fileStats = fs.statSync(filePath);
+      const stats =
+        fileStats.size > MAX_EXACT_LINE_COUNT_BYTES
+          ? { lines: 0, bytes: fileStats.size }
+          : await getFileStats(filePath);
 
       const cwd = meta?.payload?.cwd || '';
       const gitUrl = meta?.payload?.git?.repository_url;
@@ -198,7 +212,10 @@ function trackShellFileWrites(cmd: string, collector: SummaryCollector): void {
 /**
  * Extract tool usage summaries and files modified using shared SummaryCollector
  */
-function extractToolData(messages: CodexMessage[], config?: VerbosityConfig): { summaries: ToolUsageSummary[]; filesModified: string[] } {
+function extractToolData(
+  messages: CodexMessage[],
+  config?: VerbosityConfig,
+): { summaries: ToolUsageSummary[]; filesModified: string[] } {
   const collector = new SummaryCollector(config);
   const outputsById = new Map<string, string>();
 
@@ -253,9 +270,13 @@ function extractToolData(messages: CodexMessage[], config?: VerbosityConfig): { 
           } else if (name === 'write_stdin') {
             collector.add('write_stdin', `stdin: "${truncate(String(args.input || args.data || ''), 60)}"`);
           } else if (['read_mcp_resource', 'list_mcp_resources', 'list_mcp_resource_templates'].includes(name)) {
-            collector.add('mcp-resource', `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`, {
-              data: { category: 'mcp', toolName: name, params: String(args.uri || args.server_label || '') },
-            });
+            collector.add(
+              'mcp-resource',
+              `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`,
+              {
+                data: { category: 'mcp', toolName: name, params: String(args.uri || args.server_label || '') },
+              },
+            );
           } else if (name === 'request_user_input') {
             const question = truncate(String(args.prompt || args.message || ''), 80);
             collector.add('user-input', `ask: "${question}"`, {
@@ -475,7 +496,15 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
   }
 
   // Generate markdown for injection
-  const markdown = generateHandoffMarkdown(session, trimmed, filesModified, pendingTasks, toolSummaries, sessionNotes, resolvedConfig);
+  const markdown = generateHandoffMarkdown(
+    session,
+    trimmed,
+    filesModified,
+    pendingTasks,
+    toolSummaries,
+    sessionNotes,
+    resolvedConfig,
+  );
 
   return {
     session,

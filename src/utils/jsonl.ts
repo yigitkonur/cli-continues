@@ -2,34 +2,140 @@
  * Shared JSONL reading utilities.
  * Replaces 5+ identical readAllMessages() functions across parsers.
  */
-import * as fs from 'fs';
-import * as readline from 'readline';
+import * as fs from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import { logger } from '../logger.js';
+
+const DEFAULT_MAX_LINE_CHARS = 16 * 1024 * 1024;
+
+export interface JsonlReadOptions {
+  /**
+   * Maximum JSONL record size to buffer. Oversized records are skipped so
+   * malformed or tool-output-heavy sessions cannot crash Node's readline buffer.
+   */
+  maxLineChars?: number;
+  /** Maximum bytes to scan before returning. Leaves any partial trailing line unvisited. */
+  maxBytes?: number;
+}
+
+async function scanJsonlLines(
+  filePath: string,
+  visitor: (line: string, lineIndex: number) => 'continue' | 'stop',
+  options: JsonlReadOptions = {},
+): Promise<void> {
+  if (!fs.existsSync(filePath)) return;
+
+  const maxLineChars = options.maxLineChars ?? DEFAULT_MAX_LINE_CHARS;
+  const decoder = new StringDecoder('utf8');
+  const stream = fs.createReadStream(filePath);
+  let lineBuffer = '';
+  let lineIndex = 0;
+  let skippingOversizedLine = false;
+  let stopped = false;
+  let bytesRead = 0;
+
+  const finishLine = (): 'continue' | 'stop' => {
+    if (skippingOversizedLine) {
+      logger.debug('jsonl: skipping oversized line at index', lineIndex, 'in', filePath);
+      skippingOversizedLine = false;
+      lineBuffer = '';
+      lineIndex++;
+      return 'continue';
+    }
+
+    const line = lineBuffer.endsWith('\r') ? lineBuffer.slice(0, -1) : lineBuffer;
+    lineBuffer = '';
+    const action = visitor(line, lineIndex);
+    lineIndex++;
+    return action;
+  };
+
+  const consumeText = (text: string): 'continue' | 'stop' => {
+    let start = 0;
+
+    while (start < text.length) {
+      const newlineIndex = text.indexOf('\n', start);
+      const segmentEnd = newlineIndex === -1 ? text.length : newlineIndex;
+      const segment = text.slice(start, segmentEnd);
+
+      if (!skippingOversizedLine) {
+        if (lineBuffer.length + segment.length > maxLineChars) {
+          skippingOversizedLine = true;
+          lineBuffer = '';
+        } else {
+          lineBuffer += segment;
+        }
+      }
+
+      if (newlineIndex === -1) {
+        break;
+      }
+
+      if (finishLine() === 'stop') {
+        return 'stop';
+      }
+      start = newlineIndex + 1;
+    }
+
+    return 'continue';
+  };
+
+  try {
+    for await (const chunk of stream) {
+      let buffer = chunk as Buffer;
+      if (options.maxBytes !== undefined && bytesRead + buffer.length > options.maxBytes) {
+        buffer = buffer.subarray(0, Math.max(0, options.maxBytes - bytesRead));
+        stopped = true;
+      }
+      bytesRead += buffer.length;
+
+      if (buffer.length > 0 && consumeText(decoder.write(buffer)) === 'stop') {
+        stopped = true;
+      }
+
+      if (stopped) {
+        stream.destroy();
+        break;
+      }
+    }
+
+    if (!stopped) {
+      const remaining = decoder.end();
+      if (remaining && consumeText(remaining) === 'stop') {
+        stopped = true;
+      }
+
+      if (!stopped && (lineBuffer.length > 0 || skippingOversizedLine)) {
+        finishLine();
+      }
+    }
+  } catch (err) {
+    logger.debug('jsonl: failed to stream', filePath, err);
+  }
+}
 
 /**
  * Read an entire JSONL file into an array.
  * Each line is JSON.parse'd; invalid lines are silently skipped.
  * Returns an empty array if the file doesn't exist or can't be read.
  */
-export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
+export async function readJsonlFile<T = unknown>(filePath: string, options?: JsonlReadOptions): Promise<T[]> {
   if (!fs.existsSync(filePath)) return [];
 
-  return new Promise((resolve) => {
-    const items: T[] = [];
-    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-
-    rl.on('line', (line) => {
+  const items: T[] = [];
+  await scanJsonlLines(
+    filePath,
+    (line) => {
       try {
         items.push(JSON.parse(line));
       } catch (err) {
         logger.debug('jsonl: skipping invalid line in', filePath, err);
       }
-    });
-
-    rl.on('close', () => resolve(items));
-    rl.on('error', () => resolve(items));
-  });
+      return 'continue';
+    },
+    options,
+  );
+  return items;
 }
 
 /**
@@ -41,43 +147,24 @@ export async function scanJsonlHead(
   filePath: string,
   maxLines: number,
   visitor: (parsed: unknown, lineIndex: number) => 'continue' | 'stop',
+  options?: JsonlReadOptions,
 ): Promise<void> {
   if (!fs.existsSync(filePath)) return;
 
-  return new Promise((resolve) => {
-    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-    let lineIndex = 0;
-    let stopped = false;
-
-    rl.on('line', (line) => {
-      if (stopped || lineIndex >= maxLines) {
-        if (!stopped) {
-          stopped = true;
-          rl.close();
-          stream.close();
-        }
-        return;
-      }
-
+  await scanJsonlLines(
+    filePath,
+    (line, lineIndex) => {
+      if (lineIndex >= maxLines) return 'stop';
       try {
         const parsed = JSON.parse(line);
-        const action = visitor(parsed, lineIndex);
-        if (action === 'stop') {
-          stopped = true;
-          rl.close();
-          stream.close();
-        }
+        return visitor(parsed, lineIndex);
       } catch (err) {
         logger.debug('jsonl: skipping invalid line at index', lineIndex, 'in', filePath, err);
       }
-
-      lineIndex++;
-    });
-
-    rl.on('close', () => resolve());
-    rl.on('error', () => resolve());
-  });
+      return 'continue';
+    },
+    options,
+  );
 }
 
 /**
@@ -86,14 +173,25 @@ export async function scanJsonlHead(
  */
 export async function getFileStats(filePath: string): Promise<{ lines: number; bytes: number }> {
   const stats = fs.statSync(filePath);
+  if (stats.size === 0) return { lines: 0, bytes: stats.size };
 
-  return new Promise((resolve) => {
+  try {
     let lines = 0;
-    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
-    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    let lastByte: number | undefined;
+    const stream = fs.createReadStream(filePath);
 
-    rl.on('line', () => lines++);
-    rl.on('close', () => resolve({ lines, bytes: stats.size }));
-    rl.on('error', () => resolve({ lines: 0, bytes: stats.size }));
-  });
+    for await (const chunk of stream) {
+      const buffer = chunk as Buffer;
+      for (const byte of buffer) {
+        if (byte === 10) lines++;
+      }
+      lastByte = buffer[buffer.length - 1];
+    }
+
+    if (lastByte !== 10) lines++;
+    return { lines, bytes: stats.size };
+  } catch (err) {
+    logger.debug('jsonl: failed to count lines in', filePath, err);
+    return { lines: 0, bytes: stats.size };
+  }
 }
