@@ -10,7 +10,7 @@ import { TOOL_NAMES } from './tool-names.js';
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Content that can be a string or an array of blocks */
-const StringOrBlockArray = z.union([
+const _StringOrBlockArray = z.union([
   z.string(),
   z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()),
 ]);
@@ -80,6 +80,29 @@ export const CodexEventMsgSchema = z
         content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()).optional(),
         input_tokens: z.number().optional(),
         output_tokens: z.number().optional(),
+        info: z
+          .object({
+            total_token_usage: z
+              .object({
+                input_tokens: z.number().optional(),
+                output_tokens: z.number().optional(),
+                cached_input_tokens: z.number().optional(),
+                reasoning_output_tokens: z.number().optional(),
+              })
+              .passthrough()
+              .optional(),
+            last_token_usage: z
+              .object({
+                input_tokens: z.number().optional(),
+                output_tokens: z.number().optional(),
+                cached_input_tokens: z.number().optional(),
+                reasoning_output_tokens: z.number().optional(),
+              })
+              .passthrough()
+              .optional(),
+          })
+          .passthrough()
+          .optional(),
       })
       .passthrough()
       .optional(),

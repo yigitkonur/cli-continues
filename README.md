@@ -88,9 +88,14 @@ continues resume abc123 --in gemini
 
 # Or pass flags through to the destination tool:
 continues resume abc123 --in codex --yolo --search --add-dir /tmp
+
+# Or print the exact handoff prompt without launching the target tool:
+continues resume abc123 --in codex --debug-prompt
 ```
 
 `continues` maps common flags (model, sandbox, auto-approve, extra dirs) to the target tool's equivalent. Anything it doesn't recognize gets passed through as-is.
+
+`--debug-prompt` is for handoff inspection and testing. It writes the handoff file as usual, then prints the exact prompt that would be passed to the target agent and exits without launching it.
 
 ### Scripting & CI
 

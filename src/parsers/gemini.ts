@@ -1,5 +1,8 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as readline from 'node:readline';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type {
   ConversationMessage,
@@ -8,20 +11,29 @@ import type {
   ToolUsageSummary,
   UnifiedSession,
 } from '../types/index.js';
-import type { GeminiSession } from '../types/schemas.js';
-import { GeminiSessionSchema } from '../types/schemas.js';
+import type { GeminiMessage, GeminiSession } from '../types/schemas.js';
+import { GeminiMessageSchema, GeminiSessionSchema } from '../types/schemas.js';
+import { classifyToolName } from '../types/tool-names.js';
 import { extractTextFromBlocks } from '../utils/content.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
-import { classifyToolName } from '../types/tool-names.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
-import { fileSummary, mcpSummary, shellSummary, SummaryCollector, truncate } from '../utils/tool-summarizer.js';
+import { fileSummary, mcpSummary, SummaryCollector, shellSummary, truncate } from '../utils/tool-summarizer.js';
 
 const geminiHome = process.env.GEMINI_CLI_HOME || homeDir();
 const GEMINI_BASE_DIR = path.join(geminiHome, '.gemini', 'tmp');
 const GEMINI_LEGACY_DIR = path.join(geminiHome, '.gemini', 'sessions');
+const GEMINI_PROJECTS_PATH = path.join(geminiHome, '.gemini', 'projects.json');
+
+type GeminiSessionData = GeminiSession & {
+  directories?: string[];
+  summary?: string;
+};
+
+type GeminiJsonlRecord = Partial<GeminiSessionData> & {
+  $rewindTo?: string;
+  $set?: Partial<GeminiSessionData>;
+};
 
 /**
  * Find all Gemini session files (new and legacy storage formats)
@@ -29,14 +41,16 @@ const GEMINI_LEGACY_DIR = path.join(geminiHome, '.gemini', 'sessions');
 async function findSessionFiles(): Promise<string[]> {
   const results: string[] = [];
 
-  // New format: ~/.gemini/tmp/<project-hash>/chats/session-*.json
+  // Current format: ~/.gemini/tmp/<project-hash>/chats/*.jsonl
+  // Legacy chats path: ~/.gemini/tmp/<project-hash>/chats/session-*.json
   if (fs.existsSync(GEMINI_BASE_DIR)) {
     for (const projectDir of listSubdirectories(GEMINI_BASE_DIR)) {
       if (path.basename(projectDir) === 'bin') continue;
       const chatsDir = path.join(projectDir, 'chats');
       results.push(
         ...findFiles(chatsDir, {
-          match: (entry) => entry.name.startsWith('session-') && entry.name.endsWith('.json'),
+          match: (entry) =>
+            entry.name.endsWith('.jsonl') || (entry.name.startsWith('session-') && entry.name.endsWith('.json')),
           recursive: false,
         }),
       );
@@ -56,12 +70,138 @@ async function findSessionFiles(): Promise<string[]> {
   return results;
 }
 
+async function loadProjectDirectoryMap(): Promise<Map<string, string>> {
+  try {
+    const content = await fs.promises.readFile(GEMINI_PROJECTS_PATH, 'utf8');
+    const parsed = JSON.parse(content) as { projects?: Record<string, string> };
+    const entries = Object.entries(parsed.projects ?? {});
+    return new Map(entries.map(([cwd, projectId]) => [projectId, cwd]));
+  } catch (err) {
+    logger.debug('gemini: failed to load projects.json mapping', GEMINI_PROJECTS_PATH, err);
+    return new Map();
+  }
+}
+
+async function countFileLines(filePath: string): Promise<number> {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  let lines = 0;
+
+  try {
+    for await (const _line of rl) {
+      lines++;
+    }
+    return lines;
+  } finally {
+    rl.close();
+    stream.close();
+  }
+}
+
+function toGeminiMessage(record: GeminiJsonlRecord): GeminiMessage | null {
+  const result = GeminiMessageSchema.safeParse(record);
+  if (result.success) return result.data;
+  logger.debug('gemini: message validation failed', result.error.message);
+  return null;
+}
+
+function getSessionDirectory(session: GeminiSessionData, projectDirectories: Map<string, string>): string {
+  const metadataDirectory = session.directories?.find(
+    (directory) => typeof directory === 'string' && directory.length > 0,
+  );
+  return metadataDirectory || projectDirectories.get(session.projectHash) || '';
+}
+
+function findRewindIndex(messages: GeminiMessage[], messageId: string): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.id === messageId) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+async function parseJsonlSessionFile(filePath: string): Promise<GeminiSessionData | null> {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
+  const sessionState: Partial<GeminiSessionData> = {};
+  const messages: GeminiMessage[] = [];
+
+  try {
+    for await (const rawLine of rl) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      let record: GeminiJsonlRecord;
+      try {
+        record = JSON.parse(line) as GeminiJsonlRecord;
+      } catch (err) {
+        logger.debug('gemini: invalid JSONL record', filePath, err);
+        return null;
+      }
+
+      if (record.$set && typeof record.$set === 'object') {
+        Object.assign(sessionState, record.$set);
+        continue;
+      }
+
+      if (typeof record.$rewindTo === 'string') {
+        const rewindIndex = findRewindIndex(messages, record.$rewindTo);
+        if (rewindIndex >= 0) {
+          messages.length = rewindIndex;
+        }
+        continue;
+      }
+
+      const message = toGeminiMessage(record);
+      if (message) {
+        messages.push(message);
+        continue;
+      }
+
+      Object.assign(sessionState, record);
+    }
+  } finally {
+    rl.close();
+    stream.close();
+  }
+
+  const parsed = GeminiSessionSchema.safeParse({
+    sessionId: sessionState.sessionId,
+    projectHash: sessionState.projectHash,
+    startTime: sessionState.startTime,
+    lastUpdated: sessionState.lastUpdated,
+    messages,
+  });
+
+  if (!parsed.success) {
+    logger.debug('gemini: JSONL session validation failed', filePath, parsed.error.message);
+    return null;
+  }
+
+  return {
+    ...parsed.data,
+    ...(typeof sessionState.summary === 'string' ? { summary: sessionState.summary } : {}),
+    ...(Array.isArray(sessionState.directories)
+      ? {
+          directories: sessionState.directories.filter(
+            (directory): directory is string => typeof directory === 'string' && directory.length > 0,
+          ),
+        }
+      : {}),
+  };
+}
+
 /**
  * Parse a single Gemini session file
  */
-function parseSessionFile(filePath: string): GeminiSession | null {
+async function parseSessionFile(filePath: string): Promise<GeminiSessionData | null> {
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
+    if (filePath.endsWith('.jsonl')) {
+      return await parseJsonlSessionFile(filePath);
+    }
+
+    const content = await fs.promises.readFile(filePath, 'utf8');
     const result = GeminiSessionSchema.safeParse(JSON.parse(content));
     if (result.success) return result.data;
     logger.debug('gemini: session validation failed', filePath, result.error.message);
@@ -94,7 +234,10 @@ function extractFirstUserMessage(session: GeminiSession): string {
 /**
  * Extract tool usage summaries and files modified using shared SummaryCollector
  */
-function extractToolData(sessionData: GeminiSession, config?: VerbosityConfig): { summaries: ToolUsageSummary[]; filesModified: string[] } {
+function extractToolData(
+  sessionData: GeminiSession,
+  config?: VerbosityConfig,
+): { summaries: ToolUsageSummary[]; filesModified: string[] } {
   const collector = new SummaryCollector(config);
 
   for (const msg of sessionData.messages) {
@@ -145,6 +288,7 @@ function extractToolData(sessionData: GeminiSession, config?: VerbosityConfig): 
             filePath: fp,
             isError,
           });
+          if (fp) collector.trackFile(fp);
           break;
         case 'shell': {
           const cmd = (args?.command as string) || (args?.cmd as string) || '';
@@ -297,26 +441,20 @@ function extractSessionNotes(sessionData: GeminiSession): SessionNotes {
  */
 export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
   const files = await findSessionFiles();
+  const projectDirectories = await loadProjectDirectoryMap();
   const sessions: UnifiedSession[] = [];
 
   for (const filePath of files) {
     try {
-      const session = parseSessionFile(filePath);
+      const session = await parseSessionFile(filePath);
       if (!session || !session.sessionId) continue;
 
-      // Get cwd from parent directory structure (project hash dir)
-      const projectHashDir = path.dirname(path.dirname(filePath));
-      const projectHash = path.basename(projectHashDir);
-
-      // Gemini does not store working directory in its session data
-      const cwd = '';
-
       const firstUserMessage = extractFirstUserMessage(session);
-      const summary = cleanSummary(firstUserMessage);
+      const summary = cleanSummary(session.summary || firstUserMessage);
 
-      const fileStats = fs.statSync(filePath);
-      const content = fs.readFileSync(filePath, 'utf8');
-      const lines = content.split('\n').length;
+      const fileStats = await fs.promises.stat(filePath);
+      const lines = await countFileLines(filePath);
+      const cwd = getSessionDirectory(session, projectDirectories);
 
       sessions.push({
         id: session.sessionId,
@@ -347,7 +485,7 @@ export async function parseGeminiSessions(): Promise<UnifiedSession[]> {
  */
 export async function extractGeminiContext(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
   const resolvedConfig = config ?? getPreset('standard');
-  const sessionData = parseSessionFile(session.originalPath);
+  const sessionData = await parseSessionFile(session.originalPath);
   const recentMessages: ConversationMessage[] = [];
   let filesModified: string[] = [];
   const pendingTasks: string[] = [];

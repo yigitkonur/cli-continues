@@ -20,6 +20,7 @@ export interface HandoffContextOptions {
   preset?: string;
   configPath?: string;
   chain?: boolean;
+  debugPrompt?: boolean;
 }
 
 /**
@@ -159,6 +160,11 @@ export async function crossToolResume(
   const adapter = adapters[target];
   if (!adapter) throw new Error(`Unknown target: ${target}`);
 
+  if (contextOptions?.debugPrompt) {
+    console.log(prompt);
+    return;
+  }
+
   const resolved = resolveCrossToolForwarding(target, forwarding);
   const defaultInitArgs = getDefaultHandoffInitArgs(target, resolved.extraArgs);
   await runCommand(
@@ -234,6 +240,12 @@ export async function resume(
   contextOptions?: HandoffContextOptions,
 ): Promise<void> {
   const actualTarget = target || session.source;
+
+  if (contextOptions?.debugPrompt && actualTarget === session.source) {
+    throw new Error(
+      '--debug-prompt requires a cross-tool handoff target. Use --in <tool> different from the source session.',
+    );
+  }
 
   if (actualTarget === session.source) {
     // Same tool - use native resume

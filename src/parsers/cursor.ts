@@ -1,5 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type { ConversationMessage, SessionContext, SessionNotes, UnifiedSession } from '../types/index.js';
 import type { CursorTranscriptLine } from '../types/schemas.js';
@@ -9,8 +11,6 @@ import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 import { cwdFromSlug } from '../utils/slug.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
 import {
   type AnthropicMessage,
   extractAnthropicToolData,
@@ -153,6 +153,11 @@ export async function extractCursorContext(session: UnifiedSession, config?: Ver
   const reasoning = extractThinkingHighlights(anthropicMsgs);
   if (reasoning.length > 0) sessionNotes.reasoning = reasoning;
 
+  if (!sessionNotes.reasoning) sessionNotes.reasoning = [];
+  sessionNotes.reasoning.push(
+    'Cursor transcript completeness warning: local agent-transcripts may omit tool outputs and can be less complete than hidden local stores or exported/session state.',
+  );
+
   // Aggregate token usage, cache tokens, and model from passthrough fields.
   // Cursor CLI agent-transcripts use Anthropic API format — the schema's
   // .passthrough() preserves `usage` and `model` on each JSONL line.
@@ -208,7 +213,15 @@ export async function extractCursorContext(session: UnifiedSession, config?: Ver
 
   const trimmed = recentMessages.slice(-resolvedConfig.recentMessages);
 
-  const markdown = generateHandoffMarkdown(session, trimmed, filesModified, pendingTasks, toolSummaries, sessionNotes, resolvedConfig);
+  const markdown = generateHandoffMarkdown(
+    session,
+    trimmed,
+    filesModified,
+    pendingTasks,
+    toolSummaries,
+    sessionNotes,
+    resolvedConfig,
+  );
 
   return {
     session,

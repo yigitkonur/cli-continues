@@ -1,5 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type {
   ConversationMessage,
@@ -9,13 +11,11 @@ import type {
   UnifiedSession,
 } from '../types/index.js';
 import type { CodexMessage, CodexSessionMeta } from '../types/schemas.js';
+import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepo, homeDir } from '../utils/parser-helpers.js';
-import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
 import {
   extractExitCode,
   mcpSummary,
@@ -26,17 +26,19 @@ import {
   withResult,
 } from '../utils/tool-summarizer.js';
 
-const CODEX_SESSIONS_DIR = process.env.CODEX_HOME
-  ? path.join(process.env.CODEX_HOME, 'sessions')
-  : path.join(homeDir(), '.codex', 'sessions');
+const CODEX_HOME_DIR = process.env.CODEX_HOME || path.join(homeDir(), '.codex');
+const CODEX_SESSIONS_DIR = path.join(CODEX_HOME_DIR, 'sessions');
+const CODEX_ARCHIVED_SESSIONS_DIR = path.join(CODEX_HOME_DIR, 'archived_sessions');
 
 /**
  * Find all Codex session files recursively
  */
 async function findSessionFiles(): Promise<string[]> {
-  return findFiles(CODEX_SESSIONS_DIR, {
-    match: (entry) => entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl'),
-  });
+  return [CODEX_SESSIONS_DIR, CODEX_ARCHIVED_SESSIONS_DIR].flatMap((dir) =>
+    findFiles(dir, {
+      match: (entry) => entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl'),
+    }),
+  );
 }
 
 /**
@@ -92,7 +94,7 @@ function parseFilename(filename: string): { timestamp: Date; id: string } | null
  */
 export async function parseCodexSessions(): Promise<UnifiedSession[]> {
   const files = await findSessionFiles();
-  const sessions: UnifiedSession[] = [];
+  const sessionsById = new Map<string, UnifiedSession>();
 
   for (const filePath of files) {
     try {
@@ -111,7 +113,7 @@ export async function parseCodexSessions(): Promise<UnifiedSession[]> {
 
       const summary = cleanSummary(firstUserMessage);
 
-      sessions.push({
+      const nextSession: UnifiedSession = {
         id: parsed.id,
         source: 'codex',
         cwd,
@@ -123,14 +125,19 @@ export async function parseCodexSessions(): Promise<UnifiedSession[]> {
         updatedAt: fileStats.mtime,
         originalPath: filePath,
         summary: summary || undefined,
-      });
+      };
+
+      const existing = sessionsById.get(nextSession.id);
+      if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
+        sessionsById.set(nextSession.id, nextSession);
+      }
     } catch (err) {
       logger.debug('codex: skipping unparseable session', filePath, err);
       // Skip files we can't parse
     }
   }
 
-  return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 /**
@@ -198,7 +205,10 @@ function trackShellFileWrites(cmd: string, collector: SummaryCollector): void {
 /**
  * Extract tool usage summaries and files modified using shared SummaryCollector
  */
-function extractToolData(messages: CodexMessage[], config?: VerbosityConfig): { summaries: ToolUsageSummary[]; filesModified: string[] } {
+function extractToolData(
+  messages: CodexMessage[],
+  config?: VerbosityConfig,
+): { summaries: ToolUsageSummary[]; filesModified: string[] } {
   const collector = new SummaryCollector(config);
   const outputsById = new Map<string, string>();
 
@@ -253,9 +263,13 @@ function extractToolData(messages: CodexMessage[], config?: VerbosityConfig): { 
           } else if (name === 'write_stdin') {
             collector.add('write_stdin', `stdin: "${truncate(String(args.input || args.data || ''), 60)}"`);
           } else if (['read_mcp_resource', 'list_mcp_resources', 'list_mcp_resource_templates'].includes(name)) {
-            collector.add('mcp-resource', `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`, {
-              data: { category: 'mcp', toolName: name, params: String(args.uri || args.server_label || '') },
-            });
+            collector.add(
+              'mcp-resource',
+              `${name}: ${truncate(String(args.uri || args.server_label || '(all)'), 60)}`,
+              {
+                data: { category: 'mcp', toolName: name, params: String(args.uri || args.server_label || '') },
+              },
+            );
           } else if (name === 'request_user_input') {
             const question = truncate(String(args.prompt || args.message || ''), 80);
             collector.add('user-input', `ask: "${question}"`, {
@@ -351,6 +365,19 @@ function extractSessionNotes(messages: CodexMessage[]): SessionNotes {
   const notes: SessionNotes = {};
   const reasoning: string[] = [];
 
+  const readTokenUsage = (
+    raw: unknown,
+  ): { input: number; output: number; cached: number; reasoning?: number } | null => {
+    if (!raw || typeof raw !== 'object') return null;
+    const usage = raw as Record<string, unknown>;
+    const input = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+    const output = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+    const cached = typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : 0;
+    const reasoningTokens =
+      typeof usage.reasoning_output_tokens === 'number' ? usage.reasoning_output_tokens : undefined;
+    return { input, output, cached, ...(reasoningTokens !== undefined ? { reasoning: reasoningTokens } : {}) };
+  };
+
   for (const msg of messages) {
     // Model from turn_context
     if (msg.type === 'turn_context') {
@@ -371,11 +398,19 @@ function extractSessionNotes(messages: CodexMessage[]): SessionNotes {
 
     // Token usage (take last value — cumulative)
     if (payload.type === 'token_count') {
-      notes.tokenUsage = { input: payload.input_tokens || 0, output: payload.output_tokens || 0 };
-      // Codex may report reasoning tokens separately (OpenAI o-series models)
-      const reasoningTokens = (payload as Record<string, unknown>).reasoning_output_tokens;
-      if (typeof reasoningTokens === 'number' && reasoningTokens > 0) {
-        notes.thinkingTokens = reasoningTokens;
+      const payloadRecord = payload as Record<string, unknown>;
+      const info = payloadRecord.info as Record<string, unknown> | undefined;
+      const usage =
+        readTokenUsage(info?.total_token_usage) ?? readTokenUsage(info?.last_token_usage) ?? readTokenUsage(payload);
+
+      if (usage) {
+        notes.tokenUsage = { input: usage.input, output: usage.output };
+        if (usage.cached > 0) {
+          notes.cacheTokens = { creation: 0, read: usage.cached };
+        }
+        if (typeof usage.reasoning === 'number' && usage.reasoning > 0) {
+          notes.thinkingTokens = usage.reasoning;
+        }
       }
     }
   }
@@ -475,7 +510,15 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
   }
 
   // Generate markdown for injection
-  const markdown = generateHandoffMarkdown(session, trimmed, filesModified, pendingTasks, toolSummaries, sessionNotes, resolvedConfig);
+  const markdown = generateHandoffMarkdown(
+    session,
+    trimmed,
+    filesModified,
+    pendingTasks,
+    toolSummaries,
+    sessionNotes,
+    resolvedConfig,
+  );
 
   return {
     session,
