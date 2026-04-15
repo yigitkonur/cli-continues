@@ -58,15 +58,16 @@ function getOpenCodeStorageDir(): string {
   return path.join(getOpenCodeBaseDir(), 'storage');
 }
 
-function getOpenCodeDbPath(): string {
+function getOpenCodeDbPaths(): string[] {
   if (process.env.OPENCODE_DB) {
-    return process.env.OPENCODE_DB;
+    return [process.env.OPENCODE_DB];
   }
 
   const baseDir = getOpenCodeBaseDir();
   const defaultDbPath = path.join(baseDir, 'opencode.db');
+  const dbPaths: string[] = [];
   if (fs.existsSync(defaultDbPath)) {
-    return defaultDbPath;
+    dbPaths.push(defaultDbPath);
   }
 
   try {
@@ -79,14 +80,16 @@ function getOpenCodeDbPath(): string {
         const leftStat = fs.statSync(left);
         return rightStat.mtimeMs - leftStat.mtimeMs || left.localeCompare(right);
       });
-    if (channelDbPaths.length > 0) {
-      return channelDbPaths[0];
+    for (const channelDbPath of channelDbPaths) {
+      if (!dbPaths.includes(channelDbPath)) {
+        dbPaths.push(channelDbPath);
+      }
     }
   } catch (err) {
     logger.debug('opencode: failed to inspect channel SQLite DB variants', baseDir, err);
   }
 
-  return defaultDbPath;
+  return dbPaths;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,14 +218,13 @@ function renderHighValuePart(partData: Record<string, unknown>): {
  * Check if SQLite DB exists and is usable
  */
 function hasSqliteDb(): boolean {
-  return fs.existsSync(getOpenCodeDbPath());
+  return getOpenCodeDbPaths().some((dbPath) => fs.existsSync(dbPath));
 }
 
 /**
  * Open SQLite database using node:sqlite (built-in)
  */
-function openDb(): { db: SqliteDatabase; close: () => void } | null {
-  const dbPath = getOpenCodeDbPath();
+function openDb(dbPath: string): { db: SqliteDatabase; close: () => void } | null {
   try {
     // Dynamic import of node:sqlite to avoid issues on older Node versions
     const require = createRequire(import.meta.url);
@@ -372,74 +374,80 @@ export async function parseOpenCodeSessions(): Promise<UnifiedSession[]> {
  * Parse sessions from SQLite database
  */
 function parseSessionsFromSqlite(): UnifiedSession[] {
-  const handle = openDb();
-  if (!handle) return [];
+  const sessionsById = new Map<string, UnifiedSession>();
 
-  const { db, close } = handle;
-  try {
-    const rows = db
-      .prepare(
-        'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',
-      )
-      .all() as SqliteSessionRow[];
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
 
-    // Build project lookup
-    const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
-    const projectMap = new Map(projectRows.map((p: SqliteProjectRow) => [p.id, p.worktree]));
+    const { db, close } = handle;
+    try {
+      const rows = db
+        .prepare(
+          'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',
+        )
+        .all() as SqliteSessionRow[];
 
-    const sessions: UnifiedSession[] = [];
+      // Build project lookup
+      const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
+      const projectMap = new Map(projectRows.map((p: SqliteProjectRow) => [p.id, p.worktree]));
 
-    for (const row of rows) {
-      const cwd = row.directory || projectMap.get(row.project_id) || '';
+      for (const row of rows) {
+        const cwd = row.directory || projectMap.get(row.project_id) || '';
 
-      // Count messages for this session
-      const msgCount = db.prepare('SELECT COUNT(*) as cnt FROM message WHERE session_id = ?').get(row.id) as
-        | { cnt: number }
-        | undefined;
+        // Count messages for this session
+        const msgCount = db.prepare('SELECT COUNT(*) as cnt FROM message WHERE session_id = ?').get(row.id) as
+          | { cnt: number }
+          | undefined;
 
-      // Get first user message for summary if no title
-      let summary = row.title || '';
-      if (!summary || summary.startsWith('New session')) {
-        const firstMsg = db
-          .prepare(
-            'SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE \'%"role":"user"%\' AND p.data LIKE \'%"type":"text"%\' ORDER BY m.time_created ASC LIMIT 1',
-          )
-          .get(row.id) as { id: string; data: string } | undefined;
+        // Get first user message for summary if no title
+        let summary = row.title || '';
+        if (!summary || summary.startsWith('New session')) {
+          const firstMsg = db
+            .prepare(
+              'SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE \'%"role":"user"%\' AND p.data LIKE \'%"type":"text"%\' ORDER BY m.time_created ASC LIMIT 1',
+            )
+            .get(row.id) as { id: string; data: string } | undefined;
 
-        if (firstMsg) {
-          try {
-            const partData = JSON.parse(firstMsg.data);
-            if (partData.text) {
-              summary = partData.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
+          if (firstMsg) {
+            try {
+              const partData = JSON.parse(firstMsg.data);
+              if (partData.text) {
+                summary = partData.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
+              }
+            } catch (err) {
+              logger.debug('opencode: failed to parse SQLite first-message part', row.id, err);
             }
-          } catch (err) {
-            logger.debug('opencode: failed to parse SQLite first-message part', row.id, err);
           }
         }
+
+        const nextSession: UnifiedSession = {
+          id: row.id,
+          source: 'opencode',
+          cwd,
+          repo: extractRepoFromCwd(cwd),
+          lines: msgCount?.cnt ?? 0,
+          bytes: 0, // SQLite doesn't have per-session file size
+          createdAt: new Date(row.time_created),
+          updatedAt: new Date(row.time_updated),
+          originalPath: dbPath,
+          summary: summary?.slice(0, 60) || row.slug || undefined,
+          model: undefined,
+        };
+
+        const existing = sessionsById.get(nextSession.id);
+        if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
+          sessionsById.set(nextSession.id, nextSession);
+        }
       }
-
-      sessions.push({
-        id: row.id,
-        source: 'opencode',
-        cwd,
-        repo: extractRepoFromCwd(cwd),
-        lines: msgCount?.cnt ?? 0,
-        bytes: 0, // SQLite doesn't have per-session file size
-        createdAt: new Date(row.time_created),
-        updatedAt: new Date(row.time_updated),
-        originalPath: getOpenCodeDbPath(),
-        summary: summary?.slice(0, 60) || row.slug || undefined,
-        model: undefined,
-      });
+    } catch (err) {
+      logger.debug('opencode: SQLite session query failed', dbPath, err);
+    } finally {
+      close();
     }
-
-    return sessions;
-  } catch (err) {
-    logger.debug('opencode: SQLite session query failed', err);
-    return [];
-  } finally {
-    close();
   }
+
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 /**
@@ -504,64 +512,68 @@ function readAllMessages(sessionId: string): ConversationMessage[] {
  * Read messages from SQLite database
  */
 function readMessagesFromSqlite(sessionId: string): ConversationMessage[] {
-  const handle = openDb();
-  if (!handle) return [];
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
 
-  const { db, close } = handle;
-  try {
-    // Get messages with their data
-    const msgRows = db
-      .prepare('SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC')
-      .all(sessionId) as SqliteMessageRow[];
+    const { db, close } = handle;
+    try {
+      const msgRows = db
+        .prepare(
+          'SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC',
+        )
+        .all(sessionId) as SqliteMessageRow[];
+      if (msgRows.length === 0) continue;
 
-    const messages: ConversationMessage[] = [];
+      const messages: ConversationMessage[] = [];
 
-    for (const msgRow of msgRows) {
-      const msgDataResult = SqliteMsgDataSchema.safeParse(JSON.parse(msgRow.data));
-      if (!msgDataResult.success) continue;
-      const role: 'user' | 'assistant' = msgDataResult.data.role === 'user' ? 'user' : 'assistant';
+      for (const msgRow of msgRows) {
+        const msgDataResult = SqliteMsgDataSchema.safeParse(JSON.parse(msgRow.data));
+        if (!msgDataResult.success) continue;
+        const role: 'user' | 'assistant' = msgDataResult.data.role === 'user' ? 'user' : 'assistant';
 
-      // Get text parts for this message
-      const partRows = db
-        .prepare('SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC, id ASC')
-        .all(msgRow.id) as SqlitePartRow[];
+        const partRows = db
+          .prepare('SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC, id ASC')
+          .all(msgRow.id) as SqlitePartRow[];
 
-      const contentParts: string[] = [];
-      const toolCalls: NonNullable<ConversationMessage['toolCalls']> = [];
-      for (const partRow of partRows) {
-        let rawPartData: unknown;
-        try {
-          rawPartData = JSON.parse(partRow.data);
-        } catch (err) {
-          logger.debug('opencode: failed to parse SQLite part JSON', msgRow.id, err);
-          continue;
+        const contentParts: string[] = [];
+        const toolCalls: NonNullable<ConversationMessage['toolCalls']> = [];
+        for (const partRow of partRows) {
+          let rawPartData: unknown;
+          try {
+            rawPartData = JSON.parse(partRow.data);
+          } catch (err) {
+            logger.debug('opencode: failed to parse SQLite part JSON', msgRow.id, err);
+            continue;
+          }
+
+          const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
+          if (!partDataResult.success) continue;
+          const rendered = renderHighValuePart(partDataResult.data);
+          if (rendered.content) contentParts.push(rendered.content);
+          if (rendered.toolCall) toolCalls.push(rendered.toolCall);
         }
 
-        const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
-        if (!partDataResult.success) continue;
-        const rendered = renderHighValuePart(partDataResult.data);
-        if (rendered.content) contentParts.push(rendered.content);
-        if (rendered.toolCall) toolCalls.push(rendered.toolCall);
+        const content = contentParts.join('\n').trim();
+        if (content) {
+          messages.push({
+            role,
+            content,
+            timestamp: new Date(msgRow.time_created),
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          });
+        }
       }
 
-      const content = contentParts.join('\n').trim();
-      if (content) {
-        messages.push({
-          role,
-          content,
-          timestamp: new Date(msgRow.time_created),
-          ...(toolCalls.length > 0 ? { toolCalls } : {}),
-        });
-      }
+      return messages;
+    } catch (err) {
+      logger.debug('opencode: SQLite message query failed for session', dbPath, sessionId, err);
+    } finally {
+      close();
     }
-
-    return messages;
-  } catch (err) {
-    logger.debug('opencode: SQLite message query failed for session', sessionId, err);
-    return [];
-  } finally {
-    close();
   }
+
+  return [];
 }
 
 /**
@@ -645,62 +657,66 @@ function extractOpenCodeToolSummaries(sessionId: string): ToolUsageSummary[] {
 }
 
 function extractOpenCodeToolSummariesFromSqlite(sessionId: string, collector: SummaryCollector): ToolUsageSummary[] {
-  const handle = openDb();
-  if (!handle) return [];
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
 
-  const { db, close } = handle;
-  try {
-    const sessionRow = db
-      .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session WHERE id = ?')
-      .get(sessionId) as
-      | {
-          summary_additions: number | null;
-          summary_deletions: number | null;
-          summary_files: number | null;
-        }
-      | undefined;
+    const { db, close } = handle;
+    try {
+      const sessionRow = db
+        .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session WHERE id = ?')
+        .get(sessionId) as
+        | {
+            summary_additions: number | null;
+            summary_deletions: number | null;
+            summary_files: number | null;
+          }
+        | undefined;
 
-    const added = sessionRow?.summary_additions ?? 0;
-    const removed = sessionRow?.summary_deletions ?? 0;
-    const files = sessionRow?.summary_files ?? 0;
-    if (files > 0 || added > 0 || removed > 0) {
-      collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
-        data: {
-          category: 'edit',
-          filePath: `(${files} files)`,
-          diffStats: { added, removed },
-        },
-      });
-    }
-
-    const partRows = db
-      .prepare('SELECT data FROM part WHERE session_id = ? ORDER BY time_created ASC, id ASC')
-      .all(sessionId) as SqlitePartRow[];
-
-    for (const partRow of partRows) {
-      let rawPartData: unknown;
-      try {
-        rawPartData = JSON.parse(partRow.data);
-      } catch (err) {
-        logger.debug('opencode: failed to parse SQLite tool-summary part JSON', sessionId, err);
-        continue;
+      const added = sessionRow?.summary_additions ?? 0;
+      const removed = sessionRow?.summary_deletions ?? 0;
+      const files = sessionRow?.summary_files ?? 0;
+      if (files > 0 || added > 0 || removed > 0) {
+        collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
+          data: {
+            category: 'edit',
+            filePath: `(${files} files)`,
+            diffStats: { added, removed },
+          },
+        });
       }
 
-      const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
-      if (!partDataResult.success || partDataResult.data.type !== 'tool') continue;
+      const partRows = db
+        .prepare('SELECT data FROM part WHERE session_id = ? ORDER BY time_created ASC, id ASC')
+        .all(sessionId) as SqlitePartRow[];
+      if (partRows.length === 0) continue;
 
-      const rendered = renderToolPart(partDataResult.data);
-      if (!rendered) continue;
-      collector.add(rendered.toolName, rendered.summary, { isError: rendered.isError });
+      for (const partRow of partRows) {
+        let rawPartData: unknown;
+        try {
+          rawPartData = JSON.parse(partRow.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse SQLite tool-summary part JSON', sessionId, err);
+          continue;
+        }
+
+        const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
+        if (!partDataResult.success || partDataResult.data.type !== 'tool') continue;
+
+        const rendered = renderToolPart(partDataResult.data);
+        if (!rendered) continue;
+        collector.add(rendered.toolName, rendered.summary, { isError: rendered.isError });
+      }
+
+      return collector.getSummaries();
+    } catch (err) {
+      logger.debug('opencode: SQLite tool summary query failed', dbPath, sessionId, err);
+    } finally {
+      close();
     }
-
-    return collector.getSummaries();
-  } catch (err) {
-    logger.debug('opencode: SQLite tool summary query failed', sessionId, err);
-    return [];
-  } finally {
-    close();
   }
+
+  return [];
 }
 
 function extractOpenCodeToolSummariesFromJson(sessionId: string, collector: SummaryCollector): ToolUsageSummary[] {

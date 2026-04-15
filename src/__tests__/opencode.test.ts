@@ -346,6 +346,38 @@ describe('OpenCode parser', () => {
     }
   });
 
+  it('discovers sessions from channel DBs even when the default opencode.db also exists', async () => {
+    const defaultFixture = createOpenCodeSqliteFixture('opencode.db', {
+      sessionId: 'ses_default',
+      sessionTitle: 'Default DB session',
+    });
+    const channelFixture = createOpenCodeChannelSqliteFixture('opencode-preview.db', {
+      sessionId: 'ses_preview',
+      sessionTitle: 'Preview DB session',
+    });
+
+    try {
+      const mergedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-parser-merged-'));
+      const xdgDataHome = path.join(mergedRoot, 'xdg-data');
+      const dbDir = path.join(xdgDataHome, 'opencode');
+      fs.mkdirSync(dbDir, { recursive: true });
+      fs.copyFileSync(defaultFixture.dbPath, path.join(dbDir, 'opencode.db'));
+      fs.copyFileSync(channelFixture.dbPath, path.join(dbDir, 'opencode-preview.db'));
+
+      process.env.XDG_DATA_HOME = xdgDataHome;
+      process.env.OPENCODE_DB = '';
+
+      const { parseOpenCodeSessions } = await importOpenCodeParser();
+      const sessions = await parseOpenCodeSessions();
+
+      expect(sessions.map((session) => session.id)).toContain('ses_default');
+      expect(sessions.map((session) => session.id)).toContain('ses_preview');
+    } finally {
+      defaultFixture.cleanup();
+      channelFixture.cleanup();
+    }
+  });
+
   it('keeps high-value non-text SQLite parts in extracted recent messages', async () => {
     const fixture = createOpenCodeSqliteFixture('opencode.db', {
       sessionId: 'ses_parts',

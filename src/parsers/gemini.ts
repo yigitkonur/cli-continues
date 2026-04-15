@@ -126,6 +126,7 @@ async function parseJsonlSessionFile(filePath: string): Promise<GeminiSessionDat
   const rl = readline.createInterface({ input: stream, crlfDelay: Number.POSITIVE_INFINITY });
   const sessionState: Partial<GeminiSessionData> = {};
   const messages: GeminiMessage[] = [];
+  const messageIndexById = new Map<string, number>();
 
   try {
     for await (const rawLine of rl) {
@@ -136,8 +137,8 @@ async function parseJsonlSessionFile(filePath: string): Promise<GeminiSessionDat
       try {
         record = JSON.parse(line) as GeminiJsonlRecord;
       } catch (err) {
-        logger.debug('gemini: invalid JSONL record', filePath, err);
-        return null;
+        logger.debug('gemini: skipping malformed JSONL record', filePath, err);
+        continue;
       }
 
       if (record.$set && typeof record.$set === 'object') {
@@ -149,13 +150,28 @@ async function parseJsonlSessionFile(filePath: string): Promise<GeminiSessionDat
         const rewindIndex = findRewindIndex(messages, record.$rewindTo);
         if (rewindIndex >= 0) {
           messages.length = rewindIndex;
+          for (const [messageId, index] of messageIndexById.entries()) {
+            if (index >= rewindIndex) {
+              messageIndexById.delete(messageId);
+            }
+          }
         }
         continue;
       }
 
       const message = toGeminiMessage(record);
       if (message) {
-        messages.push(message);
+        if (message.id) {
+          const existingIndex = messageIndexById.get(message.id);
+          if (existingIndex !== undefined) {
+            messages[existingIndex] = message;
+          } else {
+            messageIndexById.set(message.id, messages.length);
+            messages.push(message);
+          }
+        } else {
+          messages.push(message);
+        }
         continue;
       }
 

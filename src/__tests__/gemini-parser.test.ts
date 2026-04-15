@@ -189,9 +189,9 @@ describe('gemini parser hardening', () => {
       'Interim answer that should be rewound away',
     );
     expect(context.filesModified).toContain('login.ts');
-    expect(context.sessionNotes?.tokenUsage).toEqual({ input: 120, output: 30 });
-    expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 0, read: 8 });
-    expect(context.sessionNotes?.thinkingTokens).toBe(6);
+    expect(context.sessionNotes?.tokenUsage).toEqual({ input: 70, output: 20 });
+    expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 0, read: 5 });
+    expect(context.sessionNotes?.thinkingTokens).toBe(4);
     expect(context.sessionNotes?.model).toBe('gemini-2.5-pro');
   });
 
@@ -229,5 +229,36 @@ describe('gemini parser hardening', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].id).toBe('gemini-legacy-session');
     expect(sessions[0].summary).toBe('Handle the fallback path');
+  });
+
+  it('skips malformed trailing JSONL lines instead of discarding the whole session', async () => {
+    const home = makeGeminiHome();
+    const filePath = writeGeminiJsonlSession({
+      home,
+      projectId: 'proj-short-id',
+      fileName: 'session-2026-04-15T10-00-malformed1234.jsonl',
+      projects: { '/tmp/gemini-project': 'proj-short-id' },
+      records: [
+        {
+          sessionId: 'gemini-malformed-session',
+          projectHash: 'proj-short-id',
+          startTime: '2026-04-15T10:00:00.000Z',
+          lastUpdated: '2026-04-15T10:00:00.000Z',
+        },
+        {
+          id: 'msg-user-1',
+          timestamp: '2026-04-15T10:00:01.000Z',
+          type: 'user',
+          content: [{ type: 'text', text: 'Parser should survive a bad tail line' }],
+        },
+      ],
+    });
+    fs.appendFileSync(filePath, '{"broken":\n', 'utf8');
+
+    const { parseGeminiSessions } = await loadGeminiParser(home);
+    const sessions = await parseGeminiSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].id).toBe('gemini-malformed-session');
   });
 });
