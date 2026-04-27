@@ -189,6 +189,7 @@ program
   .description('Resume a session by ID or short ID')
   .option('-i, --in <cli-tool>', `Target CLI tool (${ALL_TOOLS.join(', ')})`)
   .option('--reference', 'Use file reference instead of inline context (for very large sessions)')
+  .option('--debug-prompt', 'Print the exact handoff prompt instead of launching the target tool')
   .option('--no-tui', 'Disable interactive prompts')
   .allowUnknownOption(true)
   .allowExcessArguments(true)

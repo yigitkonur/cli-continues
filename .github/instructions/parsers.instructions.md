@@ -37,8 +37,8 @@ Both must be registered in `src/parsers/registry.ts` with all `ToolAdapter` fiel
 
 ## JSONL Streaming
 
-- Stream JSONL with `readline.createInterface` — never `fs.readFileSync` for session files
-- Use helpers from `src/utils/jsonl.ts` (`readJsonlFile`, `scanJsonlHead`) when applicable
+- Stream JSONL with helpers from `src/utils/jsonl.ts` (`readJsonlFile`, `scanJsonlHead`) when applicable
+- Never use `fs.readFileSync` for session files
 - Keep only the last ~10 messages in `recentMessages` — do not accumulate the entire conversation
 
 ## Tool Summarizer

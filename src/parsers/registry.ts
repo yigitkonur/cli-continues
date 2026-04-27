@@ -48,6 +48,8 @@ export interface ToolAdapter {
   envVar?: string;
   /** CLI binary name for availability checks and spawning */
   binaryName: string;
+  /** Additional binary names to try when the primary name is unavailable */
+  binaryFallbacks?: string[];
   /** Discover and index all sessions */
   parseSessions: () => Promise<UnifiedSession[]>;
   /** Extract full context for cross-tool handoff */
@@ -755,12 +757,13 @@ register({
   label: 'Cursor AI',
   color: chalk.blueBright,
   storagePath: '~/.cursor/projects/*/agent-transcripts/',
-  binaryName: 'agent',
+  binaryName: 'cursor-agent',
+  binaryFallbacks: ['agent'],
   parseSessions: parseCursorSessions,
   extractContext: extractCursorContext,
   nativeResumeArgs: (s) => ['--resume', s.id],
   crossToolArgs: (prompt) => [prompt],
-  resumeCommandDisplay: (s) => `agent --resume ${s.id}`,
+  resumeCommandDisplay: (s) => `cursor-agent --resume ${s.id} (or: agent --resume ${s.id})`,
   mapHandoffFlags: mapCursorAgentFlags,
 });
 

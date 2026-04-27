@@ -13,7 +13,15 @@ import { selectTargetTool, showForwardingWarnings } from './_shared.js';
  */
 export async function resumeCommand(
   sessionId: string,
-  options: { in?: string; reference?: boolean; noTui?: boolean; preset?: string; configPath?: string; chain?: boolean },
+  options: {
+    in?: string;
+    reference?: boolean;
+    noTui?: boolean;
+    preset?: string;
+    configPath?: string;
+    chain?: boolean;
+    debugPrompt?: boolean;
+  },
   context: { isTTY: boolean },
   forwarding?: HandoffForwardingOptions,
 ): Promise<void> {
@@ -48,7 +56,18 @@ export async function resumeCommand(
 
     const target = options.in as SessionSource | undefined;
     const mode = options.reference ? ('reference' as const) : ('inline' as const);
-    const contextOptions = { preset: options.preset, configPath: options.configPath, chain: options.chain };
+    const contextOptions = {
+      preset: options.preset,
+      configPath: options.configPath,
+      chain: options.chain,
+      debugPrompt: options.debugPrompt,
+    };
+
+    if (options.debugPrompt && !target) {
+      console.error(chalk.red('Error:'), '--debug-prompt requires --in <cli-tool>.');
+      process.exitCode = 1;
+      return;
+    }
 
     const forwardingFor = (candidateTarget: SessionSource | undefined): HandoffForwardingOptions | undefined => {
       if (!candidateTarget || candidateTarget === session.source) return undefined;
@@ -63,9 +82,11 @@ export async function resumeCommand(
         await showForwardingWarnings(resolved.warnings, context);
       }
 
-      console.log(chalk.gray('Session: ') + formatSession(session));
-      console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, effectiveForwarding)));
-      console.log();
+      if (!options.debugPrompt) {
+        console.log(chalk.gray('Session: ') + formatSession(session));
+        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, effectiveForwarding)));
+        console.log();
+      }
 
       if (session.cwd) process.chdir(session.cwd);
       await resume(session, target, mode, effectiveForwarding, contextOptions);
@@ -88,8 +109,10 @@ export async function resumeCommand(
         await showForwardingWarnings(resolved.warnings, context);
       }
 
-      clack.log.step(`Handing off to ${selectedTarget}...`);
-      clack.outro(`Launching ${selectedTarget}`);
+      if (!options.debugPrompt) {
+        clack.log.step(`Handing off to ${selectedTarget}...`);
+        clack.outro(`Launching ${selectedTarget}`);
+      }
 
       if (session.cwd) process.chdir(session.cwd);
       await resume(session, selectedTarget, mode, effectiveForwarding, contextOptions);
@@ -101,9 +124,11 @@ export async function resumeCommand(
         await showForwardingWarnings(resolved.warnings, context);
       }
 
-      console.log(chalk.gray('Session: ') + formatSession(session));
-      console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, effectiveForwarding)));
-      console.log();
+      if (!options.debugPrompt) {
+        console.log(chalk.gray('Session: ') + formatSession(session));
+        console.log(chalk.gray('Command: ') + chalk.cyan(getResumeCommand(session, target, effectiveForwarding)));
+        console.log();
+      }
 
       if (session.cwd) process.chdir(session.cwd);
       await resume(session, target, mode, effectiveForwarding, contextOptions);

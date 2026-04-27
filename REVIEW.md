@@ -16,7 +16,7 @@ Review guidelines for the `continues` CLI tool — a read-only session parser an
 - Use `process.exitCode = N` instead of `process.exit(N)`.
 - Biome handles linting and formatting — do not introduce ESLint or Prettier configs.
 - Parser functions must return `Promise<UnifiedSession[]>` and `Promise<SessionContext>` respectively. Both must be registered in `src/parsers/registry.ts`.
-- JSONL parsing must stream with `readline.createInterface` — do not load entire files into memory with `fs.readFileSync`.
+- JSONL parsing must use the shared streaming helpers in `src/utils/jsonl.ts` where possible — do not load entire files into memory with `fs.readFileSync`.
 - Use the `SummaryCollector` class from `src/utils/tool-summarizer.ts` for tool activity summaries. Do not manually build summary arrays.
 - Shared helpers (`cleanSummary`, `extractRepoFromCwd`, `homeDir`) live in `src/utils/parser-helpers.ts`. Do not duplicate these in individual parsers.
 - Error hierarchy: use typed errors from `src/errors.ts` (`ParseError`, `SessionNotFoundError`, `ToolNotAvailableError`, `UnknownSourceError`, `IndexError`, `StorageError`) rather than bare `throw new Error()` for user-facing error paths.

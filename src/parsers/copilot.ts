@@ -1,24 +1,61 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import YAML from 'yaml';
+import type { VerbosityConfig } from '../config/index.js';
+import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
-import type { ConversationMessage, SessionContext, ToolUsageSummary, UnifiedSession } from '../types/index.js';
-import { classifyToolName } from '../types/tool-names.js';
+import type {
+  ConversationMessage,
+  SessionContext,
+  StructuredToolSample,
+  ToolUsageSummary,
+  UnifiedSession,
+} from '../types/index.js';
 import type { CopilotEvent, CopilotWorkspace } from '../types/schemas.js';
+import { classifyToolName } from '../types/tool-names.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { homeDir } from '../utils/parser-helpers.js';
-import type { VerbosityConfig } from '../config/index.js';
-import { getPreset } from '../config/index.js';
+import {
+  extractExitCode,
+  fetchSummary,
+  fileSummary,
+  globSummary,
+  grepSummary,
+  mcpSummary,
+  SummaryCollector,
+  searchSummary,
+  shellSummary,
+  truncate,
+  withResult,
+} from '../utils/tool-summarizer.js';
 
-const COPILOT_SESSIONS_DIR = path.join(homeDir(), '.copilot', 'session-state');
+interface CopilotToolInvocation {
+  name: string;
+  arguments: Record<string, unknown>;
+  order: number;
+  resultText?: string;
+  resultDetail?: string;
+  success?: boolean;
+}
+
+function getCopilotRoot(): string {
+  const configuredHome = process.env.COPILOT_HOME?.trim();
+  return configuredHome || path.join(homeDir(), '.copilot');
+}
+
+function getCopilotSessionsDir(): string {
+  return path.join(getCopilotRoot(), 'session-state');
+}
 
 /**
  * Find all Copilot session directories
  */
 async function findSessionDirs(): Promise<string[]> {
-  return listSubdirectories(COPILOT_SESSIONS_DIR).filter((dir) => fs.existsSync(path.join(dir, 'workspace.yaml')));
+  const sessionsDir = getCopilotSessionsDir();
+  if (!fs.existsSync(sessionsDir)) return [];
+  return listSubdirectories(sessionsDir).filter((dir) => fs.existsSync(path.join(dir, 'workspace.yaml')));
 }
 
 /**
@@ -101,7 +138,10 @@ export async function parseCopilotSessions(): Promise<UnifiedSession[]> {
 /**
  * Extract context from a Copilot session for cross-tool continuation
  */
-export async function extractCopilotContext(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
+export async function extractCopilotContext(
+  session: UnifiedSession,
+  config?: VerbosityConfig,
+): Promise<SessionContext> {
   const resolvedConfig = config ?? getPreset('standard');
   const eventsPath = path.join(session.originalPath, 'events.jsonl');
   const events = await readJsonlFile<CopilotEvent>(eventsPath);
@@ -165,7 +205,15 @@ export async function extractCopilotContext(session: UnifiedSession, config?: Ve
   const trimmed = recentMessages.slice(-resolvedConfig.recentMessages);
 
   // Generate markdown for injection
-  const markdown = generateHandoffMarkdown(session, trimmed, filesModified, pendingTasks, toolSummaries, undefined, resolvedConfig);
+  const markdown = generateHandoffMarkdown(
+    session,
+    trimmed,
+    filesModified,
+    pendingTasks,
+    toolSummaries,
+    undefined,
+    resolvedConfig,
+  );
 
   return {
     session,
@@ -178,54 +226,42 @@ export async function extractCopilotContext(session: UnifiedSession, config?: Ve
 }
 
 /**
- * Extract tool usage summaries from Copilot events' toolRequests arrays.
- * Copilot doesn't provide tool results, so we capture names and arguments only.
+ * Extract tool usage summaries from Copilot assistant toolRequests and
+ * enrich them with actual execution results when tool.execution_* events exist.
  */
-function extractCopilotToolSummaries(events: CopilotEvent[], config: VerbosityConfig): { summaries: ToolUsageSummary[]; filesModified: string[] } {
-  const toolCounts = new Map<string, { count: number; samples: Array<{ summary: string; data?: import('../types/index.js').StructuredToolSample }> }>();
-  const files = new Set<string>();
-  const defaultSampleLimit = config.mcp.maxSamplesPerNamespace;
+function extractCopilotToolSummaries(
+  events: CopilotEvent[],
+  config: VerbosityConfig,
+): { summaries: ToolUsageSummary[]; filesModified: string[] } {
+  const collector = new SummaryCollector(config);
 
-  for (const event of events) {
-    if (event.type !== 'assistant.message') continue;
-    const toolRequests = event.data?.toolRequests || [];
-    for (const tr of toolRequests) {
-      const name = tr.name || 'unknown';
-      const category = classifyToolName(name);
-      if (!category) continue; // skip internal tools
+  for (const invocation of mergeCopilotToolInvocations(events)) {
+    const category = classifyToolName(invocation.name);
+    if (!category) continue;
 
-      if (!toolCounts.has(name)) {
-        toolCounts.set(name, { count: 0, samples: [] });
-      }
-      const entry = toolCounts.get(name)!;
-      entry.count++;
+    const filePath = getCopilotFilePath(invocation.arguments);
+    const data = buildCopilotSampleData(
+      category,
+      invocation.name,
+      invocation.arguments,
+      invocation.resultText,
+      invocation.resultDetail,
+      invocation.success,
+    );
 
-      const args = tr.arguments || {};
-      const fp = (args.path as string) || (args.file_path as string) || '';
-
-      // Track files from write/edit tool requests
-      if ((category === 'write' || category === 'edit') && fp) {
-        files.add(fp);
-      }
-
-      if (entry.samples.length < defaultSampleLimit) {
-        const data = buildCopilotSampleData(category, name, args);
-        const argsStr = Object.keys(args).length > 0 ? JSON.stringify(args).slice(0, 100) : '';
-        entry.samples.push({
-          summary: argsStr ? `${name}(${argsStr})` : name,
-          data,
-        });
-      }
-    }
+    collector.add(
+      invocation.name,
+      buildCopilotSummary(category, invocation.name, invocation.arguments, invocation.resultText, data),
+      {
+        data,
+        ...(filePath ? { filePath } : {}),
+        isWrite: (category === 'write' || category === 'edit') && Boolean(filePath),
+        isError: invocation.success === false || (data.category === 'shell' && data.errored === true),
+      },
+    );
   }
 
-  const summaries = Array.from(toolCounts.entries()).map(([name, { count, samples }]) => ({
-    name,
-    count,
-    samples,
-  }));
-
-  return { summaries, filesModified: Array.from(files) };
+  return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
 }
 
 /** Build the correct StructuredToolSample for a Copilot tool request based on its classified category */
@@ -233,17 +269,40 @@ function buildCopilotSampleData(
   category: import('../types/tool-names.js').ToolSampleCategory,
   name: string,
   args: Record<string, unknown>,
-): import('../types/index.js').StructuredToolSample {
-  const fp = (args.path as string) || (args.file_path as string) || '';
+  resultText?: string,
+  resultDetail?: string,
+  success?: boolean,
+): StructuredToolSample {
+  const fp = getCopilotFilePath(args);
+  const output = resultText || resultDetail || '';
+  const exitCode = extractExitCode(resultDetail || resultText);
+  const errored = success === false || (exitCode !== undefined && exitCode !== 0);
   switch (category) {
-    case 'shell':
-      return { category: 'shell', command: (args.command as string) || (args.cmd as string) || '' };
+    case 'shell': {
+      const stdoutTail = resultText ? truncate(resultText, 500) : undefined;
+      return {
+        category: 'shell',
+        command: (args.command as string) || (args.cmd as string) || '',
+        ...(exitCode !== undefined ? { exitCode } : {}),
+        ...(stdoutTail ? { stdoutTail } : {}),
+        ...(errored ? { errored } : {}),
+        ...(errored && output ? { errorMessage: truncate(output, 200) } : {}),
+      };
+    }
     case 'read':
       return { category: 'read', filePath: fp };
     case 'write':
-      return { category: 'write', filePath: fp };
+      return {
+        category: 'write',
+        filePath: fp,
+        ...(errored && output ? { errorMessage: truncate(output, 200) } : {}),
+      };
     case 'edit':
-      return { category: 'edit', filePath: fp };
+      return {
+        category: 'edit',
+        filePath: fp,
+        ...(errored && output ? { errorMessage: truncate(output, 200) } : {}),
+      };
     case 'grep':
       return {
         category: 'grep',
@@ -253,11 +312,23 @@ function buildCopilotSampleData(
     case 'glob':
       return { category: 'glob', pattern: (args.pattern as string) || fp };
     case 'search':
-      return { category: 'search', query: (args.query as string) || '' };
+      return {
+        category: 'search',
+        query: (args.query as string) || '',
+        ...(resultText ? { resultPreview: truncate(resultText, 100) } : {}),
+      };
     case 'fetch':
-      return { category: 'fetch', url: (args.url as string) || '' };
+      return {
+        category: 'fetch',
+        url: (args.url as string) || '',
+        ...(resultText ? { resultPreview: truncate(resultText, 100) } : {}),
+      };
     case 'task':
-      return { category: 'task', description: (args.description as string) || '' };
+      return {
+        category: 'task',
+        description: (args.description as string) || '',
+        ...(resultText ? { resultSummary: truncate(resultText, 100) } : {}),
+      };
     case 'ask':
       return { category: 'ask', question: ((args.question as string) || '').slice(0, 80) };
     default:
@@ -265,6 +336,184 @@ function buildCopilotSampleData(
         category: 'mcp',
         toolName: name,
         ...(Object.keys(args).length > 0 ? { params: JSON.stringify(args).slice(0, 100) } : {}),
+        ...(resultText ? { result: truncate(resultText, 100) } : {}),
       };
   }
+}
+
+function mergeCopilotToolInvocations(events: CopilotEvent[]): CopilotToolInvocation[] {
+  const planned: CopilotToolInvocation[] = [];
+  const executionStarts = new Map<string, { name: string; arguments: Record<string, unknown> }>();
+  const executionOnly: CopilotToolInvocation[] = [];
+  let order = 0;
+
+  for (const event of events) {
+    if (event.type === 'assistant.message') {
+      for (const toolRequest of event.data?.toolRequests || []) {
+        planned.push({
+          name: toolRequest.name || 'unknown',
+          arguments: normalizeCopilotArguments(toolRequest.arguments),
+          order: order++,
+        });
+      }
+      continue;
+    }
+
+    if (event.type === 'tool.execution_start') {
+      const toolCallId = getOptionalString(event.data?.toolCallId);
+      const toolName = getOptionalString(event.data?.toolName);
+      if (!toolCallId || !toolName) continue;
+      executionStarts.set(toolCallId, {
+        name: toolName,
+        arguments: normalizeCopilotArguments(event.data?.arguments),
+      });
+      continue;
+    }
+
+    if (event.type !== 'tool.execution_complete') continue;
+
+    const toolCallId = getOptionalString(event.data?.toolCallId);
+    if (!toolCallId) continue;
+    const start = executionStarts.get(toolCallId);
+    if (!start) continue;
+
+    const actual: CopilotToolInvocation = {
+      name: start.name,
+      arguments: start.arguments,
+      order: order++,
+      success: typeof event.data?.success === 'boolean' ? event.data.success : undefined,
+      ...extractCopilotResult(event.data?.result),
+    };
+
+    const matched = findMatchingPlannedInvocation(planned, actual);
+    if (matched) {
+      matched.success = actual.success;
+      matched.resultText = actual.resultText;
+      matched.resultDetail = actual.resultDetail;
+      if (Object.keys(matched.arguments).length === 0 && Object.keys(actual.arguments).length > 0) {
+        matched.arguments = actual.arguments;
+      }
+    } else {
+      executionOnly.push(actual);
+    }
+  }
+
+  return [...planned, ...executionOnly].sort((a, b) => a.order - b.order);
+}
+
+function findMatchingPlannedInvocation(
+  planned: CopilotToolInvocation[],
+  actual: CopilotToolInvocation,
+): CopilotToolInvocation | undefined {
+  const exactMatch = planned.find(
+    (candidate) =>
+      candidate.resultText === undefined &&
+      candidate.name === actual.name &&
+      stableStringify(candidate.arguments) === stableStringify(actual.arguments),
+  );
+  if (exactMatch) return exactMatch;
+
+  return planned.find((candidate) => candidate.resultText === undefined && candidate.name === actual.name);
+}
+
+function buildCopilotSummary(
+  category: import('../types/tool-names.js').ToolSampleCategory,
+  name: string,
+  args: Record<string, unknown>,
+  resultText: string | undefined,
+  data: StructuredToolSample,
+): string {
+  const filePath = getCopilotFilePath(args);
+
+  switch (category) {
+    case 'shell':
+      return shellSummary((args.command as string) || (args.cmd as string) || '', resultText);
+    case 'read':
+      return fileSummary('read', filePath);
+    case 'write':
+      return withResult(fileSummary('write', filePath), resultText);
+    case 'edit':
+      return withResult(fileSummary('edit', filePath), resultText);
+    case 'grep':
+      return withResult(
+        grepSummary((args.pattern as string) || (args.query as string) || '', filePath || undefined),
+        resultText,
+      );
+    case 'glob':
+      return withResult(globSummary((args.pattern as string) || filePath), resultText);
+    case 'search':
+      return withResult(searchSummary((args.query as string) || ''), resultText);
+    case 'fetch':
+      return withResult(fetchSummary((args.url as string) || ''), resultText);
+    case 'task':
+      return withResult(`task "${truncate((args.description as string) || '', 60)}"`, resultText);
+    case 'ask':
+      return `ask "${truncate((data.category === 'ask' && data.question) || '', 80)}"`;
+    default: {
+      const argsStr = Object.keys(args).length > 0 ? JSON.stringify(args).slice(0, 100) : '';
+      return mcpSummary(name, argsStr, resultText);
+    }
+  }
+}
+
+function extractCopilotResult(result: unknown): { resultText?: string; resultDetail?: string } {
+  if (typeof result === 'string') {
+    return { resultText: result };
+  }
+
+  if (!result || typeof result !== 'object') {
+    return {};
+  }
+
+  const content = getOptionalString((result as { content?: unknown }).content);
+  const detailedContent = getOptionalString((result as { detailedContent?: unknown }).detailedContent);
+  const contentsText = extractCopilotContentsText((result as { contents?: unknown }).contents);
+  return {
+    ...(content ? { resultText: content } : contentsText ? { resultText: contentsText } : {}),
+    ...(detailedContent ? { resultDetail: detailedContent } : contentsText ? { resultDetail: contentsText } : {}),
+  };
+}
+
+function extractCopilotContentsText(contents: unknown): string | undefined {
+  if (!Array.isArray(contents)) return undefined;
+
+  const parts = contents
+    .map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return undefined;
+      }
+      return getOptionalString((item as { text?: unknown }).text);
+    })
+    .filter((part): part is string => Boolean(part));
+
+  if (parts.length === 0) return undefined;
+  return parts.join('\n');
+}
+
+function getCopilotFilePath(args: Record<string, unknown>): string {
+  return getOptionalString(args.path) || getOptionalString(args.file_path) || '';
+}
+
+function normalizeCopilotArguments(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function getOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableStringify(nested)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }

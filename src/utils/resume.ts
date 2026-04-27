@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset, loadConfig } from '../config/index.js';
+import { ToolNotAvailableError } from '../errors.js';
 import { logger } from '../logger.js';
 import { ALL_TOOLS, adapters } from '../parsers/registry.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
@@ -20,6 +21,13 @@ export interface HandoffContextOptions {
   preset?: string;
   configPath?: string;
   chain?: boolean;
+  debugPrompt?: boolean;
+}
+
+export function getToolBinaryCandidates(tool: SessionSource): string[] {
+  const adapter = adapters[tool];
+  if (!adapter) return [];
+  return [adapter.binaryName, ...(adapter.binaryFallbacks ?? [])];
 }
 
 /**
@@ -113,7 +121,8 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
   const cwd = session.cwd || process.cwd();
   const adapter = adapters[session.source];
   if (!adapter) throw new Error(`Unknown session source: ${session.source}`);
-  await runCommand(adapter.binaryName, adapter.nativeResumeArgs(session), cwd);
+  const binaryName = await requireToolBinaryName(session.source);
+  await runCommand(binaryName, adapter.nativeResumeArgs(session), cwd);
 }
 
 /**
@@ -159,13 +168,15 @@ export async function crossToolResume(
   const adapter = adapters[target];
   if (!adapter) throw new Error(`Unknown target: ${target}`);
 
+  if (contextOptions?.debugPrompt) {
+    console.log(prompt);
+    return;
+  }
+
+  const binaryName = await requireToolBinaryName(target);
   const resolved = resolveCrossToolForwarding(target, forwarding);
   const defaultInitArgs = getDefaultHandoffInitArgs(target, resolved.extraArgs);
-  await runCommand(
-    adapter.binaryName,
-    [...defaultInitArgs, ...resolved.extraArgs, ...adapter.crossToolArgs(prompt, cwd)],
-    cwd,
-  );
+  await runCommand(binaryName, [...defaultInitArgs, ...resolved.extraArgs, ...adapter.crossToolArgs(prompt, cwd)], cwd);
 }
 
 /**
@@ -235,6 +246,12 @@ export async function resume(
 ): Promise<void> {
   const actualTarget = target || session.source;
 
+  if (contextOptions?.debugPrompt && actualTarget === session.source) {
+    throw new Error(
+      '--debug-prompt requires a cross-tool handoff target. Use --in <tool> different from the source session.',
+    );
+  }
+
   if (actualTarget === session.source) {
     // Same tool - use native resume
     await nativeResume(session);
@@ -288,6 +305,24 @@ async function isBinaryAvailable(binaryName: string): Promise<boolean> {
   });
 }
 
+export async function resolveToolBinaryName(
+  tool: SessionSource,
+  isAvailable: (binaryName: string) => Promise<boolean> = isBinaryAvailable,
+): Promise<string | null> {
+  for (const candidate of getToolBinaryCandidates(tool)) {
+    if (await isAvailable(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function requireToolBinaryName(tool: SessionSource): Promise<string> {
+  const binaryName = await resolveToolBinaryName(tool);
+  if (binaryName) return binaryName;
+
+  const adapter = adapters[tool];
+  throw new ToolNotAvailableError(adapter?.label ?? tool);
+}
+
 /**
  * Get available tools
  */
@@ -295,7 +330,7 @@ export async function getAvailableTools(): Promise<SessionSource[]> {
   const checks = await Promise.allSettled(
     ALL_TOOLS.map(async (name) => ({
       name,
-      ok: await isBinaryAvailable(adapters[name].binaryName),
+      ok: (await resolveToolBinaryName(name)) !== null,
     })),
   );
 

@@ -3,9 +3,9 @@
  * Covers: jsonl, fs-helpers, content, tool-extraction, parser-helpers additions.
  */
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ConversationMessage } from '../types/index.js';
 import { classifyToolName } from '../types/tool-names.js';
@@ -66,6 +66,15 @@ describe('readJsonlFile', () => {
     expect(result).toHaveLength(2);
   });
 
+  it('skips oversized lines without buffering them', async () => {
+    const dir = makeTmpDir();
+    const file = path.join(dir, 'test.jsonl');
+    fs.writeFileSync(file, '{"ok":true}\n{"payload":"abcdefghijklmnopqrstuvwxyz"}\n{"ok":false}\n');
+
+    const result = await readJsonlFile<{ ok: boolean }>(file, { maxLineChars: 12 });
+    expect(result).toEqual([{ ok: true }, { ok: false }]);
+  });
+
   it('returns empty array for non-existent file', async () => {
     const result = await readJsonlFile('/tmp/nonexistent-file.jsonl');
     expect(result).toEqual([]);
@@ -108,6 +117,44 @@ describe('scanJsonlHead', () => {
     await scanJsonlHead('/tmp/nonexistent.jsonl', 10, () => 'continue');
     // No error thrown
   });
+
+  it('keeps scanning after skipping an oversized line', async () => {
+    const dir = makeTmpDir();
+    const file = path.join(dir, 'test.jsonl');
+    fs.writeFileSync(file, '{"i":0}\n{"payload":"abcdefghijklmnopqrstuvwxyz"}\n{"i":2}\n');
+
+    const visited: number[] = [];
+    await scanJsonlHead(
+      file,
+      5,
+      (parsed) => {
+        visited.push((parsed as { i: number }).i);
+        return 'continue';
+      },
+      { maxLineChars: 10 },
+    );
+
+    expect(visited).toEqual([0, 2]);
+  });
+
+  it('stops at the configured byte limit without visiting partial lines', async () => {
+    const dir = makeTmpDir();
+    const file = path.join(dir, 'test.jsonl');
+    fs.writeFileSync(file, '{"i":0}\n{"i":1}\n');
+
+    const visited: number[] = [];
+    await scanJsonlHead(
+      file,
+      5,
+      (parsed) => {
+        visited.push((parsed as { i: number }).i);
+        return 'continue';
+      },
+      { maxBytes: 12 },
+    );
+
+    expect(visited).toEqual([0]);
+  });
 });
 
 describe('getFileStats', () => {
@@ -119,6 +166,15 @@ describe('getFileStats', () => {
     const stats = await getFileStats(file);
     expect(stats.lines).toBe(3);
     expect(stats.bytes).toBeGreaterThan(0);
+  });
+
+  it('counts a final unterminated line', async () => {
+    const dir = makeTmpDir();
+    const file = path.join(dir, 'test.jsonl');
+    fs.writeFileSync(file, '{"a":1}\n{"a":2}');
+
+    const stats = await getFileStats(file);
+    expect(stats.lines).toBe(2);
   });
 });
 
@@ -604,7 +660,9 @@ describe('extractAnthropicToolData structured data', () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/src/app.ts', offset: 10, limit: 50 } }],
+        content: [
+          { type: 'tool_use', id: 'tu1', name: 'Read', input: { file_path: '/src/app.ts', offset: 10, limit: 50 } },
+        ],
       },
     ];
 
@@ -685,7 +743,9 @@ describe('extractAnthropicToolData structured data', () => {
       },
       {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'Found 3 matches\nsrc/a.ts\nsrc/b.ts\nsrc/c.ts' }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'tu1', content: 'Found 3 matches\nsrc/a.ts\nsrc/b.ts\nsrc/c.ts' },
+        ],
       },
     ];
 
@@ -724,7 +784,14 @@ describe('extractAnthropicToolData structured data', () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 'tu1', name: 'mcp__github__list_issues', input: { repo: 'test/repo', state: 'open' } }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tu1',
+            name: 'mcp__github__list_issues',
+            input: { repo: 'test/repo', state: 'open' },
+          },
+        ],
       },
       {
         role: 'user',
@@ -750,7 +817,9 @@ describe('extractAnthropicToolData structured data', () => {
       },
       {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'Permission denied\nexit code 1', is_error: true }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'tu1', content: 'Permission denied\nexit code 1', is_error: true },
+        ],
       },
     ];
     const { summaries } = extractAnthropicToolData(messages);
