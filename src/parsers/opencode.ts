@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import type {
   ConversationMessage,
   SessionContext,
+  SessionNotes,
   ToolCall,
   ToolUsageSummary,
   UnifiedSession,
@@ -26,10 +27,22 @@ import {
   OpenCodeProjectSchema,
   OpenCodeSessionSchema,
 } from '../types/schemas.js';
+import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import { extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
-import { SummaryCollector, truncate } from '../utils/tool-summarizer.js';
+import { extractRepoFromCwd, homeDir, trimMessages } from '../utils/parser-helpers.js';
+import {
+  extractExitCode,
+  fetchSummary,
+  fileSummary,
+  globSummary,
+  grepSummary,
+  mcpSummary,
+  SummaryCollector,
+  searchSummary,
+  shellSummary,
+  truncate,
+} from '../utils/tool-summarizer.js';
 
 /** Minimal typed interface for node:sqlite DatabaseSync */
 interface SqlitePreparedStatement {
@@ -42,8 +55,32 @@ interface SqliteDatabase {
   close(): void;
 }
 
+const OpenCodeTokenUsageSchema = z
+  .object({
+    total: z.number().optional(),
+    input: z.number().optional(),
+    output: z.number().optional(),
+    reasoning: z.number().optional(),
+    cache: z
+      .object({
+        read: z.number().optional(),
+        write: z.number().optional(),
+      })
+      .optional(),
+  })
+  .optional();
+
 /** Zod schema for message data blob stored in SQLite data column */
-const SqliteMsgDataSchema = z.object({ role: z.string() }).passthrough();
+const SqliteMsgDataSchema = z
+  .object({
+    role: z.string(),
+    modelID: z.string().optional(),
+    providerID: z.string().optional(),
+    cost: z.number().optional(),
+    tokens: OpenCodeTokenUsageSchema,
+  })
+  .passthrough();
+type OpenCodeTokenUsage = z.infer<typeof OpenCodeTokenUsageSchema>;
 
 /** Zod schema for part data blob stored in SQLite data column */
 const SqlitePartDataSchema = z.object({ type: z.string(), text: z.string().optional() }).passthrough();
@@ -211,6 +248,244 @@ function renderHighValuePart(partData: Record<string, unknown>): {
     }
     default:
       return {};
+  }
+}
+
+interface OpenCodeToolData {
+  summaries: ToolUsageSummary[];
+  filesModified: string[];
+}
+
+function getRecordValue(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  return isRecord(value) ? value : {};
+}
+
+function stringifyToolValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) return undefined;
+
+  try {
+    return JSON.stringify(value);
+  } catch (err) {
+    logger.debug('opencode: failed to stringify tool value', err);
+    return undefined;
+  }
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  }
+  return '';
+}
+
+function firstNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function extractPatchFiles(patchText: string): string[] {
+  const files = new Set<string>();
+  for (const match of patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gmu)) {
+    const filePath = match[1]?.trim();
+    if (filePath) files.add(filePath);
+  }
+
+  for (const match of patchText.matchAll(/^(?:---|\+\+\+) [ab]\/(.+)$/gmu)) {
+    const filePath = match[1]?.trim();
+    if (filePath && filePath !== '/dev/null') files.add(filePath);
+  }
+
+  return Array.from(files);
+}
+
+function trackPatchFiles(patchText: string, collector: SummaryCollector): string[] {
+  const files = extractPatchFiles(patchText);
+  for (const filePath of files) collector.trackFile(filePath);
+  return files;
+}
+
+function trackPatchPart(partData: Record<string, unknown>, collector: SummaryCollector): void {
+  const files = Array.isArray(partData.files)
+    ? partData.files.filter((file): file is string => typeof file === 'string')
+    : [];
+  for (const filePath of files) collector.trackFile(filePath);
+
+  const patchText =
+    firstString(partData, ['patch', 'diff', 'text']) ||
+    firstString(getRecordValue(partData, 'state'), ['patch', 'diff', 'output']);
+  if (patchText) trackPatchFiles(patchText, collector);
+}
+
+function trackShellFileWrites(command: string, collector: SummaryCollector): void {
+  const redirectMatch = command.match(/(?:^|\s)(?:>|>>)\s*['"]?([^\s;|&'"]+)/u);
+  if (redirectMatch?.[1]) {
+    collector.trackFile(redirectMatch[1]);
+    return;
+  }
+
+  const teeMatch = command.match(/(?:^|\s)tee\s+(?:-[a-zA-Z]+\s+)*['"]?([^\s;|&'"]+)/u);
+  if (teeMatch?.[1]) {
+    collector.trackFile(teeMatch[1]);
+    return;
+  }
+
+  const mvCpMatch = command.match(/^(?:mv|cp)\s+.+\s+['"]?([^\s;|&'"]+)$/u);
+  if (mvCpMatch?.[1]) collector.trackFile(mvCpMatch[1]);
+}
+
+function summarizeOpenCodeToolPart(partData: Record<string, unknown>, collector: SummaryCollector): void {
+  if (partData.type === 'patch') {
+    trackPatchPart(partData, collector);
+    return;
+  }
+
+  if (partData.type !== 'tool' || typeof partData.tool !== 'string') return;
+
+  const toolName = partData.tool;
+  const state = getRecordValue(partData, 'state');
+  const input = getRecordValue(state, 'input');
+  const metadata = getRecordValue(state, 'metadata');
+  const status = typeof state.status === 'string' ? state.status : undefined;
+  const output = stringifyToolValue(state.output) ?? stringifyToolValue(state.error);
+  const outputPreview = output ? truncate(normalizeWhitespace(output), 100) : undefined;
+
+  switch (toolName) {
+    case 'bash': {
+      const command = firstString(input, ['command', 'cmd']);
+      if (!command) return;
+
+      const exitCode = firstNumber(metadata, ['exit', 'exitCode']) ?? extractExitCode(output);
+      const errored = status === 'error' || (exitCode !== undefined && exitCode !== 0);
+      const stdoutTail = output ? extractStdoutTail(output, 5) : undefined;
+
+      const summary = errored ? `${shellSummary(command, output)} (error)` : shellSummary(command, output);
+      collector.add('bash', summary, {
+        data: {
+          category: 'shell',
+          command,
+          ...(exitCode !== undefined ? { exitCode } : {}),
+          ...(stdoutTail && !errored ? { stdoutTail } : {}),
+          ...(errored ? { errored, errorMessage: outputPreview } : {}),
+        },
+        isError: errored,
+      });
+      trackShellFileWrites(command, collector);
+      break;
+    }
+
+    case 'glob': {
+      const pattern = firstString(input, ['pattern', 'path', 'query']);
+      const resultCount = firstNumber(metadata, ['count', 'resultCount']);
+      collector.add(
+        'glob',
+        resultCount !== undefined ? `glob "${pattern}" - ${resultCount} matches` : globSummary(pattern),
+        {
+          data: { category: 'glob', pattern, ...(resultCount !== undefined ? { resultCount } : {}) },
+        },
+      );
+      break;
+    }
+
+    case 'grep': {
+      const pattern = firstString(input, ['pattern', 'query', 'regex']);
+      const targetPath = firstString(input, ['path', 'include', 'filePath']);
+      const matchCount = firstNumber(metadata, ['count', 'matchCount']);
+      collector.add('grep', grepSummary(pattern, targetPath), {
+        data: {
+          category: 'grep',
+          pattern,
+          ...(targetPath ? { targetPath } : {}),
+          ...(matchCount !== undefined ? { matchCount } : {}),
+        },
+      });
+      break;
+    }
+
+    case 'read': {
+      const filePath = firstString(input, ['filePath', 'path']);
+      if (!filePath) return;
+      const summary = status ? `${fileSummary('read', filePath)} (${status})` : fileSummary('read', filePath);
+      collector.add('read', summary, {
+        data: { category: 'read', filePath },
+      });
+      break;
+    }
+
+    case 'write': {
+      const filePath = firstString(input, ['filePath', 'path']);
+      if (!filePath) return;
+      collector.add('write', fileSummary('write', filePath), {
+        data: { category: 'write', filePath },
+        filePath,
+        isWrite: true,
+      });
+      break;
+    }
+
+    case 'edit':
+    case 'apply_patch': {
+      const patchText =
+        firstString(input, ['patchText', 'patch', 'diff']) || firstString(partData, ['patch', 'diff', 'text']);
+      const files = patchText ? trackPatchFiles(patchText, collector) : [];
+      const filePath = firstString(input, ['filePath', 'path']) || files[0] || '(multiple)';
+      const diffStats = patchText ? countDiffStats(patchText) : undefined;
+      collector.add(
+        toolName,
+        patchText ? `patch: ${truncate(files.slice(0, 3).join(', ') || filePath, 70)}` : fileSummary('edit', filePath),
+        {
+          data: {
+            category: 'edit',
+            filePath,
+            ...(patchText ? { diff: patchText.slice(0, 2000) } : {}),
+            ...(diffStats ? { diffStats } : {}),
+          },
+          filePath: filePath === '(multiple)' ? undefined : filePath,
+          isWrite: filePath !== '(multiple)',
+        },
+      );
+      break;
+    }
+
+    case 'web_search': {
+      const query = firstString(input, ['query', 'search']);
+      collector.add('web_search', searchSummary(query), {
+        data: { category: 'search', query, ...(outputPreview ? { resultPreview: outputPreview } : {}) },
+      });
+      break;
+    }
+
+    case 'web_fetch': {
+      const url = firstString(input, ['url']);
+      collector.add('web_fetch', fetchSummary(url), {
+        data: { category: 'fetch', url, ...(outputPreview ? { resultPreview: outputPreview } : {}) },
+      });
+      break;
+    }
+
+    default: {
+      const params = stringifyToolValue(input);
+      collector.add(toolName, mcpSummary(toolName, params ? truncate(params, 100) : '', outputPreview), {
+        data: {
+          category: 'mcp',
+          toolName,
+          ...(params ? { params: truncate(params, 100) } : {}),
+          ...(outputPreview ? { result: outputPreview } : {}),
+        },
+        isError: status === 'error',
+      });
+    }
   }
 }
 
@@ -639,57 +914,59 @@ function readMessagesFromJson(sessionId: string): ConversationMessage[] {
 }
 
 /**
- * Extract tool-level summary from OpenCode session metadata.
- * OpenCode stores additions/deletions/files at the session level (not per-tool),
- * so we produce a single high-level "Edit" summary when data is available.
+ * Extract rich OpenCode tool summaries and modified files from SQLite or JSON storage.
  */
-function extractOpenCodeToolSummaries(sessionId: string): ToolUsageSummary[] {
-  const collector = new SummaryCollector();
-
+function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
   if (hasSqliteDb()) {
-    const sqliteSummaries = extractOpenCodeToolSummariesFromSqlite(sessionId, collector);
-    if (sqliteSummaries.length > 0) {
-      return sqliteSummaries;
+    const sqliteData = extractOpenCodeToolDataFromSqlite(sessionId, config);
+    if (sqliteData.summaries.length > 0 || sqliteData.filesModified.length > 0) {
+      return sqliteData;
     }
   }
 
-  return extractOpenCodeToolSummariesFromJson(sessionId, collector);
+  return extractOpenCodeToolDataFromJson(sessionId, config);
 }
 
-function extractOpenCodeToolSummariesFromSqlite(sessionId: string, collector: SummaryCollector): ToolUsageSummary[] {
+function addSessionEditSummaryFromSqlite(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
+  const sessionRow = db
+    .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session WHERE id = ?')
+    .get(sessionId) as
+    | {
+        summary_additions: number | null;
+        summary_deletions: number | null;
+        summary_files: number | null;
+      }
+    | undefined;
+
+  const added = sessionRow?.summary_additions ?? 0;
+  const removed = sessionRow?.summary_deletions ?? 0;
+  const files = sessionRow?.summary_files ?? 0;
+  if (files > 0 || added > 0 || removed > 0) {
+    collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
+      data: {
+        category: 'edit',
+        filePath: `(${files} files)`,
+        diffStats: { added, removed },
+      },
+    });
+  }
+
+  return Boolean(sessionRow);
+}
+
+function extractOpenCodeToolDataFromSqlite(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
   for (const dbPath of getOpenCodeDbPaths()) {
+    const collector = new SummaryCollector(config);
     const handle = openDb(dbPath);
     if (!handle) continue;
 
     const { db, close } = handle;
     try {
-      const sessionRow = db
-        .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session WHERE id = ?')
-        .get(sessionId) as
-        | {
-            summary_additions: number | null;
-            summary_deletions: number | null;
-            summary_files: number | null;
-          }
-        | undefined;
-
-      const added = sessionRow?.summary_additions ?? 0;
-      const removed = sessionRow?.summary_deletions ?? 0;
-      const files = sessionRow?.summary_files ?? 0;
-      if (files > 0 || added > 0 || removed > 0) {
-        collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
-          data: {
-            category: 'edit',
-            filePath: `(${files} files)`,
-            diffStats: { added, removed },
-          },
-        });
-      }
+      const foundSession = addSessionEditSummaryFromSqlite(sessionId, db, collector);
 
       const partRows = db
         .prepare('SELECT data FROM part WHERE session_id = ? ORDER BY time_created ASC, id ASC')
         .all(sessionId) as SqlitePartRow[];
-      if (partRows.length === 0) continue;
 
       for (const partRow of partRows) {
         let rawPartData: unknown;
@@ -701,14 +978,13 @@ function extractOpenCodeToolSummariesFromSqlite(sessionId: string, collector: Su
         }
 
         const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
-        if (!partDataResult.success || partDataResult.data.type !== 'tool') continue;
-
-        const rendered = renderToolPart(partDataResult.data);
-        if (!rendered) continue;
-        collector.add(rendered.toolName, rendered.summary, { isError: rendered.isError });
+        if (!partDataResult.success) continue;
+        summarizeOpenCodeToolPart(partDataResult.data, collector);
       }
 
-      return collector.getSummaries();
+      if (foundSession || partRows.length > 0) {
+        return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
+      }
     } catch (err) {
       logger.debug('opencode: SQLite tool summary query failed', dbPath, sessionId, err);
     } finally {
@@ -716,10 +992,10 @@ function extractOpenCodeToolSummariesFromSqlite(sessionId: string, collector: Su
     }
   }
 
-  return [];
+  return { summaries: [], filesModified: [] };
 }
 
-function extractOpenCodeToolSummariesFromJson(sessionId: string, collector: SummaryCollector): ToolUsageSummary[] {
+function addSessionEditSummaryFromJson(sessionId: string, collector: SummaryCollector): void {
   const sessionDir = path.join(getOpenCodeStorageDir(), 'session');
   try {
     for (const projectDir of listSubdirectories(sessionDir)) {
@@ -746,10 +1022,15 @@ function extractOpenCodeToolSummariesFromJson(sessionId: string, collector: Summ
   } catch (err) {
     logger.debug('opencode: failed to read JSON tool summaries', sessionId, err);
   }
+}
+
+function extractOpenCodeToolDataFromJson(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
+  const collector = new SummaryCollector(config);
+  addSessionEditSummaryFromJson(sessionId, collector);
 
   const messageDir = path.join(getOpenCodeStorageDir(), 'message', sessionId);
   if (!fs.existsSync(messageDir)) {
-    return collector.getSummaries();
+    return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
   }
 
   try {
@@ -776,18 +1057,200 @@ function extractOpenCodeToolSummariesFromJson(sessionId: string, collector: Summ
         const partPath = path.join(partDir, partFile);
         const partContent = fs.readFileSync(partPath, 'utf8');
         const partResult = OpenCodePartSchema.safeParse(JSON.parse(partContent));
-        if (!partResult.success || partResult.data.type !== 'tool') continue;
-
-        const rendered = renderToolPart(partResult.data);
-        if (!rendered) continue;
-        collector.add(rendered.toolName, rendered.summary, { isError: rendered.isError });
+        if (!partResult.success) continue;
+        summarizeOpenCodeToolPart(partResult.data, collector);
       }
     }
   } catch (err) {
     logger.debug('opencode: failed to read JSON tool-part summaries', sessionId, err);
   }
 
-  return collector.getSummaries();
+  return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
+}
+
+function addTokenUsage(notes: SessionNotes, tokens: OpenCodeTokenUsage): void {
+  if (!tokens) return;
+
+  notes.tokenUsage = {
+    input: (notes.tokenUsage?.input ?? 0) + (tokens.input ?? 0),
+    output: (notes.tokenUsage?.output ?? 0) + (tokens.output ?? 0),
+  };
+
+  if (tokens.reasoning && tokens.reasoning > 0) {
+    notes.thinkingTokens = (notes.thinkingTokens ?? 0) + tokens.reasoning;
+  }
+
+  if (tokens.cache) {
+    notes.cacheTokens = {
+      read: (notes.cacheTokens?.read ?? 0) + (tokens.cache.read ?? 0),
+      creation: (notes.cacheTokens?.creation ?? 0) + (tokens.cache.write ?? 0),
+    };
+  }
+}
+
+function addReasoningHighlight(partData: Record<string, unknown>, reasoning: string[], maxHighlights: number): void {
+  if (reasoning.length >= maxHighlights || partData.type !== 'reasoning') return;
+
+  const text = firstString(partData, ['text', 'summary', 'content']);
+  if (text.length <= 20) return;
+
+  const firstLine = text.split(/[.\n]/u)[0]?.trim();
+  if (firstLine) reasoning.push(truncate(firstLine, 200));
+}
+
+function extractSessionNotesFromSqlite(sessionId: string): SessionNotes | undefined {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+
+    const notes: SessionNotes = {};
+    const reasoning: string[] = [];
+    const { db, close } = handle;
+
+    try {
+      const msgRows = db
+        .prepare('SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC')
+        .all(sessionId) as Array<{ id: string; time_created: number; data: string }>;
+      if (msgRows.length === 0) continue;
+
+      for (const row of msgRows) {
+        let rawMsgData: unknown;
+        try {
+          rawMsgData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse SQLite message notes JSON', dbPath, row.id, err);
+          continue;
+        }
+
+        const msgDataResult = SqliteMsgDataSchema.safeParse(rawMsgData);
+        if (!msgDataResult.success) continue;
+        const msgData = msgDataResult.data;
+
+        if (msgData.role === 'assistant' && msgData.modelID && !notes.model) {
+          notes.model = msgData.modelID;
+        }
+        addTokenUsage(notes, msgData.tokens);
+      }
+
+      const firstCreated = msgRows[0]?.time_created;
+      const lastCreated = msgRows[msgRows.length - 1]?.time_created;
+      if (firstCreated !== undefined && lastCreated !== undefined && lastCreated >= firstCreated) {
+        notes.activeTimeMs = lastCreated - firstCreated;
+      }
+
+      const partRows = db
+        .prepare(
+          'SELECT data FROM part WHERE session_id = ? AND data LIKE \'%"type":"reasoning"%\' ORDER BY time_created ASC, id ASC',
+        )
+        .all(sessionId) as SqlitePartRow[];
+      for (const partRow of partRows) {
+        let rawPartData: unknown;
+        try {
+          rawPartData = JSON.parse(partRow.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse SQLite reasoning part JSON', dbPath, sessionId, err);
+          continue;
+        }
+
+        const partDataResult = SqlitePartDataSchema.safeParse(rawPartData);
+        if (partDataResult.success) {
+          addReasoningHighlight(partDataResult.data, reasoning, 10);
+        }
+      }
+
+      if (reasoning.length > 0) notes.reasoning = reasoning;
+      return Object.keys(notes).length > 0 ? notes : undefined;
+    } catch (err) {
+      logger.debug('opencode: failed to extract SQLite session notes', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return undefined;
+}
+
+function extractSessionNotesFromJson(sessionId: string): SessionNotes | undefined {
+  const messageDir = path.join(getOpenCodeStorageDir(), 'message', sessionId);
+  if (!fs.existsSync(messageDir)) return undefined;
+
+  const notes: SessionNotes = {};
+  const reasoning: string[] = [];
+
+  try {
+    const messageFiles = fs
+      .readdirSync(messageDir)
+      .filter((fileName) => fileName.startsWith('msg_') && fileName.endsWith('.json'))
+      .sort();
+
+    let firstCreated: number | undefined;
+    let lastCreated: number | undefined;
+    for (const messageFile of messageFiles) {
+      const messagePath = path.join(messageDir, messageFile);
+      const messageContent = fs.readFileSync(messagePath, 'utf8');
+      const messageResult = OpenCodeMessageSchema.safeParse(JSON.parse(messageContent));
+      if (!messageResult.success) continue;
+      const message = messageResult.data;
+      firstCreated ??= message.time.created;
+      lastCreated = message.time.created;
+
+      const rawMessage = message as Record<string, unknown>;
+      const modelID = firstString(rawMessage, ['modelID']);
+      if (message.role === 'assistant' && modelID && !notes.model) {
+        notes.model = modelID;
+      }
+
+      const tokenResult = OpenCodeTokenUsageSchema.safeParse(rawMessage.tokens);
+      if (tokenResult.success) addTokenUsage(notes, tokenResult.data);
+
+      const partDir = path.join(getOpenCodeStorageDir(), 'part', message.id);
+      if (!fs.existsSync(partDir)) continue;
+
+      const partFiles = fs
+        .readdirSync(partDir)
+        .filter((fileName) => fileName.startsWith('prt_') && fileName.endsWith('.json'))
+        .sort();
+      for (const partFile of partFiles) {
+        const partContent = fs.readFileSync(path.join(partDir, partFile), 'utf8');
+        const partResult = OpenCodePartSchema.safeParse(JSON.parse(partContent));
+        if (partResult.success) addReasoningHighlight(partResult.data, reasoning, 10);
+      }
+    }
+
+    if (firstCreated !== undefined && lastCreated !== undefined && lastCreated >= firstCreated) {
+      notes.activeTimeMs = lastCreated - firstCreated;
+    }
+  } catch (err) {
+    logger.debug('opencode: failed to extract JSON session notes', sessionId, err);
+  }
+
+  if (reasoning.length > 0) notes.reasoning = reasoning;
+  return Object.keys(notes).length > 0 ? notes : undefined;
+}
+
+function extractOpenCodeSessionNotes(sessionId: string): SessionNotes | undefined {
+  return extractSessionNotesFromSqlite(sessionId) ?? extractSessionNotesFromJson(sessionId);
+}
+
+function extractPendingTasksFromSqlite(sessionId: string): string[] {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+
+    const { db, close } = handle;
+    try {
+      const rows = db
+        .prepare('SELECT content, status, priority FROM todo WHERE session_id = ? ORDER BY position ASC')
+        .all(sessionId) as Array<{ content: string; status: string; priority: string }>;
+      return rows.filter((task) => task.status !== 'completed').map((task) => `[${task.priority}] ${task.content}`);
+    } catch (err) {
+      logger.debug('opencode: failed to extract SQLite pending tasks', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return [];
 }
 
 /**
@@ -799,19 +1262,20 @@ export async function extractOpenCodeContext(
 ): Promise<SessionContext> {
   const resolvedConfig = config ?? getPreset('standard');
   const recentMessages = readAllMessages(session.id);
-  const filesModified: string[] = [];
-  const pendingTasks: string[] = [];
-  const toolSummaries = extractOpenCodeToolSummaries(session.id);
+  const toolData = extractOpenCodeToolData(session.id, resolvedConfig);
+  const filesModified = toolData.filesModified;
+  const pendingTasks = extractPendingTasksFromSqlite(session.id);
+  const sessionNotes = extractOpenCodeSessionNotes(session.id);
 
-  const trimmed = recentMessages.slice(-resolvedConfig.recentMessages);
+  const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
 
   const markdown = generateHandoffMarkdown(
     session,
     trimmed,
     filesModified,
     pendingTasks,
-    toolSummaries,
-    undefined,
+    toolData.summaries,
+    sessionNotes,
     resolvedConfig,
   );
 
@@ -820,7 +1284,8 @@ export async function extractOpenCodeContext(
     recentMessages: trimmed,
     filesModified,
     pendingTasks,
-    toolSummaries,
+    toolSummaries: toolData.summaries,
+    ...(sessionNotes ? { sessionNotes } : {}),
     markdown,
   };
 }

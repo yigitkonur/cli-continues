@@ -29,6 +29,7 @@ interface JsonSeedOptions {
     id: string;
     role: 'user' | 'assistant';
     timeCreatedOffsetMs: number;
+    data?: Record<string, unknown>;
     parts: Array<Record<string, unknown>>;
   }>;
 }
@@ -43,7 +44,14 @@ interface SeedOptions {
     id: string;
     role: 'user' | 'assistant';
     timeCreatedOffsetMs: number;
+    data?: Record<string, unknown>;
     parts: Array<Record<string, unknown>>;
+  }>;
+  todos?: Array<{
+    content: string;
+    status: string;
+    priority: string;
+    position: number;
   }>;
 }
 
@@ -89,6 +97,13 @@ function createOpenCodeSqliteFixture(dbFileName: string, options: SeedOptions = 
       session_id TEXT NOT NULL,
       time_created INTEGER NOT NULL,
       data TEXT NOT NULL
+    );
+    CREATE TABLE todo (
+      session_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      position INTEGER NOT NULL
     );
   `);
 
@@ -147,7 +162,7 @@ function createOpenCodeSqliteFixture(dbFileName: string, options: SeedOptions = 
       message.id,
       sessionId,
       timeCreated,
-      JSON.stringify({ role: message.role, time: { created: timeCreated } }),
+      JSON.stringify({ role: message.role, time: { created: timeCreated }, ...message.data }),
     );
 
     message.parts.forEach((part, index) => {
@@ -159,6 +174,16 @@ function createOpenCodeSqliteFixture(dbFileName: string, options: SeedOptions = 
         JSON.stringify(part),
       );
     });
+  }
+
+  for (const todo of options.todos ?? []) {
+    db.prepare('INSERT INTO todo (session_id, content, status, priority, position) VALUES (?, ?, ?, ?, ?)').run(
+      sessionId,
+      todo.content,
+      todo.status,
+      todo.priority,
+      todo.position,
+    );
   }
 
   db.close();
@@ -260,6 +285,7 @@ function createOpenCodeJsonFixture(options: JsonSeedOptions = {}): OpenCodeJsonF
         sessionID: sessionId,
         role: message.role,
         time: { created: timeCreated, ...(message.role === 'assistant' ? { completed: timeCreated + 500 } : {}) },
+        ...message.data,
       }),
     );
 
@@ -561,6 +587,26 @@ describe('OpenCode parser', () => {
                 error: 'Command failed with exit code 1.',
               },
             },
+            {
+              type: 'tool',
+              callID: 'call_search_json_1',
+              tool: 'web_search',
+              state: {
+                status: 'completed',
+                input: { query: 'OpenCode storage format' },
+                output: 'OpenCode stores sessions in SQLite and JSON formats.',
+              },
+            },
+            {
+              type: 'tool',
+              callID: 'call_fetch_json_1',
+              tool: 'web_fetch',
+              state: {
+                status: 'completed',
+                input: { url: 'https://opencode.ai/docs' },
+                output: 'OpenCode documentation page.',
+              },
+            },
           ],
         },
       ],
@@ -578,7 +624,154 @@ describe('OpenCode parser', () => {
       expect(summaries.get('read')?.samples[0]?.summary).toContain('completed');
       expect(summaries.get('bash')?.samples[0]?.summary).toContain('error');
       expect(summaries.get('bash')?.errorCount).toBe(1);
+      expect(summaries.get('web_search')?.samples[0]?.data?.category).toBe('search');
+      expect(summaries.get('web_fetch')?.samples[0]?.data?.category).toBe('fetch');
       expect(summaries.get('Edit')?.samples[0]?.summary).toContain('2 file(s) changed (+4 -1)');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('extracts rich SQLite session notes, modified files, and pending tasks', async () => {
+    const patchText = `*** Begin Patch
+*** Update File: src/auth.ts
+@@
+-return false;
++return validateToken(token);
+*** End Patch`;
+    const fixture = createOpenCodeSqliteFixture('opencode.db', {
+      sessionId: 'ses_rich',
+      messages: [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          timeCreatedOffsetMs: -4_000,
+          parts: [{ type: 'text', text: 'Fix auth validation and preserve context' }],
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          timeCreatedOffsetMs: -3_000,
+          data: {
+            modelID: 'gpt-5.3-codex',
+            tokens: {
+              input: 123,
+              output: 45,
+              reasoning: 7,
+              cache: { read: 10, write: 4 },
+            },
+          },
+          parts: [
+            { type: 'reasoning', text: 'Need to inspect the auth guard before patching.' },
+            {
+              type: 'tool',
+              tool: 'bash',
+              state: {
+                status: 'completed',
+                input: { command: 'printf ok > generated.txt' },
+                output: 'ok',
+              },
+            },
+            {
+              type: 'tool',
+              tool: 'apply_patch',
+              state: {
+                status: 'completed',
+                input: { patch: patchText },
+                output: 'Done',
+              },
+            },
+            {
+              type: 'tool',
+              tool: 'web_search',
+              state: {
+                status: 'completed',
+                input: { query: 'OpenCode tokens modelID' },
+                output: 'Search result preview',
+              },
+            },
+          ],
+        },
+      ],
+      todos: [{ content: 'Re-run auth tests', status: 'pending', priority: 'high', position: 1 }],
+    });
+
+    try {
+      process.env.OPENCODE_DB = fixture.dbPath;
+
+      const { parseOpenCodeSessions, extractOpenCodeContext } = await importOpenCodeParser();
+      const [session] = await parseOpenCodeSessions();
+      const context = await extractOpenCodeContext(session);
+      const summaries = new Map(context.toolSummaries.map((summary) => [summary.name, summary]));
+
+      expect(context.sessionNotes).toMatchObject({
+        model: 'gpt-5.3-codex',
+        tokenUsage: { input: 123, output: 45 },
+        cacheTokens: { read: 10, creation: 4 },
+        thinkingTokens: 7,
+      });
+      expect(context.sessionNotes?.reasoning?.[0]).toContain('Need to inspect the auth guard');
+      expect(context.filesModified).toEqual(expect.arrayContaining(['generated.txt', 'src/auth.ts']));
+      expect(context.pendingTasks).toEqual(['[high] Re-run auth tests']);
+      expect(summaries.get('bash')?.samples[0]?.data).toMatchObject({
+        category: 'shell',
+        command: 'printf ok > generated.txt',
+      });
+      expect(summaries.get('apply_patch')?.samples[0]?.data).toMatchObject({
+        category: 'edit',
+        filePath: 'src/auth.ts',
+      });
+      expect(summaries.get('web_search')?.samples[0]?.data?.category).toBe('search');
+      expect(context.markdown).toContain('Tokens Used');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('keeps a user message when trimming OpenCode handoff context', async () => {
+    const fixture = createOpenCodeSqliteFixture('opencode.db', {
+      sessionId: 'ses_trim',
+      messages: [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          timeCreatedOffsetMs: -5_000,
+          parts: [{ type: 'text', text: 'Explain why the auth test is failing' }],
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          timeCreatedOffsetMs: -4_000,
+          parts: [{ type: 'text', text: 'First assistant update' }],
+        },
+        {
+          id: 'msg_assistant_2',
+          role: 'assistant',
+          timeCreatedOffsetMs: -3_000,
+          parts: [{ type: 'text', text: 'Second assistant update' }],
+        },
+        {
+          id: 'msg_assistant_3',
+          role: 'assistant',
+          timeCreatedOffsetMs: -2_000,
+          parts: [{ type: 'text', text: 'Third assistant update' }],
+        },
+      ],
+    });
+
+    try {
+      process.env.OPENCODE_DB = fixture.dbPath;
+
+      const { parseOpenCodeSessions, extractOpenCodeContext } = await importOpenCodeParser();
+      const { getPreset } = await import('../config/index.js');
+      const [session] = await parseOpenCodeSessions();
+      const context = await extractOpenCodeContext(session, { ...getPreset('standard'), recentMessages: 2 });
+
+      expect(context.recentMessages).toHaveLength(2);
+      expect(context.recentMessages[0]).toMatchObject({
+        role: 'user',
+        content: 'Explain why the auth test is failing',
+      });
     } finally {
       fixture.cleanup();
     }
