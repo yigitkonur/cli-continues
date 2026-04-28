@@ -852,7 +852,7 @@ async function getProcessRecords(): Promise<ProcessRecord[]> {
               'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine',
             ],
           }
-        : { file: 'ps', args: ['-axo', 'command='] };
+        : { file: 'ps', args: ['-axo', 'pid=,command='] };
     const { stdout } = await runExecFile(command.file, command.args, {
       encoding: 'utf8',
       timeout: 2000,
