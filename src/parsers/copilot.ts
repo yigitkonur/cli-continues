@@ -15,7 +15,7 @@ import type {
 import type { CopilotEvent, CopilotWorkspace } from '../types/schemas.js';
 import { classifyToolName } from '../types/tool-names.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
-import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
+import { getFileStats, readJsonlFile, scanJsonlFile } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { homeDir, trimMessages } from '../utils/parser-helpers.js';
 import {
@@ -73,21 +73,35 @@ function parseWorkspace(workspacePath: string): CopilotWorkspace | null {
 }
 
 /**
- * Extract model from events.jsonl
+ * Extract model from events.jsonl.
+ *
+ * `selectedModel` is set on session.start (early in the file); `currentModel` is also
+ * written on session.shutdown events at the END of the file. Real Copilot sessions where
+ * the model field doesn't appear in the first 50 lines were missing it entirely. Scan up
+ * to 1 MiB and prefer selectedModel (early return on first match), falling back to the
+ * latest currentModel observed during the bounded scan.
  */
 async function extractModel(eventsPath: string): Promise<string | undefined> {
-  let model: string | undefined;
+  let selected: string | undefined;
+  let latestCurrent: string | undefined;
 
-  await scanJsonlHead(eventsPath, 50, (parsed) => {
-    const event = parsed as CopilotEvent;
-    if (event.data?.selectedModel || event.data?.currentModel) {
-      model = event.data.selectedModel || event.data.currentModel;
-      return 'stop';
-    }
-    return 'continue';
-  });
+  await scanJsonlFile(
+    eventsPath,
+    (parsed) => {
+      const event = parsed as CopilotEvent;
+      if (event.data?.selectedModel) {
+        selected = event.data.selectedModel;
+        return 'stop';
+      }
+      if (event.data?.currentModel) {
+        latestCurrent = event.data.currentModel;
+      }
+      return 'continue';
+    },
+    { maxBytes: 1024 * 1024 },
+  );
 
-  return model;
+  return selected ?? latestCurrent;
 }
 
 /**
