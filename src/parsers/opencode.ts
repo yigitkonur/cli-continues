@@ -1301,7 +1301,7 @@ export async function extractOpenCodeContext(
   const sessionNotes = extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
-  const timeline = buildOpenCodeTimeline(recentMessages);
+  const timeline = buildOpenCodeTimeline(trimmed);
 
   const markdown = generateHandoffMarkdown(
     session,
