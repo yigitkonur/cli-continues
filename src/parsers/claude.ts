@@ -77,6 +77,7 @@ async function parseSessionInfo(
   let lastTimeMs = Number.NEGATIVE_INFINITY;
 
   const visitor = (parsed: unknown): 'continue' | 'stop' => {
+    if (typeof parsed !== 'object' || parsed === null) return 'continue';
     const msg = parsed as ClaudeMessage;
     if (msg.sessionId && !sessionId) sessionId = msg.sessionId;
     if (msg.cwd && !cwd) cwd = msg.cwd;
@@ -738,7 +739,9 @@ function extractSessionNotes(messages: ClaudeMessage[], config?: VerbosityConfig
     if (typeof raw.version === 'string') sourceMetadata.version = raw.version;
     if (typeof raw.entrypoint === 'string') sourceMetadata.entrypoint = raw.entrypoint;
     if (typeof raw.userType === 'string') sourceMetadata.userType = raw.userType;
-    if (msg.uuid || msg.parentUuid) sourceMetadata.messageGraphSeen = true;
+    if ((msg.uuid || msg.parentUuid) && !notes.sourceMetadata?.messageGraphSeen) {
+      sourceMetadata.messageGraphSeen = true;
+    }
     if (Object.keys(sourceMetadata).length > 0) {
       notes.sourceMetadata = { ...(notes.sourceMetadata ?? {}), ...sourceMetadata };
     }
@@ -770,7 +773,10 @@ function extractSessionNotes(messages: ClaudeMessage[], config?: VerbosityConfig
     }
 
     const localCommandText = extractTextFromBlocks(msg.message?.content);
-    if (localCommandText.includes('<local-command-stdout>') || localCommandText.includes('<command-name>')) {
+    if (
+      msg.type === 'user' &&
+      (localCommandText.includes('<local-command-stdout>') || localCommandText.includes('<command-name>'))
+    ) {
       const localCommand = extractClaudeLocalCommandDetails(localCommandText);
       if (!notes.bootstrap) notes.bootstrap = [];
       notes.bootstrap.push({
@@ -907,11 +913,13 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
     const content = stripClaudeLocalCommandMarkup(extractTextFromBlocks(msg.message?.content)).trim();
     if (!content) return [];
     const role: ConversationMessage['role'] = msg.type === 'user' ? 'user' : 'assistant';
+    const rawTimestamp = getClaudeMessageTimestamp(msg);
+    const timeMs = rawTimestamp ? Date.parse(rawTimestamp) : Number.NaN;
     return [
       {
         role,
         content,
-        timestamp: new Date(msg.timestamp),
+        ...(Number.isFinite(timeMs) ? { timestamp: new Date(timeMs) } : {}),
         sourceId: msg.uuid,
         sourceParentId: msg.parentUuid,
       },
