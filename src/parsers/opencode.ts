@@ -8,6 +8,7 @@ import { logger } from '../logger.js';
 import type {
   ConversationMessage,
   SessionContext,
+  SessionEvent,
   SessionNotes,
   ToolCall,
   ToolUsageSummary,
@@ -193,9 +194,13 @@ function renderToolPart(partData: Record<string, unknown>): {
 } | null {
   const toolName = typeof partData.tool === 'string' ? partData.tool : 'tool';
   const state = isRecord(partData.state) ? partData.state : {};
+  const metadata = getRecordValue(state, 'metadata');
   const status = typeof state.status === 'string' ? state.status : undefined;
-  const resultPreview = previewUnknown(state.output) || previewUnknown(state.error);
+  const fullResult = stringifyToolValue(state.output) ?? stringifyToolValue(state.error);
+  const resultPreview = fullResult ? previewUnknown(fullResult) : '';
   const argPreview = previewUnknown(state.input, 120);
+  const exitCode = firstNumber(metadata, ['exit', 'exitCode']);
+  const metadataIndicatesError = exitCode !== undefined && exitCode !== 0;
 
   const detailBits = [argPreview, resultPreview].filter(Boolean);
   const statusLabel = status ? ` ${status}` : '';
@@ -205,7 +210,9 @@ function renderToolPart(partData: Record<string, unknown>): {
     Boolean,
   );
   const summary = summaryBits.length > 0 ? summaryBits.join(' | ') : 'invoked';
-  const success = status === 'completed' ? true : status === 'error' ? false : undefined;
+  let success: boolean | undefined;
+  if (status === 'error' || metadataIndicatesError) success = false;
+  else if (status === 'completed') success = true;
 
   return {
     content,
@@ -216,8 +223,9 @@ function renderToolPart(partData: Record<string, unknown>): {
       name: toolName,
       ...(typeof partData.callID === 'string' ? { id: partData.callID } : {}),
       ...(normalizeToolArguments(state.input) ? { arguments: normalizeToolArguments(state.input) } : {}),
-      ...(resultPreview ? { result: resultPreview } : {}),
+      ...(fullResult ? { result: fullResult } : {}),
       ...(success !== undefined ? { success } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     },
   };
 }
@@ -1159,6 +1167,16 @@ function extractSessionNotesFromSqlite(sessionId: string): SessionNotes | undefi
       }
 
       if (reasoning.length > 0) notes.reasoning = reasoning;
+      const sessionRow = db.prepare('SELECT project_id, slug, version FROM session WHERE id = ?').get(sessionId) as
+        | { project_id?: string; slug?: string; version?: string }
+        | undefined;
+      if (sessionRow) {
+        notes.sourceMetadata = {
+          ...(sessionRow.slug ? { slug: sessionRow.slug } : {}),
+          ...(sessionRow.version ? { version: sessionRow.version } : {}),
+          ...(sessionRow.project_id ? { projectId: sessionRow.project_id } : {}),
+        };
+      }
       return Object.keys(notes).length > 0 ? notes : undefined;
     } catch (err) {
       logger.debug('opencode: failed to extract SQLite session notes', dbPath, sessionId, err);
@@ -1220,6 +1238,21 @@ function extractSessionNotesFromJson(sessionId: string): SessionNotes | undefine
     if (firstCreated !== undefined && lastCreated !== undefined && lastCreated >= firstCreated) {
       notes.activeTimeMs = lastCreated - firstCreated;
     }
+
+    for (const projectDir of listSubdirectories(path.join(getOpenCodeStorageDir(), 'session'))) {
+      const sessionFile = path.join(projectDir, `${sessionId}.json`);
+      if (!fs.existsSync(sessionFile)) continue;
+      const content = fs.readFileSync(sessionFile, 'utf8');
+      const result = OpenCodeSessionSchema.safeParse(JSON.parse(content));
+      if (result.success) {
+        notes.sourceMetadata = {
+          ...(result.data.slug ? { slug: result.data.slug } : {}),
+          ...(result.data.version ? { version: result.data.version } : {}),
+          projectId: result.data.projectID,
+        };
+      }
+      break;
+    }
   } catch (err) {
     logger.debug('opencode: failed to extract JSON session notes', sessionId, err);
   }
@@ -1268,6 +1301,7 @@ export async function extractOpenCodeContext(
   const sessionNotes = extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
+  const timeline = buildOpenCodeTimeline(recentMessages);
 
   const markdown = generateHandoffMarkdown(
     session,
@@ -1277,6 +1311,8 @@ export async function extractOpenCodeContext(
     toolData.summaries,
     sessionNotes,
     resolvedConfig,
+    'inline',
+    timeline,
   );
 
   return {
@@ -1286,6 +1322,36 @@ export async function extractOpenCodeContext(
     pendingTasks,
     toolSummaries: toolData.summaries,
     ...(sessionNotes ? { sessionNotes } : {}),
+    timeline,
     markdown,
   };
+}
+
+function buildOpenCodeTimeline(messages: ConversationMessage[]): SessionEvent[] {
+  const events: SessionEvent[] = [];
+  let sequence = 0;
+  for (const message of messages) {
+    events.push({
+      kind: 'message',
+      sequence: sequence++,
+      role: message.role,
+      content: message.content,
+      timestamp: message.timestamp,
+      sourceId: message.sourceId,
+    });
+    for (const toolCall of message.toolCalls ?? []) {
+      events.push({
+        kind: 'tool_call',
+        sequence: sequence++,
+        timestamp: message.timestamp,
+        toolName: toolCall.name,
+        toolCallId: toolCall.id,
+        status: toolCall.success === undefined ? undefined : toolCall.success ? 'success' : 'error',
+        arguments: toolCall.arguments,
+        result: toolCall.result,
+        metadata: toolCall.metadata,
+      });
+    }
+  }
+  return events;
 }

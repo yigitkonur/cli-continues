@@ -776,4 +776,73 @@ describe('OpenCode parser', () => {
       fixture.cleanup();
     }
   });
+
+  it('marks completed bash tools with non-zero exit metadata as failed and preserves full untruncated output', async () => {
+    const longOutput = `${'line\n'.repeat(80)}SENTINEL_FULL_OUTPUT`;
+    const fixture = createOpenCodeSqliteFixture('opencode.db', {
+      sessionId: 'ses_exit_metadata',
+      messages: [
+        {
+          id: 'msg_user_1',
+          role: 'user',
+          timeCreatedOffsetMs: -3_000,
+          parts: [{ type: 'text', text: 'Run the failing command' }],
+        },
+        {
+          id: 'msg_assistant_1',
+          role: 'assistant',
+          timeCreatedOffsetMs: -2_000,
+          parts: [
+            {
+              type: 'tool',
+              callID: 'call_bash_exit',
+              tool: 'bash',
+              state: {
+                status: 'completed',
+                input: { command: 'pnpm test failing' },
+                output: longOutput,
+                metadata: { exit: 1, truncated: false },
+              },
+            },
+            {
+              type: 'text',
+              text: 'The command failed because the assertion is wrong.',
+            },
+          ],
+        },
+      ],
+    });
+
+    try {
+      process.env.OPENCODE_DB = fixture.dbPath;
+
+      const { parseOpenCodeSessions, extractOpenCodeContext } = await importOpenCodeParser();
+      const [session] = await parseOpenCodeSessions();
+      const context = await extractOpenCodeContext(session);
+      const assistant = context.recentMessages.find((message) => message.role === 'assistant');
+      const bashSummary = context.toolSummaries.find((summary) => summary.name === 'bash');
+
+      expect(assistant?.toolCalls?.[0]).toMatchObject({
+        id: 'call_bash_exit',
+        name: 'bash',
+        success: false,
+        metadata: { exit: 1, truncated: false },
+      });
+      expect(assistant?.toolCalls?.[0].result).toContain('SENTINEL_FULL_OUTPUT');
+      expect(context.sessionNotes?.sourceMetadata).toMatchObject({
+        slug: 'test-session',
+        version: '1.2.0',
+        projectId: 'proj_test',
+      });
+      expect(bashSummary?.errorCount).toBe(1);
+      expect(bashSummary?.samples[0].data).toMatchObject({
+        category: 'shell',
+        command: 'pnpm test failing',
+        exitCode: 1,
+        errored: true,
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
 });
