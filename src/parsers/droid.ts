@@ -381,10 +381,13 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
 }
 
 function stripDroidInjectedText(text: string): string {
-  return text
+  const hadSystemReminder = text.includes('<system-reminder>');
+  let result = text
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/giu, '')
-    .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '')
-    .replace(/\bTodoWrite\b[\s\S]*$/u, '')
-    .trim();
+    .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '');
+  if (hadSystemReminder) {
+    result = result.replace(/\bTodoWrite\b[\s\S]*$/u, '');
+  }
+  return result.trim();
 }
