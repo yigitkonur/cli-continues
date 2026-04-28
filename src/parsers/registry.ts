@@ -875,7 +875,7 @@ register({
   envVar: 'ANTIGRAVITY_HOME',
   // Antigravity's parser falls back to GEMINI_CLI_HOME when ANTIGRAVITY_HOME
   // is unset, so changes to that var must also invalidate the index cache.
-  extraEnvVars: ['GEMINI_CLI_HOME'],
+  extraEnvVars: ['GEMINI_CLI_HOME', 'ANTIGRAVITY_STATE_DB'],
   binaryName: 'antigravity',
   parseSessions: parseAntigravitySessions,
   extractContext: extractAntigravityContext,

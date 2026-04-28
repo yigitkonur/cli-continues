@@ -190,7 +190,7 @@ describe('Antigravity parser', () => {
     const context = await extractAntigravityContext(sessions[0]);
 
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].id).toBe('legacy:session');
+    expect(sessions[0].id).toBe('legacy:project:session');
     expect(context.recentMessages).toHaveLength(2);
     expect(context.recentMessages[0].content).toBe('Fix the authentication bug');
   });

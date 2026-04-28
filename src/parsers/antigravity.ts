@@ -368,12 +368,19 @@ async function findLegacySessionFiles(): Promise<string[]> {
 }
 
 async function discoverLegacyRecords(records: Map<string, AntigravityRecord>): Promise<void> {
+  const codeTrackerDir = getCodeTrackerDir();
   for (const filePath of await findLegacySessionFiles()) {
     const entries = await parseLegacySessionFile(filePath);
     if (!entries.some((entry) => entry.type === 'user' || entry.type === 'assistant')) continue;
     const ext = path.extname(filePath);
-    const id = path.basename(filePath, ext);
-    addRecord(records, `legacy:${id}`, { legacyPath: filePath });
+    // Use the code_tracker-relative path (separators → ':') so two legacy
+    // sessions whose basenames collide across subdirectories don't merge in
+    // addRecord. Falls back to basename for any file outside code_tracker/.
+    const relative = path.relative(codeTrackerDir, filePath);
+    const idBase = relative && !relative.startsWith('..')
+      ? relative.slice(0, -ext.length).replace(/[\\/]/gu, ':')
+      : path.basename(filePath, ext);
+    addRecord(records, `legacy:${idBase}`, { legacyPath: filePath });
   }
 }
 
@@ -621,10 +628,11 @@ function extractStateSummaryFromProto(id: string, bytes: Uint8Array): StateSumma
   }
 
   const uniqueTimestamps = Array.from(new Set(timestamps)).sort((a, b) => a - b);
+  const cwd = extractFolderFromSummaryProto(bytes);
   return {
     id,
     ...(title ? { title } : {}),
-    ...(extractFolderFromSummaryProto(bytes) ? { cwd: extractFolderFromSummaryProto(bytes) } : {}),
+    ...(cwd ? { cwd } : {}),
     ...(uniqueTimestamps[0] ? { createdAt: new Date(uniqueTimestamps[0]) } : {}),
     ...(uniqueTimestamps.at(-1) ? { updatedAt: new Date(uniqueTimestamps.at(-1)!) } : {}),
     ...(Math.max(primaryCount, secondaryCount) > 0 ? { stepCount: Math.max(primaryCount, secondaryCount) } : {}),
@@ -940,8 +948,23 @@ function callRpc(connection: RpcConnection, method: string, payload: Record<stri
       },
       (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        let receivedBytes = 0;
+        const MAX_RPC_RESPONSE_BYTES = 32 * 1024 * 1024;
+        let aborted = false;
+        res.on('data', (chunk: Buffer) => {
+          if (aborted) return;
+          receivedBytes += chunk.length;
+          if (receivedBytes > MAX_RPC_RESPONSE_BYTES) {
+            aborted = true;
+            logger.debug('antigravity: RPC response exceeded cap', method, receivedBytes);
+            req.destroy();
+            resolve(null);
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on('end', () => {
+          if (aborted) return;
           try {
             const text = Buffer.concat(chunks).toString('utf8');
             resolve(text ? JSON.parse(text) : null);
@@ -1061,6 +1084,11 @@ async function brainArtifactPaths(brainDir: string | undefined): Promise<string[
 
 async function buildSessionFromRecord(record: AntigravityRecord): Promise<UnifiedSession | null> {
   if (record.legacyPath) return buildLegacySession(record.legacyPath, record.id);
+
+  // Skip metadata-only records that have no concrete backing path; downstream
+  // inspect/extract paths fs.statSync the originalPath, which would crash if
+  // we emit a fallback to the (directory-only) antigravity root.
+  if (!record.conversationPath && !record.brainDir) return null;
 
   const artifactPaths = await brainArtifactPaths(record.brainDir);
   const stats = await pathStats([record.conversationPath, ...artifactPaths].filter(isNonEmptyString));
@@ -1595,7 +1623,14 @@ export async function extractAntigravityContext(
   }
 
   const live = await extractLiveContext(session, resolvedConfig);
-  if (live && live.messages.length > 0) {
+  if (
+    live &&
+    (live.messages.length > 0 ||
+      live.toolSummaries.length > 0 ||
+      live.filesModified.length > 0 ||
+      live.pendingTasks.length > 0 ||
+      live.sessionNotes)
+  ) {
     const recentMessages = trimMessages(live.messages, resolvedConfig.recentMessages);
     const sessionNotes = live.sessionNotes;
     const markdown = generateHandoffMarkdown(
