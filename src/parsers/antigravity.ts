@@ -25,6 +25,23 @@ const SUMMARY_STATE_KEYS = ['antigravityUnifiedStateSync.trajectorySummaries', '
 const BRAIN_ARTIFACT_BASE_FILES = ['task.md', 'implementation_plan.md', 'walkthrough.md'];
 const UUIDISH_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const RPC_TIMEOUT_MS = 1500;
+const LAUNCH_POLL_INTERVAL_MS_DEFAULT = 500;
+const LAUNCH_TIMEOUT_MS_DEFAULT = 25_000;
+
+function envOverrideMs(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function getLaunchPollIntervalMs(): number {
+  return envOverrideMs('CONTINUES_LAUNCH_POLL_INTERVAL_MS', LAUNCH_POLL_INTERVAL_MS_DEFAULT);
+}
+
+function getLaunchTimeoutMs(): number {
+  return envOverrideMs('CONTINUES_LAUNCH_TIMEOUT_MS', LAUNCH_TIMEOUT_MS_DEFAULT);
+}
 
 interface SqlitePreparedStatement {
   get(...params: unknown[]): unknown | undefined;
@@ -1551,8 +1568,12 @@ function extractStepsResponse(response: unknown): unknown[] {
   return [];
 }
 
-async function extractLiveContext(session: UnifiedSession, config: VerbosityConfig): Promise<RpcStepExtraction | null> {
-  const connection = await findRpcConnection();
+async function extractLiveContext(
+  session: UnifiedSession,
+  config: VerbosityConfig,
+  preconnected?: RpcConnection,
+): Promise<RpcStepExtraction | null> {
+  const connection = preconnected ?? (await findRpcConnection());
   if (!connection) return null;
 
   const cascadeId = extractSessionId(session);
@@ -1578,6 +1599,137 @@ async function extractLiveContext(session: UnifiedSession, config: VerbosityConf
     if (tail.length > 0) extracted.messages.push(...tail);
   }
   return extracted;
+}
+
+function liveHasContent(live: RpcStepExtraction): boolean {
+  return (
+    live.messages.length > 0 ||
+    live.toolSummaries.length > 0 ||
+    live.filesModified.length > 0 ||
+    live.pendingTasks.length > 0 ||
+    Boolean(live.sessionNotes)
+  );
+}
+
+function buildLiveSessionContext(
+  session: UnifiedSession,
+  live: RpcStepExtraction,
+  config: VerbosityConfig,
+): SessionContext {
+  const recentMessages = trimMessages(live.messages, config.recentMessages);
+  const sessionNotes = live.sessionNotes;
+  const markdown = generateHandoffMarkdown(
+    session,
+    recentMessages,
+    live.filesModified,
+    live.pendingTasks,
+    live.toolSummaries,
+    sessionNotes,
+    config,
+  );
+  return {
+    session,
+    recentMessages,
+    filesModified: live.filesModified,
+    pendingTasks: live.pendingTasks,
+    toolSummaries: live.toolSummaries,
+    sessionNotes,
+    markdown,
+  };
+}
+
+function shouldAutoLaunchAntigravity(): boolean {
+  // Test/CI escape hatch — also honored by findRpcConnection.
+  if (process.env.ANTIGRAVITY_DISABLE_RPC === '1') return false;
+  const explicit = process.env.CONTINUES_LAUNCH_ANTIGRAVITY?.trim();
+  if (explicit === '0' || explicit === 'false' || explicit === 'no') return false;
+  if (explicit === '1' || explicit === 'true' || explicit === 'yes') return true;
+  // Default: only auto-launch in interactive terminals so piped/CI runs stay headless.
+  return Boolean(process.stdout.isTTY);
+}
+
+function spawnAntigravity(): boolean {
+  try {
+    let child: childProcess.ChildProcess;
+    if (process.platform === 'darwin') {
+      child = childProcess.spawn('open', ['-a', 'Antigravity'], { detached: true, stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      child = childProcess.spawn('cmd', ['/c', 'start', '', 'antigravity'], { detached: true, stdio: 'ignore' });
+    } else {
+      child = childProcess.spawn('antigravity', [], { detached: true, stdio: 'ignore' });
+    }
+    // node emits launch failures (e.g. ENOENT when the binary is missing) on
+    // the async 'error' event, not synchronously. without this listener an
+    // uncaught exception would crash the cli and skip the offline fallback.
+    // mirrors the pattern used in src/utils/resume.ts.
+    child.on('error', (err) => {
+      logger.debug('antigravity: spawned IDE process error', err);
+    });
+    child.unref();
+    return true;
+  } catch (err) {
+    logger.debug('antigravity: failed to spawn IDE', err);
+    return false;
+  }
+}
+
+async function pollForRpcConnection(timeoutMs: number, intervalMs: number): Promise<RpcConnection | null> {
+  const deadline = Date.now() + timeoutMs;
+  // Probe immediately — language_server may already be coming up from a prior launch.
+  const initial = await findRpcConnection();
+  if (initial) return initial;
+
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+    const connection = await findRpcConnection();
+    if (connection) return connection;
+  }
+  return null;
+}
+
+async function tryAutoLaunchAndConnect(): Promise<RpcConnection | null> {
+  if (!shouldAutoLaunchAntigravity()) return null;
+
+  // gate the spawn on rpc actually being offline. extractLiveContext returns
+  // null both when (a) the language_server is down and (b) it's up but holds
+  // no steps for this cascadeId (evicted trajectory). launching the ide can
+  // only help case (a); in case (b) it would just bounce the user's dock for
+  // nothing. skipping the spawn here lets us fall straight to the offline
+  // brain-artifact path, which is what we want.
+  const existing = await findRpcConnection();
+  if (existing) return null;
+
+  if (!spawnAntigravity()) {
+    logger.warn('antigravity: could not launch Antigravity — falling back to offline brain artifacts.');
+    return null;
+  }
+
+  // these progress messages are user-facing ux during a blocking operation
+  // (up to 25s while the ide spins up) rather than diagnostic output, but we
+  // still route them through the logger to honor the project convention. by
+  // default the logger is silent, so casual users won't see anything; running
+  // with --verbose surfaces the full launching/connected/timeout sequence.
+  logger.warn(
+    'antigravity: language server is offline — launching the IDE to read the encrypted transcript… ' +
+      '(set CONTINUES_LAUNCH_ANTIGRAVITY=0 to skip)',
+  );
+
+  const timeoutMs = getLaunchTimeoutMs();
+  const start = Date.now();
+  const connection = await pollForRpcConnection(timeoutMs, getLaunchPollIntervalMs());
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+  if (connection) {
+    logger.warn(`antigravity: language server connected in ${elapsed}s.`);
+    return connection;
+  }
+
+  logger.warn(
+    `antigravity: language server did not come online within ${timeoutMs / 1000}s — falling back to offline brain artifacts.`,
+  );
+  return null;
 }
 
 async function extractOfflineContext(session: UnifiedSession, config: VerbosityConfig): Promise<SessionContext> {
@@ -1623,34 +1775,20 @@ export async function extractAntigravityContext(
   }
 
   const live = await extractLiveContext(session, resolvedConfig);
-  if (
-    live &&
-    (live.messages.length > 0 ||
-      live.toolSummaries.length > 0 ||
-      live.filesModified.length > 0 ||
-      live.pendingTasks.length > 0 ||
-      live.sessionNotes)
-  ) {
-    const recentMessages = trimMessages(live.messages, resolvedConfig.recentMessages);
-    const sessionNotes = live.sessionNotes;
-    const markdown = generateHandoffMarkdown(
-      session,
-      recentMessages,
-      live.filesModified,
-      live.pendingTasks,
-      live.toolSummaries,
-      sessionNotes,
-      resolvedConfig,
-    );
-    return {
-      session,
-      recentMessages,
-      filesModified: live.filesModified,
-      pendingTasks: live.pendingTasks,
-      toolSummaries: live.toolSummaries,
-      sessionNotes,
-      markdown,
-    };
+  if (live && liveHasContent(live)) {
+    return buildLiveSessionContext(session, live, resolvedConfig);
+  }
+
+  // Antigravity stores conversation .pb files as encrypted blobs — only the
+  // running language_server holds the decryption key. If it's offline, try to
+  // launch the IDE in the foreground and aggressively poll for the RPC port to
+  // come up so we can produce a real transcript instead of empty handoffs.
+  const connection = await tryAutoLaunchAndConnect();
+  if (connection) {
+    const relaunched = await extractLiveContext(session, resolvedConfig, connection);
+    if (relaunched && liveHasContent(relaunched)) {
+      return buildLiveSessionContext(session, relaunched, resolvedConfig);
+    }
   }
 
   return extractOfflineContext(session, resolvedConfig);

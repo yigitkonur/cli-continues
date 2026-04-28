@@ -18,7 +18,13 @@ export interface JsonlReadOptions {
   maxBytes?: number;
 }
 
-async function scanJsonlLines(
+/**
+ * Stream a JSONL file line by line, invoking `visitor` for each raw line
+ * (without JSON.parse). Newline handling, CR trimming, and oversized-line
+ * skipping are shared. Used by parsers that need their own per-line decoding
+ * (e.g. recovering glued JSON objects from a single physical line).
+ */
+export async function scanJsonlLines(
   filePath: string,
   visitor: (line: string, lineIndex: number) => 'continue' | 'stop',
   options: JsonlReadOptions = {},

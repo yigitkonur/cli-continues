@@ -483,6 +483,117 @@ export function createOpenCodeSqliteFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary `.crush/crush.db` SQLite fixture matching the schema the
+ * Crush parser introspects (see src/parsers/crush.ts). The fixture lives under
+ * `<root>/project/.crush/crush.db` so cwd-ancestor discovery resolves the
+ * project at `<root>/project`. Mirrors `createOpenCodeSqliteFixture` for the
+ * other SQLite-backed tool.
+ */
+export function createCrushFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-crush-'));
+  const projectRoot = path.join(root, 'project');
+  const dataDir = path.join(projectRoot, '.crush');
+  const dbPath = path.join(dataDir, 'crush.db');
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbPath);
+
+  db.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      parent_session_id TEXT,
+      title TEXT NOT NULL,
+      message_count INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      cost REAL NOT NULL DEFAULT 0.0,
+      updated_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      summary_message_id TEXT,
+      todos TEXT
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      parts TEXT NOT NULL DEFAULT '[]',
+      model TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      provider TEXT,
+      is_summary_message INTEGER DEFAULT 0 NOT NULL
+    );
+  `);
+
+  // Use unix-second epochs (Crush writes strftime('%s')).
+  const t0 = 1_734_000_000;
+  db.prepare(
+    `INSERT INTO sessions (
+      id, parent_session_id, title, message_count, prompt_tokens, completion_tokens,
+      cost, updated_at, created_at, summary_message_id, todos
+    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+  ).run('test-crush-session-1', 'Fix auth bug', 4, 100, 200, 0.5, t0 + 40, t0);
+
+  const insertMessage = db.prepare(
+    `INSERT INTO messages (
+      id, session_id, role, parts, model, provider, is_summary_message,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+  );
+  insertMessage.run(
+    'msg-user-1',
+    'test-crush-session-1',
+    'user',
+    JSON.stringify([{ type: 'text', data: { text: 'Fix the authentication bug in login.ts' } }]),
+    null,
+    null,
+    t0 + 10,
+    t0 + 10,
+  );
+  insertMessage.run(
+    'msg-asst-1',
+    'test-crush-session-1',
+    'assistant',
+    JSON.stringify([
+      { type: 'text', data: { text: 'I found the issue in login.ts. The token validation was missing.' } },
+    ]),
+    'claude-sonnet-4.5',
+    'anthropic',
+    t0 + 20,
+    t0 + 20,
+  );
+  insertMessage.run(
+    'msg-user-2',
+    'test-crush-session-1',
+    'user',
+    JSON.stringify([{ type: 'text', data: { text: 'Great, please also add error handling' } }]),
+    null,
+    null,
+    t0 + 30,
+    t0 + 30,
+  );
+  insertMessage.run(
+    'msg-asst-2',
+    'test-crush-session-1',
+    'assistant',
+    JSON.stringify([{ type: 'text', data: { text: 'Done. I added try-catch blocks and proper error messages.' } }]),
+    'claude-sonnet-4.5',
+    'anthropic',
+    t0 + 40,
+    t0 + 40,
+  );
+
+  db.close();
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create a temporary directory with Droid session fixtures
  */
 export function createDroidFixture(): FixtureDir {
