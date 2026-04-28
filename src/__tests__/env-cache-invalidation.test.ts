@@ -67,11 +67,16 @@ function makeSession(id: string, source = 'claude'): Record<string, unknown> {
 function currentFingerprint(): string {
   const seen = new Set<string>();
   const parts: string[] = [];
-  for (const adapter of Object.values(adapters) as Array<{ envVar?: string }>) {
-    if (adapter.envVar && !seen.has(adapter.envVar)) {
-      seen.add(adapter.envVar);
-      const val = process.env[adapter.envVar] || '';
-      parts.push(`${adapter.envVar}=${val}`);
+  const addEnvVar = (name: string): void => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const val = process.env[name] || '';
+    parts.push(`${name}=${val}`);
+  };
+  for (const adapter of Object.values(adapters) as Array<{ envVar?: string; extraEnvVars?: string[] }>) {
+    if (adapter.envVar) addEnvVar(adapter.envVar);
+    if (adapter.extraEnvVars) {
+      for (const name of adapter.extraEnvVars) addEnvVar(name);
     }
   }
   const hash = createHash('sha256').update(parts.sort().join('|')).digest('hex');

@@ -46,6 +46,13 @@ export interface ToolAdapter {
   storagePath: string;
   /** Environment variable that overrides the default storage path (if any) */
   envVar?: string;
+  /**
+   * Additional environment variables that influence the parser's storage
+   * resolution beyond `envVar`. Used by the index cache fingerprint so changes
+   * to any of these invalidate the cache. Example: Antigravity falls back to
+   * `GEMINI_CLI_HOME` when `ANTIGRAVITY_HOME` is unset.
+   */
+  extraEnvVars?: string[];
   /** CLI binary name for availability checks and spawning */
   binaryName: string;
   /** Additional binary names to try when the primary name is unavailable */
@@ -866,6 +873,9 @@ register({
   color: chalk.hex('#A8DADC'),
   storagePath: '~/.gemini/antigravity/',
   envVar: 'ANTIGRAVITY_HOME',
+  // Antigravity's parser falls back to GEMINI_CLI_HOME when ANTIGRAVITY_HOME
+  // is unset, so changes to that var must also invalidate the index cache.
+  extraEnvVars: ['GEMINI_CLI_HOME'],
   binaryName: 'antigravity',
   parseSessions: parseAntigravitySessions,
   extractContext: extractAntigravityContext,
