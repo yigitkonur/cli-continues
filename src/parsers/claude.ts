@@ -917,15 +917,6 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
       },
     ];
   });
-  const timeline: SessionEvent[] = recentMessages.map((message, index) => ({
-    kind: 'message',
-    sequence: index,
-    role: message.role,
-    content: message.content,
-    timestamp: message.timestamp,
-    sourceId: message.sourceId,
-    sourceParentId: message.sourceParentId,
-  }));
 
   // ── Gap 2: Parse subagent JSONL files ─────────────────────────────────
   if (cfg.agents.claude.parseSubagents) {
@@ -1059,6 +1050,15 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
   }
 
   const finalMessages = trimMessages(recentMessages, cfg.recentMessages);
+  const timeline: SessionEvent[] = finalMessages.map((message, index) => ({
+    kind: 'message',
+    sequence: index,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    sourceId: message.sourceId,
+    sourceParentId: message.sourceParentId,
+  }));
   const dedupedPendingTasks = Array.from(new Set(pendingTasks)).slice(0, cfg.pendingTasks.maxTasks);
 
   const baseMarkdown = generateHandoffMarkdown(
