@@ -229,7 +229,10 @@ function uniquePaths(paths: string[]): string[] {
     const resolved = path.resolve(filePath);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
-    results.push(filePath);
+    // Push the resolved (canonical, absolute) path so downstream joins,
+    // existence checks, and de-dup keys stay reliable when `CLINE_DIR` or
+    // other inputs were relative.
+    results.push(resolved);
   }
   return results;
 }
@@ -742,13 +745,21 @@ function classifyRole(msg: ClineRawMessage, state: ConversationState): Conversat
 
 /**
  * Extract the first real user message from a set of raw messages.
- * Used for session summary.
+ * Used for session summary during discovery, where we may scan thousands of
+ * messages but only need the first user hit. Iterates raw messages directly
+ * with the same role classification as `buildConversation`, avoiding the
+ * full conversation rebuild for large sessions.
  */
 function extractFirstUserMessage(messages: ClineRawMessage[]): string {
-  for (const msg of buildConversation(messages)) {
-    if (msg.role === 'user' && msg.content.length > 0) {
-      return msg.content;
-    }
+  const state: ConversationState = { hasSeenApiRequest: false };
+  for (const msg of messages) {
+    const role = classifyRole(msg, state);
+    if (isApiRequestMetadata(msg)) state.hasSeenApiRequest = true;
+    if (role !== 'user') continue;
+    const content = messageText(msg);
+    if (!content) continue;
+    const text = content.trim();
+    if (text) return text;
   }
   return '';
 }
@@ -815,30 +826,33 @@ function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   let totalCacheReads = 0;
   let found = false;
 
+  // Only sum per-request `api_req_started` events. `api_req_finished` carries
+  // running cumulative totals (`totalTokensIn` etc.), so summing both produces
+  // O(n^2)-style inflated counts — see PR #57 review thread on token usage.
   for (const msg of messages) {
-    if (msg.type !== 'say' || (msg.say !== 'api_req_started' && msg.say !== 'api_req_finished')) continue;
+    if (msg.type !== 'say' || msg.say !== 'api_req_started') continue;
     if (!msg.text) continue;
 
     try {
       const parsed: unknown = JSON.parse(msg.text);
       if (!isRecord(parsed)) continue;
 
-      const tokensIn = readNumber(parsed, 'tokensIn') ?? readNumber(parsed, 'totalTokensIn');
+      const tokensIn = readNumber(parsed, 'tokensIn');
       if (tokensIn !== undefined) {
         totalIn += tokensIn;
         found = true;
       }
-      const tokensOut = readNumber(parsed, 'tokensOut') ?? readNumber(parsed, 'totalTokensOut');
+      const tokensOut = readNumber(parsed, 'tokensOut');
       if (tokensOut !== undefined) {
         totalOut += tokensOut;
         found = true;
       }
-      const cacheWrites = readNumber(parsed, 'cacheWrites') ?? readNumber(parsed, 'totalCacheWrites');
+      const cacheWrites = readNumber(parsed, 'cacheWrites');
       if (cacheWrites !== undefined) {
         totalCacheWrites += cacheWrites;
         found = true;
       }
-      const cacheReads = readNumber(parsed, 'cacheReads') ?? readNumber(parsed, 'totalCacheReads');
+      const cacheReads = readNumber(parsed, 'cacheReads');
       if (cacheReads !== undefined) {
         totalCacheReads += cacheReads;
         found = true;
@@ -1057,9 +1071,38 @@ function looksLikePath(value: string): boolean {
   return value.startsWith('/') || value.startsWith('~/') || /^[A-Za-z]:[\\/]/u.test(value);
 }
 
+const CWD_KEYS = [
+  'cwd',
+  'cwdOnTaskInitialization',
+  'currentWorkingDirectory',
+  'workingDirectory',
+  'workspacePath',
+  'rootPath',
+  'projectRoot',
+];
+
+/**
+ * Search a JSON value for a working-directory hint without false positives.
+ *
+ * To avoid mis-classifying arbitrary paths embedded in conversation text
+ * (e.g. `/usr/bin/node`) as the cwd, this only accepts path-like strings
+ * when they appear:
+ *   - directly under a known cwd-bearing key, or
+ *   - inside a string that contains an explicit `Current Working Directory ...`
+ *     / `cwd: ...` marker recognized by `extractCwdFromText`.
+ *
+ * Bare path-like strings (or strings nested in unrelated objects/arrays) are
+ * treated as untrusted and not returned.
+ */
 function findCwdInValue(value: unknown, depth = 0): string | undefined {
   if (depth > 4) return undefined;
-  if (typeof value === 'string') return looksLikePath(value) ? value : extractCwdFromText(value);
+
+  if (typeof value === 'string') {
+    // Only trust strings that carry an explicit "cwd: ..." / "Current Working
+    // Directory ..." marker. A bare path-like string is not enough.
+    return extractCwdFromText(value);
+  }
+
   if (Array.isArray(value)) {
     for (const item of value) {
       const cwd = findCwdInValue(item, depth + 1);
@@ -1067,22 +1110,18 @@ function findCwdInValue(value: unknown, depth = 0): string | undefined {
     }
     return undefined;
   }
+
   if (!isRecord(value)) return undefined;
 
-  const keys = [
-    'cwd',
-    'cwdOnTaskInitialization',
-    'currentWorkingDirectory',
-    'workingDirectory',
-    'workspacePath',
-    'rootPath',
-    'projectRoot',
-  ];
-  for (const key of keys) {
+  // Strongest signal: a known cwd key with a path-like string value.
+  for (const key of CWD_KEYS) {
     const raw = readString(value, key);
     if (raw && looksLikePath(raw)) return raw;
   }
 
+  // Fall back to scanning nested values for marker-bearing strings or nested
+  // cwd keys. Any path-like leaf strings are still rejected by the typeof
+  // 'string' branch above unless they include an explicit marker.
   for (const nested of Object.values(value)) {
     const cwd = findCwdInValue(nested, depth + 1);
     if (cwd) return cwd;
@@ -1109,7 +1148,10 @@ function extractCwdFromText(text: string): string | undefined {
   const patterns = [
     /Current Working Directory\s*\(([^)]+)\)/iu,
     /Current Working Directory\s*:\s*([^\n\r]+)/iu,
-    /\bcwd\s*[:=]\s*([^\n\r]+)/iu,
+    // Stop at whitespace so `cwd: /path some-other-text` does not capture
+    // the trailing words. cwd values written in Cline metadata are
+    // single tokens.
+    /\bcwd\s*[:=]\s*(\S+)/iu,
   ];
 
   for (const pattern of patterns) {
@@ -1128,13 +1170,22 @@ function extractCwdFromApiHistory(messages: ClineApiMessage[]): string | undefin
   return undefined;
 }
 
+/**
+ * Normalize a working directory to POSIX separators so downstream helpers
+ * like `extractRepoFromCwd` (which splits on `/`) handle Windows paths
+ * (`C:\Users\me\repo`) correctly.
+ */
+function normalizeCwd(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
 function resolveCwd(data: LoadedTaskData): string {
-  return (
+  const raw =
     data.taskHistoryItem?.cwdOnTaskInitialization ??
     extractCwdFromUiApiEvents(data.uiMessages) ??
     extractCwdFromApiHistory(data.apiMessages) ??
-    ''
-  );
+    '';
+  return raw ? normalizeCwd(raw) : '';
 }
 
 function getInputString(input: Record<string, unknown>, key: string): string {

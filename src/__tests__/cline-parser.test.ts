@@ -33,6 +33,16 @@ function clineCliTasksRoot(clineDir: string): string {
   return path.join(clineDir, 'data', 'tasks');
 }
 
+function jetBrainsRoot(home: string): string {
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'JetBrains');
+  }
+  if (process.platform === 'win32') {
+    return path.join(home, 'AppData', 'Roaming', 'JetBrains');
+  }
+  return path.join(home, '.config', 'JetBrains');
+}
+
 async function loadClineParser(
   home: string,
   options: LoadClineParserOptions = {},
@@ -310,8 +320,12 @@ describe('Cline-family parser hardening', () => {
       expect(contents).not.toContain('Draft assistant answer');
       expect(contents).not.toContain('metadata noise');
       expect(contents).not.toContain('npm test');
-      expect(context.sessionNotes?.tokenUsage).toEqual({ input: 17, output: 8 });
-      expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 3, read: 7 });
+      // Only `api_req_started` events carry per-request deltas;
+      // `api_req_finished` carries running cumulative totals, so summing both
+      // would double count. The malformed `api_req_started` ('not json') is
+      // skipped, leaving the single valid event at ts=1770000202000.
+      expect(context.sessionNotes?.tokenUsage).toEqual({ input: 10, output: 0 });
+      expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 2, read: 3 });
       expect(context.sessionNotes?.reasoning).toEqual([
         'Need to cover malformed messages, streaming finalization, and all source variants.',
       ]);
@@ -583,5 +597,77 @@ describe('Cline-family parser hardening', () => {
       expect(context.toolSummaries).toEqual([]);
       expect(context.sessionNotes).toEqual({});
     }
+  });
+
+  it('discovers Cline tasks from JetBrains globalStorage directories', async () => {
+    const home = makeHome();
+    // Simulate a JetBrains IDE storing its globalStorage at depth 3 below the
+    // JetBrains config root (e.g. JetBrains/IntelliJIdea2025.1/options/.../globalStorage).
+    const jbRoot = jetBrainsRoot(home);
+    const jbStorage = path.join(jbRoot, 'IntelliJIdea2026.1', 'options', 'globalStorage');
+    const jbTasksRoot = path.join(jbStorage, 'saoudrizwan.claude-dev', 'tasks');
+    writeTaskAtRoot(jbTasksRoot, 'jetbrains-task', [
+      { ts: 1770000700000, type: 'say', say: 'task', text: 'Discover from JetBrains globalStorage' },
+    ]);
+
+    const { parseClineSessions } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id: 'jetbrains-task',
+      source: 'cline',
+      summary: 'Discover from JetBrains globalStorage',
+    });
+    expect(sessions[0].originalPath).toContain(path.join('JetBrains'));
+  });
+
+  it('does not infer cwd from bare path-like strings in API request metadata', async () => {
+    const home = makeHome();
+    // No `cwd` / `currentWorkingDirectory` key, no "Current Working Directory"
+    // marker — only an unrelated path embedded in conversation text. The
+    // previous accept-any-path heuristic would mis-classify `/usr/bin/node`
+    // as the working directory; the constrained version must reject it.
+    writeTask(home, 'saoudrizwan.claude-dev', 'no-cwd-task', [
+      { ts: 1770000800000, type: 'say', say: 'task', text: 'No cwd marker anywhere' },
+      {
+        ts: 1770000801000,
+        type: 'say',
+        say: 'api_req_started',
+        text: JSON.stringify({
+          request: 'The user mentioned /usr/bin/node and /etc/hosts in conversation.',
+        }),
+      },
+    ]);
+
+    const { parseClineSessions } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+    const session = sessions.find((item) => item.id === 'no-cwd-task');
+
+    expect(session).toBeDefined();
+    expect(session?.cwd).toBe('');
+    expect(session?.repo).toBeUndefined();
+  });
+
+  it('normalizes Windows-style cwd separators when deriving repo', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'windows-cwd', [
+      { ts: 1770000900000, type: 'say', say: 'task', text: 'Recover Windows cwd from task history' },
+    ]);
+    writeTaskHistory(originalPath, [
+      {
+        id: 'windows-cwd',
+        ts: 1770000901000,
+        cwdOnTaskInitialization: 'C:\\Users\\dev\\projects\\cli-continues',
+      },
+    ]);
+
+    const { parseClineSessions } = await loadClineParser(home);
+    const session = (await parseClineSessions()).find((item) => item.id === 'windows-cwd');
+
+    expect(session).toMatchObject({
+      cwd: 'C:/Users/dev/projects/cli-continues',
+      repo: 'projects/cli-continues',
+    });
   });
 });
