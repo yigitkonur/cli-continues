@@ -237,8 +237,7 @@ function extractSessionNotes(events: DroidEvent[], settings: DroidSettings | nul
       if (block.type !== 'text' || !block.text) continue;
       if (
         block.text.includes('<system-reminder>') ||
-        block.text.includes('git rev-parse') ||
-        block.text.includes('fatal: not a git repository')
+        (block.text.includes('git rev-parse') && block.text.includes('fatal: not a git repository'))
       ) {
         if (!notes.bootstrap) notes.bootstrap = [];
         notes.bootstrap.push({
@@ -389,9 +388,12 @@ function stripDroidInjectedText(text: string): string {
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/giu, '')
     .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '');
   if (hadSystemReminder) {
-    // Only strip TodoWrite when it appears at start-of-line (bootstrap tool-list signature),
-    // not when mentioned inline in user prose like "use TodoWrite for tasks".
-    result = result.replace(/^[ \t]*TodoWrite\b[\s\S]*$/mu, '');
+    // Strip TodoWrite tool-list dump only when it appears as a contiguous run of
+    // CapitalizedToolName lines starting at a line boundary. Earlier `[\s\S]*$`
+    // version was too greedy: `\nTodoWrite\nListTodos\n<user prose>` deleted the
+    // user prose along with the tool list. The bounded form stops at the first
+    // non-capitalized line, preserving any trailing user content.
+    result = result.replace(/^[ \t]*TodoWrite\b(?:\r?\n[ \t]*[A-Z][A-Za-z0-9]+\b)*[ \t]*\r?$/m, '');
   }
   return result.trim();
 }
