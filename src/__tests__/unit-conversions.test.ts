@@ -16,6 +16,7 @@ import {
   createClineFixture,
   createCodexFixture,
   createCopilotFixture,
+  createCrushFixture,
   createCursorFixture,
   createDroidFixture,
   createGeminiFixture,
@@ -144,6 +145,49 @@ function parseCodexFixtureMessages(filePath: string): ConversationMessage[] {
       /* skip */
     }
   }
+  return messages;
+}
+
+function parseCrushFixtureMessages(dbPath: string, sessionId: string): ConversationMessage[] {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+  const messages: ConversationMessage[] = [];
+
+  try {
+    const rows = db
+      .prepare(
+        'SELECT role, parts, created_at FROM messages WHERE session_id = ? AND COALESCE(is_summary_message, 0) = 0 ORDER BY created_at ASC',
+      )
+      .all(sessionId) as Array<{ role: string; parts: string; created_at: number }>;
+
+    for (const row of rows) {
+      if (row.role !== 'user' && row.role !== 'assistant') continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(row.parts);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(parsed)) continue;
+      const text = parsed
+        .filter((part): part is { type: string; data?: { text?: string } } =>
+          Boolean(part && typeof part === 'object' && (part as { type?: unknown }).type === 'text'),
+        )
+        .map((part) => part.data?.text ?? '')
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      if (!text) continue;
+      messages.push({
+        role: row.role,
+        content: text,
+        timestamp: new Date(row.created_at * 1000),
+      });
+    }
+  } finally {
+    db.close();
+  }
+
   return messages;
 }
 
@@ -415,6 +459,7 @@ beforeAll(() => {
   fixtures['kilo-code'] = createKiloCodeFixture();
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
+  fixtures.crush = createCrushFixture();
 
   // Build contexts from fixtures
   const now = new Date();
@@ -669,7 +714,8 @@ beforeAll(() => {
     markdown: generateHandoffMarkdown(kiroSession, kiroMsgs, [], [], []),
   };
 
-  // Crush — inline context (no file fixture; real parser uses SQLite)
+  // Crush (SQLite) — driven by the shared createCrushFixture()
+  const crushDbPath = path.join(fixtures.crush.root, 'project', '.crush', 'crush.db');
   const crushSession: UnifiedSession = {
     id: 'test-crush-session-1',
     source: 'crush',
@@ -679,15 +725,10 @@ beforeAll(() => {
     bytes: 500,
     createdAt: now,
     updatedAt: now,
-    originalPath: '/tmp/crush-mock',
+    originalPath: crushDbPath,
     summary: 'Fix auth bug',
   };
-  const crushMsgs: ConversationMessage[] = [
-    { role: 'user', content: 'Fix the authentication bug in login.ts' },
-    { role: 'assistant', content: 'I found the issue in login.ts. The token validation was missing.' },
-    { role: 'user', content: 'Great, please also add error handling' },
-    { role: 'assistant', content: 'Done. I added try-catch blocks and proper error messages.' },
-  ];
+  const crushMsgs = parseCrushFixtureMessages(crushDbPath, 'test-crush-session-1');
   contexts.crush = {
     session: crushSession,
     recentMessages: crushMsgs,

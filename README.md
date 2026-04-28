@@ -246,9 +246,8 @@ The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, and Antigra
 
 ## Requirements
 
-- **Node.js 22+** (uses built-in `node:sqlite` for OpenCode and Crush)
+- **Node.js 22.5+** (uses built-in `node:sqlite` for OpenCode and Crush)
 - At least one of the 14 supported tools installed
-- `sqlite3` CLI binary (only needed for Crush — ships with macOS)
 
 ## Development
 

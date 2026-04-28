@@ -772,9 +772,7 @@ export async function parseKimiSessions(): Promise<UnifiedSession[]> {
         repo,
         lines: contextData.rawLineCount,
         bytes: contextData.bytes,
-        createdAt: metadataDir
-          ? await getMetadataCreatedAt(metadataDir, contextData.birthtime)
-          : contextData.birthtime,
+        createdAt: metadataDir ? await getMetadataCreatedAt(metadataDir, contextData.birthtime) : contextData.birthtime,
         updatedAt,
         originalPath: sessionPath,
         summary: summary || metadata.title || undefined,
