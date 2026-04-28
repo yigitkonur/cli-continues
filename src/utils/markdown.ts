@@ -315,12 +315,13 @@ function renderRecentActivity(
   config: VerbosityConfig,
 ): string[] {
   const window = config.handoff.timelineWindow;
+  const messageWindow = Math.min(window, config.recentMessages);
   const events =
     window <= 0
       ? []
       : timeline.length > 0
         ? [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-window)
-        : messagesToTimeline(messages.slice(-config.recentMessages));
+        : messagesToTimeline(messages.slice(-messageWindow));
 
   if (events.length === 0) return [];
 
@@ -348,7 +349,10 @@ function renderRecentActivity(
         lines.push(`### ${label}${name}${status}${timestamp}`);
         lines.push('');
         if (event.arguments && Object.keys(event.arguments).length > 0) {
-          lines.push(`Arguments: \`${truncateWithMarker(JSON.stringify(event.arguments), 500)}\``);
+          lines.push('Arguments:');
+          lines.push('```json');
+          lines.push(truncateWithMarker(JSON.stringify(event.arguments), 500));
+          lines.push('```');
           lines.push('');
         }
         if (event.result) {
@@ -369,8 +373,11 @@ function renderRecentActivity(
         lines.push(`### ${title}${status}${timestamp}`);
         lines.push('');
         if (event.content) lines.push(truncateWithMarker(event.content, config.maxMessageChars));
-        if (!event.content && event.metadata)
-          lines.push(`\`${truncateWithMarker(JSON.stringify(event.metadata), 500)}\``);
+        if (!event.content && event.metadata) {
+          lines.push('```json');
+          lines.push(truncateWithMarker(JSON.stringify(event.metadata), 500));
+          lines.push('```');
+        }
         lines.push('');
         break;
       }
