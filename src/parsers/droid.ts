@@ -112,7 +112,9 @@ async function parseSessionInfo(
         for (const block of event.message.content) {
           if (block.type === 'text' && block.text) {
             const cleaned = stripDroidInjectedText(block.text);
-            if (block.text.includes('fatal: not a git repository')) cwdIsNotGitRepo = true;
+            if (block.text.includes('<system-reminder>') && block.text.includes('fatal: not a git repository')) {
+              cwdIsNotGitRepo = true;
+            }
             if (cleaned && !cleaned.startsWith('<') && !cleaned.startsWith('/') && !cleaned.includes('Session Handoff')) {
               firstUserMessage = cleaned;
               break;
