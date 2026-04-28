@@ -25,8 +25,23 @@ const SUMMARY_STATE_KEYS = ['antigravityUnifiedStateSync.trajectorySummaries', '
 const BRAIN_ARTIFACT_BASE_FILES = ['task.md', 'implementation_plan.md', 'walkthrough.md'];
 const UUIDISH_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const RPC_TIMEOUT_MS = 1500;
-const LAUNCH_POLL_INTERVAL_MS = 500;
-const LAUNCH_TIMEOUT_MS = 25_000;
+const LAUNCH_POLL_INTERVAL_MS_DEFAULT = 500;
+const LAUNCH_TIMEOUT_MS_DEFAULT = 25_000;
+
+function envOverrideMs(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function getLaunchPollIntervalMs(): number {
+  return envOverrideMs('CONTINUES_LAUNCH_POLL_INTERVAL_MS', LAUNCH_POLL_INTERVAL_MS_DEFAULT);
+}
+
+function getLaunchTimeoutMs(): number {
+  return envOverrideMs('CONTINUES_LAUNCH_TIMEOUT_MS', LAUNCH_TIMEOUT_MS_DEFAULT);
+}
 
 interface SqlitePreparedStatement {
   get(...params: unknown[]): unknown | undefined;
@@ -1636,15 +1651,22 @@ function shouldAutoLaunchAntigravity(): boolean {
 
 function spawnAntigravity(): boolean {
   try {
+    let child: childProcess.ChildProcess;
     if (process.platform === 'darwin') {
-      childProcess.spawn('open', ['-a', 'Antigravity'], { detached: true, stdio: 'ignore' }).unref();
-      return true;
+      child = childProcess.spawn('open', ['-a', 'Antigravity'], { detached: true, stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      child = childProcess.spawn('cmd', ['/c', 'start', '', 'antigravity'], { detached: true, stdio: 'ignore' });
+    } else {
+      child = childProcess.spawn('antigravity', [], { detached: true, stdio: 'ignore' });
     }
-    if (process.platform === 'win32') {
-      childProcess.spawn('cmd', ['/c', 'start', '', 'antigravity'], { detached: true, stdio: 'ignore' }).unref();
-      return true;
-    }
-    childProcess.spawn('antigravity', [], { detached: true, stdio: 'ignore' }).unref();
+    // node emits launch failures (e.g. ENOENT when the binary is missing) on
+    // the async 'error' event, not synchronously. without this listener an
+    // uncaught exception would crash the cli and skip the offline fallback.
+    // mirrors the pattern used in src/utils/resume.ts.
+    child.on('error', (err) => {
+      logger.debug('antigravity: spawned IDE process error', err);
+    });
+    child.unref();
     return true;
   } catch (err) {
     logger.debug('antigravity: failed to spawn IDE', err);
@@ -1670,27 +1692,43 @@ async function pollForRpcConnection(timeoutMs: number, intervalMs: number): Prom
 
 async function tryAutoLaunchAndConnect(): Promise<RpcConnection | null> {
   if (!shouldAutoLaunchAntigravity()) return null;
+
+  // gate the spawn on rpc actually being offline. extractLiveContext returns
+  // null both when (a) the language_server is down and (b) it's up but holds
+  // no steps for this cascadeId (evicted trajectory). launching the ide can
+  // only help case (a); in case (b) it would just bounce the user's dock for
+  // nothing. skipping the spawn here lets us fall straight to the offline
+  // brain-artifact path, which is what we want.
+  const existing = await findRpcConnection();
+  if (existing) return null;
+
   if (!spawnAntigravity()) {
-    process.stderr.write('continues: could not launch Antigravity — falling back to offline brain artifacts.\n');
+    logger.warn('antigravity: could not launch Antigravity — falling back to offline brain artifacts.');
     return null;
   }
 
-  process.stderr.write(
-    'continues: Antigravity language server is offline — launching the IDE to read the encrypted transcript… ' +
-      '(set CONTINUES_LAUNCH_ANTIGRAVITY=0 to skip)\n',
+  // these progress messages are user-facing ux during a blocking operation
+  // (up to 25s while the ide spins up) rather than diagnostic output, but we
+  // still route them through the logger to honor the project convention. by
+  // default the logger is silent, so casual users won't see anything; running
+  // with --verbose surfaces the full launching/connected/timeout sequence.
+  logger.warn(
+    'antigravity: language server is offline — launching the IDE to read the encrypted transcript… ' +
+      '(set CONTINUES_LAUNCH_ANTIGRAVITY=0 to skip)',
   );
 
+  const timeoutMs = getLaunchTimeoutMs();
   const start = Date.now();
-  const connection = await pollForRpcConnection(LAUNCH_TIMEOUT_MS, LAUNCH_POLL_INTERVAL_MS);
+  const connection = await pollForRpcConnection(timeoutMs, getLaunchPollIntervalMs());
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
   if (connection) {
-    process.stderr.write(`continues: Antigravity language server connected in ${elapsed}s.\n`);
+    logger.warn(`antigravity: language server connected in ${elapsed}s.`);
     return connection;
   }
 
-  process.stderr.write(
-    `continues: Antigravity language server did not come online within ${LAUNCH_TIMEOUT_MS / 1000}s — falling back to offline brain artifacts.\n`,
+  logger.warn(
+    `antigravity: language server did not come online within ${timeoutMs / 1000}s — falling back to offline brain artifacts.`,
   );
   return null;
 }
