@@ -1,10 +1,11 @@
-import * as os from 'os';
+import * as os from 'node:os';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { adapters } from '../parsers/registry.js';
 import type {
   ConversationMessage,
   ReasoningStep,
+  SessionEvent,
   SessionNotes,
   SubagentResult,
   ToolSample,
@@ -29,8 +30,43 @@ import {
 /** Replace home directory prefix with ~ and escape backticks for safe markdown inline code */
 const _home = os.homedir();
 export function safePath(p: string): string {
-  const tildified = p.startsWith(_home) ? '~' + p.slice(_home.length) : p;
+  const tildified = p === _home || p.startsWith(`${_home}/`) ? `~${p.slice(_home.length)}` : p;
   return tildified.replace(/`/g, '\\`');
+}
+
+function displayPath(p: string, cwd: string | undefined, config: VerbosityConfig): string {
+  if (config.handoff.pathPolicy === 'raw') return p.replace(/`/g, '\\`');
+  if (cwd && pathIsInside(p, cwd)) {
+    const rel = p === cwd ? '.' : `./${p.slice(cwd.length).replace(/^\/+/, '')}`;
+    return rel.replace(/`/g, '\\`');
+  }
+  return safePath(p);
+}
+
+function pathIsInside(candidate: string, root: string): boolean {
+  if (!candidate || !root || !candidate.startsWith('/')) return false;
+  const normalizedCandidate = candidate.replace(/\/+$/u, '');
+  const normalizedRoot = root.replace(/\/+$/u, '');
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}/`);
+}
+
+function formatTimestamp(date: Date): string {
+  return date
+    .toISOString()
+    .replace('T', ' ')
+    .replace(/\.\d{3}Z$/u, ' UTC');
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 60_000) {
+    return `${Math.max(1, Math.round(ms / 1000))} sec`;
+  }
+  return `${Math.round(ms / 60_000)} min`;
+}
+
+function truncateWithMarker(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n\n[...${(text.length - maxChars).toLocaleString()} chars omitted]`;
 }
 
 /** Human-readable labels for each session source — derived lazily from the adapter registry */
@@ -109,7 +145,8 @@ export function generateHandoffMarkdown(
   toolSummaries: ToolUsageSummary[] = [],
   sessionNotes?: SessionNotes,
   config: VerbosityConfig = getPreset('standard'),
-  mode: 'inline' | 'reference' = 'inline',
+  _mode: 'inline' | 'reference' = 'inline',
+  timeline: SessionEvent[] = [],
 ): string {
   const labels = getSourceLabels();
   const sourceLabel = labels[session.source] || session.source;
@@ -125,11 +162,11 @@ export function generateHandoffMarkdown(
     '|-------|-------|',
     `| **Source** | ${sourceLabel} |`,
     `| **Session ID** | \`${session.id}\` |`,
-    `| **Working Directory** | \`${session.cwd}\` |`,
+    `| **Working Directory** | \`${displayPath(session.cwd, undefined, config)}\` |`,
   ];
 
   if (session.originalPath) {
-    lines.push(`| **Session File** | \`${safePath(session.originalPath)}\` |`);
+    lines.push(`| **Session File** | \`${displayPath(session.originalPath, session.cwd, config)}\` |`);
   }
 
   if (session.repo) {
@@ -138,10 +175,13 @@ export function generateHandoffMarkdown(
   if (session.model) {
     lines.push(`| **Model** | ${session.model} |`);
   }
+  if (session.gitSha) {
+    lines.push(`| **Git SHA** | \`${session.gitSha.slice(0, 12)}\` |`);
+  }
   if (sessionNotes?.model && sessionNotes.model !== session.model) {
     lines.push(`| **Model** | ${sessionNotes.model} |`);
   }
-  lines.push(`| **Last Active** | ${session.updatedAt.toISOString().slice(0, 16).replace('T', ' ')} |`);
+  lines.push(`| **Last Active** | ${formatTimestamp(session.updatedAt)} |`);
   if (sessionNotes?.tokenUsage && (sessionNotes.tokenUsage.input > 0 || sessionNotes.tokenUsage.output > 0)) {
     lines.push(
       `| **Tokens Used** | ${sessionNotes.tokenUsage.input.toLocaleString()} in / ${sessionNotes.tokenUsage.output.toLocaleString()} out |`,
@@ -156,8 +196,7 @@ export function generateHandoffMarkdown(
     lines.push(`| **Thinking Tokens** | ${sessionNotes.thinkingTokens.toLocaleString()} |`);
   }
   if (sessionNotes?.activeTimeMs) {
-    const mins = Math.round(sessionNotes.activeTimeMs / 60000);
-    lines.push(`| **Active Time** | ${mins} min |`);
+    lines.push(`| **Active Time** | ${formatDuration(sessionNotes.activeTimeMs)} |`);
   }
   lines.push(`| **Files Modified** | ${filesModified.length} |`);
   lines.push(`| **Messages** | ${messages.length} |`);
@@ -180,11 +219,12 @@ export function generateHandoffMarkdown(
     lines.push('');
   }
 
-  // ── Category-aware Tool Activity section ──
-  if (toolSummaries.length > 0) {
-    lines.push('## Tool Activity');
+  const finalAssistant = [...messages].reverse().find((message) => message.role === 'assistant' && message.content);
+  if (finalAssistant) {
+    lines.push('## Current State');
     lines.push('');
-    lines.push(...renderToolActivity(toolSummaries, caps));
+    lines.push(truncateWithMarker(finalAssistant.content, config.handoff.finalAnswerChars));
+    lines.push('');
     lines.push('');
   }
 
@@ -208,19 +248,13 @@ export function generateHandoffMarkdown(
     lines.push(...renderReasoningChain(sessionNotes.reasoningSteps));
   }
 
-  // Show recent messages for richer context
-  const recentMessages = messages.slice(-config.recentMessages);
-  if (recentMessages.length > 0) {
-    lines.push('## Recent Conversation');
+  lines.push(...renderRecentActivity(timeline, messages, config));
+
+  // ── Category-aware Tool Activity appendix ──
+  if (config.handoff.includeToolAppendix && toolSummaries.length > 0) {
+    lines.push('## Tool Activity');
     lines.push('');
-    for (const msg of recentMessages) {
-      const role = msg.role === 'user' ? 'User' : 'Assistant';
-      lines.push(`### ${role}`);
-      lines.push('');
-      const maxChars = config.maxMessageChars;
-      lines.push(msg.content.slice(0, maxChars) + (msg.content.length > maxChars ? '\u2026' : ''));
-      lines.push('');
-    }
+    lines.push(...renderToolActivity(toolSummaries, caps));
     lines.push('');
   }
 
@@ -228,7 +262,7 @@ export function generateHandoffMarkdown(
     lines.push('## Files Modified');
     lines.push('');
     for (const file of filesModified) {
-      lines.push(`- \`${file}\``);
+      lines.push(`- \`${displayPath(file, session.cwd, config)}\``);
     }
     lines.push('');
     lines.push('');
@@ -248,10 +282,10 @@ export function generateHandoffMarkdown(
     lines.push('## Session Origin');
     lines.push('');
     lines.push(`This session was extracted from **${labels[session.source] || session.source}** session data.`);
-    lines.push(`- **Session file**: \`${safePath(session.originalPath)}\``);
+    lines.push(`- **Session file**: \`${displayPath(session.originalPath, session.cwd, config)}\``);
     lines.push(`- **Session ID**: \`${session.id}\``);
     if (session.cwd) {
-      lines.push(`- **Project directory**: \`${session.cwd}\``);
+      lines.push(`- **Project directory**: \`${displayPath(session.cwd, undefined, config)}\``);
     }
     lines.push('');
     lines.push('> To access the raw session data, inspect the file path above.');
@@ -265,6 +299,94 @@ export function generateHandoffMarkdown(
   );
 
   return lines.join('\n');
+}
+
+const NON_MESSAGE_TITLES: Record<'lifecycle' | 'metadata' | 'warning' | 'reasoning', string> = {
+  lifecycle: 'Lifecycle',
+  metadata: 'Metadata',
+  warning: 'Note',
+  reasoning: 'Note',
+};
+
+function renderRecentActivity(
+  timeline: SessionEvent[],
+  messages: ConversationMessage[],
+  config: VerbosityConfig,
+): string[] {
+  const events =
+    timeline.length > 0
+      ? [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-config.handoff.timelineWindow)
+      : messagesToTimeline(messages.slice(-config.recentMessages));
+
+  if (events.length === 0) return [];
+
+  const lines: string[] = ['## Recent Conversation', ''];
+  for (const event of events) {
+    const timestamp = event.timestamp ? ` (${formatTimestamp(event.timestamp)})` : '';
+    switch (event.kind) {
+      case 'message': {
+        const role = event.role === 'user' ? 'User' : event.role === 'system' ? 'System' : 'Assistant';
+        lines.push(`### ${role}${timestamp}`);
+        lines.push('');
+        if (event.content) {
+          lines.push(
+            event.content.slice(0, config.maxMessageChars) + (event.content.length > config.maxMessageChars ? '…' : ''),
+          );
+        }
+        lines.push('');
+        break;
+      }
+      case 'tool_call':
+      case 'tool_result': {
+        const label = event.kind === 'tool_call' ? 'Tool Call' : 'Tool Result';
+        const status = event.status ? ` ${event.status}` : '';
+        const name = event.toolName ? `: ${event.toolName}` : '';
+        lines.push(`### ${label}${name}${status}${timestamp}`);
+        lines.push('');
+        if (event.arguments && Object.keys(event.arguments).length > 0) {
+          lines.push(`Arguments: \`${truncateWithMarker(JSON.stringify(event.arguments), 500)}\``);
+          lines.push('');
+        }
+        if (event.result) {
+          lines.push(truncateWithMarker(event.result, config.maxMessageChars));
+          lines.push('');
+        } else if (event.content) {
+          lines.push(truncateWithMarker(event.content, config.maxMessageChars));
+          lines.push('');
+        }
+        break;
+      }
+      case 'lifecycle':
+      case 'metadata':
+      case 'warning':
+      case 'reasoning': {
+        const title = NON_MESSAGE_TITLES[event.kind];
+        const status = event.status ? ` ${event.status}` : '';
+        lines.push(`### ${title}${status}${timestamp}`);
+        lines.push('');
+        if (event.content) lines.push(truncateWithMarker(event.content, config.maxMessageChars));
+        if (!event.content && event.metadata)
+          lines.push(`\`${truncateWithMarker(JSON.stringify(event.metadata), 500)}\``);
+        lines.push('');
+        break;
+      }
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
+function messagesToTimeline(messages: ConversationMessage[]): SessionEvent[] {
+  return messages.map((message, index) => ({
+    kind: 'message',
+    sequence: index,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    sourceId: message.sourceId,
+    sourceParentId: message.sourceParentId,
+    isMeta: message.isMeta,
+  }));
 }
 
 // ── MCP Namespace Grouping ───────────────────────────────────────────────────
@@ -672,7 +794,7 @@ const COMPACT_LABELS: Record<string, string> = {
   mcp: 'MCP',
 };
 
-function formatCompactSample(sample: ToolSample, category: string): string {
+function formatCompactSample(sample: ToolSample, _category: string): string {
   const d = sample.data;
   if (!d) return `\`${sample.summary}\``;
 
@@ -712,7 +834,7 @@ function renderSubagentResults(results: SubagentResult[], config: VerbosityConfi
     lines.push(`### ${r.description} (${r.taskId})`);
     if (r.status === 'completed' && r.result) {
       const maxChars = config.task.subagentResultChars;
-      const text = r.result.length > maxChars ? r.result.slice(0, maxChars) + '\u2026' : r.result;
+      const text = r.result.length > maxChars ? `${r.result.slice(0, maxChars)}\u2026` : r.result;
       // Render each line as a blockquote
       for (const line of text.split('\n')) {
         lines.push(`> ${line}`);
@@ -744,7 +866,7 @@ function renderReasoningChain(steps: ReasoningStep[]): string[] {
 
   for (const step of steps) {
     const label = `**${capitalize(step.purpose)}** (step ${step.stepNumber}/${step.totalSteps})`;
-    const thought = step.thought.length > 200 ? step.thought.slice(0, 200) + '\u2026' : step.thought;
+    const thought = step.thought.length > 200 ? `${step.thought.slice(0, 200)}\u2026` : step.thought;
     let line = `${step.stepNumber}. ${label}: ${thought}`;
     if (step.nextAction) {
       line += `\n   \u2192 Next: ${step.nextAction}`;

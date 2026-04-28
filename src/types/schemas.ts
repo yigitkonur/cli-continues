@@ -55,13 +55,17 @@ export const CodexSessionMetaSchema = z
     payload: z
       .object({
         id: z.string().optional(),
+        timestamp: z.string().optional(),
         cwd: z.string().optional(),
         git: z
           .object({
             branch: z.string().optional(),
             repository_url: z.string().optional(),
+            commit_hash: z.string().optional(),
+            sha: z.string().optional(),
           })
           .optional(),
+        source: z.string().optional(),
       })
       .passthrough()
       .optional(),
@@ -206,6 +210,7 @@ export const CopilotEventSchema = z
       .object({
         sessionId: z.string().optional(),
         selectedModel: z.string().optional(),
+        currentModel: z.string().optional(),
         content: z.string().optional(),
         transformedContent: z.string().optional(),
         messageId: z.string().optional(),
@@ -215,6 +220,7 @@ export const CopilotEventSchema = z
               .object({
                 name: z.string(),
                 arguments: z.record(z.string(), z.unknown()).optional(),
+                args: z.record(z.string(), z.unknown()).optional(),
               })
               .passthrough(),
           )
@@ -241,7 +247,11 @@ export type CopilotEvent = z.infer<typeof CopilotEventSchema>;
 
 export const GeminiToolCallSchema = z
   .object({
+    id: z.string().optional(),
     name: z.string(),
+    displayName: z.string().optional(),
+    description: z.string().optional(),
+    timestamp: z.string().optional(),
     args: z.record(z.string(), z.unknown()).optional(),
     result: z
       .array(
@@ -249,9 +259,12 @@ export const GeminiToolCallSchema = z
           .object({
             functionResponse: z
               .object({
+                id: z.string().optional(),
+                name: z.string().optional(),
                 response: z
                   .object({
                     output: z.string().optional(),
+                    error: z.string().optional(),
                   })
                   .passthrough()
                   .optional(),
@@ -693,6 +706,7 @@ export const SerializedSessionSchema = z.object({
   cwd: z.string(),
   repo: z.string().optional(),
   branch: z.string().optional(),
+  gitSha: z.string().optional(),
   summary: z.string().optional(),
   lines: z.number(),
   bytes: z.number(),

@@ -14,9 +14,9 @@
  * Users can override any subset of fields — unspecified fields
  * inherit from the chosen preset (or `standard` if none specified).
  */
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { logger } from '../logger.js';
@@ -92,6 +92,13 @@ const PendingTasksConfigSchema = z.object({
   maxTasks: z.number().int().min(0).default(10),
 });
 
+const HandoffConfigSchema = z.object({
+  finalAnswerChars: z.number().int().min(0).default(4000),
+  timelineWindow: z.number().int().min(0).default(20),
+  includeToolAppendix: z.boolean().default(true),
+  pathPolicy: z.enum(['home-relative', 'raw']).default('home-relative'),
+});
+
 const ClaudeAgentConfigSchema = z.object({
   filterProgressEvents: z.boolean().default(true),
   parseSubagents: z.boolean().default(true),
@@ -126,6 +133,7 @@ export const VerbosityConfigSchema = z.object({
   thinking: ThinkingConfigSchema,
   compactSummary: CompactSummaryConfigSchema,
   pendingTasks: PendingTasksConfigSchema,
+  handoff: HandoffConfigSchema,
   agents: AgentsConfigSchema,
 });
 
@@ -197,6 +205,12 @@ const MINIMAL_PRESET: VerbosityConfig = {
     extractFromThinking: false,
     extractFromSubagents: false,
     maxTasks: 5,
+  },
+  handoff: {
+    finalAnswerChars: 2000,
+    timelineWindow: 8,
+    includeToolAppendix: true,
+    pathPolicy: 'home-relative',
   },
   agents: {
     claude: {
@@ -273,6 +287,12 @@ const STANDARD_PRESET: VerbosityConfig = {
     extractFromSubagents: true,
     maxTasks: 10,
   },
+  handoff: {
+    finalAnswerChars: 4000,
+    timelineWindow: 20,
+    includeToolAppendix: true,
+    pathPolicy: 'home-relative',
+  },
   agents: {
     claude: {
       filterProgressEvents: true,
@@ -348,6 +368,12 @@ const VERBOSE_PRESET: VerbosityConfig = {
     extractFromSubagents: true,
     maxTasks: 20,
   },
+  handoff: {
+    finalAnswerChars: 8000,
+    timelineWindow: 40,
+    includeToolAppendix: true,
+    pathPolicy: 'home-relative',
+  },
   agents: {
     claude: {
       filterProgressEvents: true,
@@ -422,6 +448,12 @@ const FULL_PRESET: VerbosityConfig = {
     extractFromThinking: true,
     extractFromSubagents: true,
     maxTasks: 100,
+  },
+  handoff: {
+    finalAnswerChars: 20000,
+    timelineWindow: 200,
+    includeToolAppendix: true,
+    pathPolicy: 'home-relative',
   },
   agents: {
     claude: {

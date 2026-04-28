@@ -21,6 +21,8 @@ export interface UnifiedSession {
   repo?: string;
   /** Git branch */
   branch?: string;
+  /** Git commit SHA when the source tool records it */
+  gitSha?: string;
   /** Session summary/description */
   summary?: string;
   /** Number of conversation turns */
@@ -53,6 +55,12 @@ export interface ConversationMessage {
   content: string;
   timestamp?: Date;
   toolCalls?: ToolCall[];
+  /** Source-tool message identifier, when available */
+  sourceId?: string;
+  /** Source-tool parent message identifier, when available */
+  sourceParentId?: string;
+  /** True when the message is useful metadata rather than user-visible conversation */
+  isMeta?: boolean;
 }
 
 /** Tool call information */
@@ -64,6 +72,37 @@ export interface ToolCall {
   result?: string;
   /** Whether the tool call succeeded. Absent when status is unknown. */
   success?: boolean;
+  /** Source-tool metadata such as exit code, truncation state, timing, or output path. */
+  metadata?: Record<string, unknown>;
+}
+
+export type SessionEventKind =
+  | 'message'
+  | 'tool_call'
+  | 'tool_result'
+  | 'lifecycle'
+  | 'reasoning'
+  | 'metadata'
+  | 'warning';
+
+export interface SessionEvent {
+  kind: SessionEventKind;
+  sequence: number;
+  timestamp?: Date;
+  role?: ConversationMessage['role'];
+  content?: string;
+  id?: string;
+  sourceId?: string;
+  sourceParentId?: string;
+  toolName?: string;
+  toolCallId?: string;
+  status?: string;
+  arguments?: Record<string, unknown>;
+  result?: string;
+  filePaths?: string[];
+  metadata?: Record<string, unknown>;
+  isFinalAnswer?: boolean;
+  isMeta?: boolean;
 }
 
 // ── Structured Tool Sample Data ─────────────────────────────────────────────
@@ -200,6 +239,8 @@ export interface ToolSample {
   summary: string;
   /** Structured data for rich rendering. Absent for legacy/not-yet-updated parsers. */
   data?: StructuredToolSample;
+  /** Source event id this sample came from, when available. */
+  sourceEventId?: string;
 }
 
 /** Aggregated tool usage: unique tool name + count + representative samples */
@@ -212,6 +253,8 @@ export interface ToolUsageSummary {
   errorCount?: number;
   /** Up to N representative samples (N varies by category) */
   samples: ToolSample[];
+  /** Source event ids represented by this grouped summary, when available. */
+  sourceEventIds?: string[];
 }
 
 /** Result from a subagent/task invocation */
@@ -258,6 +301,18 @@ export interface SessionNotes {
   reasoningSteps?: ReasoningStep[];
   /** External tool results (MCP, plugins) with size and preview */
   externalToolResults?: Array<{ name: string; sizeBytes: number; preview: string }>;
+  /** Tool-specific lifecycle events such as turn start/abort/complete. */
+  lifecycle?: Array<{ type: string; timestamp?: string; message?: string; metadata?: Record<string, unknown> }>;
+  /** Bootstrap/environment details that should not be mixed into conversation text. */
+  bootstrap?: Array<{ type: string; content: string; timestamp?: string; metadata?: Record<string, unknown> }>;
+  /** Raw source metadata retained for parser fidelity but not rendered verbosely by default. */
+  sourceMetadata?: Record<string, unknown>;
+  /** Snapshot metadata such as Claude file-history-snapshot records. */
+  fileHistorySnapshots?: Array<{ timestamp?: string; cwd?: string; metadata?: Record<string, unknown> }>;
+  /** Pointer to raw source data, redacted when rendered. */
+  rawAccess?: { kind: 'file' | 'directory' | 'sqlite'; path: string; redacted?: boolean };
+  /** Known parser fidelity limits or downgraded source records. */
+  fidelityWarnings?: string[];
 }
 
 /** Extracted context for cross-tool continuation */
@@ -273,6 +328,8 @@ export interface SessionContext {
   toolSummaries: ToolUsageSummary[];
   /** Contextual notes from AI reasoning, model info, etc. */
   sessionNotes?: SessionNotes;
+  /** Chronological high-fidelity activity stream, when the parser can provide it. */
+  timeline?: SessionEvent[];
   /** Generated markdown for injection */
   markdown: string;
 }

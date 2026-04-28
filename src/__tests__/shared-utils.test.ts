@@ -21,6 +21,7 @@ import {
 import { countDiffStats, extractStdoutTail, formatEditDiff, formatNewFileDiff } from '../utils/diff.js';
 import { findFiles, listSubdirectories, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
+import { generateHandoffMarkdown, safePath } from '../utils/markdown.js';
 import { extractRepo, trimMessages } from '../utils/parser-helpers.js';
 import {
   type AnthropicMessage,
@@ -88,7 +89,7 @@ describe('scanJsonlHead', () => {
     const dir = makeTmpDir();
     const file = path.join(dir, 'test.jsonl');
     const lines = Array.from({ length: 100 }, (_, i) => JSON.stringify({ i }));
-    fs.writeFileSync(file, lines.join('\n') + '\n');
+    fs.writeFileSync(file, `${lines.join('\n')}\n`);
 
     const visited: number[] = [];
     await scanJsonlHead(file, 5, (parsed) => {
@@ -1101,5 +1102,82 @@ describe('detectCategory fallback via classifyToolName', () => {
   });
   it('classifies request_user_input as ask', () => {
     expect(classifyToolName('request_user_input')).toBe('ask');
+  });
+});
+
+describe('generateHandoffMarkdown battle-test rendering', () => {
+  it('tildifies only the actual home directory boundary', () => {
+    const home = os.homedir();
+    const childPath = path.join(home, 'project/file.ts');
+    const siblingPath = `${home}-sibling/project/file.ts`;
+
+    expect(safePath(home)).toBe('~');
+    expect(safePath(childPath)).toBe('~/project/file.ts');
+    expect(safePath(siblingPath)).toBe(siblingPath);
+  });
+
+  it('renders home-relative paths, UTC timestamps, sub-minute active time, and a larger final assistant answer', () => {
+    const home = os.homedir();
+    const cwd = path.join(home, 'project');
+    const longFinal = `${'final '.repeat(150)}SENTINEL_FINAL_STATE`;
+    const markdown = generateHandoffMarkdown(
+      {
+        id: 'renderer-session',
+        source: 'codex',
+        cwd,
+        repo: 'user/project',
+        lines: 2,
+        bytes: 100,
+        createdAt: new Date('2026-04-15T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-15T10:00:24.000Z'),
+        originalPath: path.join(home, '.codex', 'sessions', 'rollout.jsonl'),
+      },
+      [
+        { role: 'user', content: 'Fix the renderer', timestamp: new Date('2026-04-15T10:00:01.000Z') },
+        { role: 'assistant', content: longFinal, timestamp: new Date('2026-04-15T10:00:24.000Z') },
+      ],
+      [path.join(cwd, 'src/render.ts'), path.join(home, '.codex', 'config.toml')],
+      [],
+      [],
+      { activeTimeMs: 24_587 },
+      getPreset('standard'),
+    );
+
+    expect(markdown).toContain('~/.codex/sessions/rollout.jsonl');
+    expect(markdown).toContain('`./src/render.ts`');
+    expect(markdown).toContain('`~/.codex/config.toml`');
+    expect(markdown).toContain('2026-04-15 10:00:24 UTC');
+    expect(markdown).toContain('| **Active Time** | 25 sec |');
+    expect(markdown).toContain('SENTINEL_FINAL_STATE');
+  });
+
+  it('renders timeline activity before grouped tool activity', () => {
+    const markdown = generateHandoffMarkdown(
+      {
+        id: 'timeline-session',
+        source: 'gemini',
+        cwd: '/tmp/project',
+        lines: 3,
+        bytes: 100,
+        createdAt: new Date('2026-04-15T10:00:00.000Z'),
+        updatedAt: new Date('2026-04-15T10:00:03.000Z'),
+        originalPath: '/tmp/project/session.jsonl',
+      },
+      [],
+      [],
+      [],
+      [{ name: 'write_file', count: 1, samples: [{ summary: 'write login.ts' }] }],
+      undefined,
+      getPreset('standard'),
+      'inline',
+      [
+        { kind: 'message', sequence: 0, role: 'user', content: 'Create login.ts' },
+        { kind: 'tool_call', sequence: 1, toolName: 'write_file', arguments: { file_path: 'login.ts' } },
+        { kind: 'message', sequence: 2, role: 'assistant', content: 'Done.' },
+      ],
+    );
+
+    expect(markdown.indexOf('## Recent Conversation')).toBeLessThan(markdown.indexOf('## Tool Activity'));
+    expect(markdown.indexOf('Tool Call: write_file')).toBeLessThan(markdown.indexOf('### Write'));
   });
 });

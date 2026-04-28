@@ -6,6 +6,7 @@ dist/
 .continues-handoff.md
 .agent-workspace/
 stress-test-output.log
+.battle-test/
 # Generated / local tooling
 .agents/
 .claude/skills/
