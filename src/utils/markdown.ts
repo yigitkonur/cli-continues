@@ -314,9 +314,12 @@ function renderRecentActivity(
   messages: ConversationMessage[],
   config: VerbosityConfig,
 ): string[] {
+  const window = config.handoff.timelineWindow;
   const events =
     timeline.length > 0
-      ? [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-config.handoff.timelineWindow)
+      ? window <= 0
+        ? []
+        : [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-window)
       : messagesToTimeline(messages.slice(-config.recentMessages));
 
   if (events.length === 0) return [];
