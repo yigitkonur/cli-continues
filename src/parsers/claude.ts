@@ -1,5 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
@@ -7,6 +7,7 @@ import type {
   ConversationMessage,
   ReasoningStep,
   SessionContext,
+  SessionEvent,
   SessionNotes,
   SessionParseOptions,
   UnifiedSession,
@@ -72,19 +73,31 @@ async function parseSessionInfo(
   let firstUserMessage = '';
   let firstTimestamp = '';
   let lastTimestamp = '';
+  let firstTimeMs = Number.POSITIVE_INFINITY;
+  let lastTimeMs = Number.NEGATIVE_INFINITY;
 
   const visitor = (parsed: unknown): 'continue' | 'stop' => {
     const msg = parsed as ClaudeMessage;
     if (msg.sessionId && !sessionId) sessionId = msg.sessionId;
     if (msg.cwd && !cwd) cwd = msg.cwd;
     if (msg.gitBranch && !gitBranch) gitBranch = msg.gitBranch;
-    if (msg.timestamp) {
-      if (!firstTimestamp) firstTimestamp = msg.timestamp;
-      lastTimestamp = msg.timestamp;
+    const timestamp = getClaudeMessageTimestamp(msg);
+    if (timestamp) {
+      const timeMs = Date.parse(timestamp);
+      if (!Number.isNaN(timeMs)) {
+        if (timeMs < firstTimeMs) {
+          firstTimeMs = timeMs;
+          firstTimestamp = timestamp;
+        }
+        if (timeMs > lastTimeMs) {
+          lastTimeMs = timeMs;
+          lastTimestamp = timestamp;
+        }
+      }
     }
 
     if (!firstUserMessage && msg.type === 'user' && msg.message?.content) {
-      const content = extractTextFromBlocks(msg.message.content);
+      const content = stripClaudeLocalCommandMarkup(extractTextFromBlocks(msg.message.content));
       if (isRealUserMessage(content)) {
         firstUserMessage = content;
       }
@@ -154,8 +167,60 @@ export async function parseClaudeSessions(options: SessionParseOptions = {}): Pr
 function hasHumanTextBlocks(msg: ClaudeMessage): boolean {
   const content = msg.message?.content;
   if (!content) return false;
-  if (typeof content === 'string') return true;
-  return content.some((block) => block.type === 'text' && block.text);
+  if (typeof content === 'string') return isRealUserMessage(stripClaudeLocalCommandMarkup(content));
+  return content.some(
+    (block) => block.type === 'text' && block.text && isRealUserMessage(stripClaudeLocalCommandMarkup(block.text)),
+  );
+}
+
+function isClaudeMetaMessage(msg: ClaudeMessage): boolean {
+  const raw = msg as Record<string, unknown>;
+  return raw.isMeta === true || msg.type === 'permission-mode' || msg.type === 'file-history-snapshot';
+}
+
+function stripClaudeLocalCommandMarkup(text: string): string {
+  return text
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/giu, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/giu, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/giu, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/giu, '')
+    .trim();
+}
+
+function getClaudeMessageTimestamp(msg: ClaudeMessage): string | undefined {
+  if (msg.timestamp) return msg.timestamp;
+  const raw = msg as Record<string, unknown>;
+  const snapshot = raw.snapshot;
+  if (!snapshot || typeof snapshot !== 'object') return undefined;
+  const timestamp = (snapshot as Record<string, unknown>).timestamp;
+  return typeof timestamp === 'string' ? timestamp : undefined;
+}
+
+function getClaudeTagContent(text: string, tag: string): string | undefined {
+  const match = text.match(new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`, 'iu'));
+  if (!match) return undefined;
+  return match[0]
+    .replace(new RegExp(`^<${tag}>`, 'iu'), '')
+    .replace(new RegExp(`<\\/${tag}>$`, 'iu'), '')
+    .trim();
+}
+
+function extractClaudeLocalCommandDetails(text: string): { content: string; metadata: Record<string, unknown> } {
+  const metadata: Record<string, unknown> = {};
+  const commandName = getClaudeTagContent(text, 'command-name');
+  const commandMessage = getClaudeTagContent(text, 'command-message');
+  const commandArgs = getClaudeTagContent(text, 'command-args');
+  const stdout = getClaudeTagContent(text, 'local-command-stdout');
+
+  if (commandName) metadata.commandName = commandName;
+  if (commandMessage) metadata.commandMessage = commandMessage;
+  if (commandArgs) metadata.commandArgs = commandArgs;
+
+  return {
+    content: stdout || commandMessage || commandName || stripClaudeLocalCommandMarkup(text),
+    metadata,
+  };
 }
 
 /**
@@ -666,6 +731,61 @@ function extractSessionNotes(messages: ClaudeMessage[], config?: VerbosityConfig
     }
   }
 
+  for (const msg of messages) {
+    const raw = msg as Record<string, unknown>;
+    const sourceMetadata: Record<string, unknown> = {};
+    if (typeof raw.permissionMode === 'string') sourceMetadata.permissionMode = raw.permissionMode;
+    if (typeof raw.version === 'string') sourceMetadata.version = raw.version;
+    if (typeof raw.entrypoint === 'string') sourceMetadata.entrypoint = raw.entrypoint;
+    if (typeof raw.userType === 'string') sourceMetadata.userType = raw.userType;
+    if (msg.uuid || msg.parentUuid) sourceMetadata.messageGraphSeen = true;
+    if (Object.keys(sourceMetadata).length > 0) {
+      notes.sourceMetadata = { ...(notes.sourceMetadata ?? {}), ...sourceMetadata };
+    }
+
+    if (msg.type === 'file-history-snapshot') {
+      const snapshot =
+        raw.snapshot && typeof raw.snapshot === 'object' ? (raw.snapshot as Record<string, unknown>) : {};
+      const messageId = typeof raw.messageId === 'string' ? raw.messageId : undefined;
+      const snapshotMessageId = typeof snapshot.messageId === 'string' ? snapshot.messageId : undefined;
+      const snapshotTimestamp = typeof snapshot.timestamp === 'string' ? snapshot.timestamp : undefined;
+      const snapshotCwd = typeof snapshot.cwd === 'string' ? snapshot.cwd : undefined;
+      const trackedFileBackups =
+        snapshot.trackedFileBackups && typeof snapshot.trackedFileBackups === 'object'
+          ? (snapshot.trackedFileBackups as Record<string, unknown>)
+          : undefined;
+      if (!notes.fileHistorySnapshots) notes.fileHistorySnapshots = [];
+      notes.fileHistorySnapshots.push({
+        ...(msg.timestamp || snapshotTimestamp ? { timestamp: msg.timestamp ?? snapshotTimestamp } : {}),
+        ...(msg.cwd || snapshotCwd ? { cwd: msg.cwd ?? snapshotCwd } : {}),
+        metadata: {
+          ...(msg.uuid ? { uuid: msg.uuid } : {}),
+          ...(msg.parentUuid ? { parentUuid: msg.parentUuid } : {}),
+          ...(messageId ? { messageId } : {}),
+          ...(snapshotMessageId ? { snapshotMessageId } : {}),
+          ...(typeof raw.isSnapshotUpdate === 'boolean' ? { isSnapshotUpdate: raw.isSnapshotUpdate } : {}),
+          ...(trackedFileBackups ? { trackedFileBackupsCount: Object.keys(trackedFileBackups).length } : {}),
+        },
+      });
+    }
+
+    const localCommandText = extractTextFromBlocks(msg.message?.content);
+    if (localCommandText.includes('<local-command-stdout>') || localCommandText.includes('<command-name>')) {
+      const localCommand = extractClaudeLocalCommandDetails(localCommandText);
+      if (!notes.bootstrap) notes.bootstrap = [];
+      notes.bootstrap.push({
+        type: 'local_command',
+        content: localCommand.content,
+        ...(msg.timestamp ? { timestamp: msg.timestamp } : {}),
+        metadata: {
+          ...localCommand.metadata,
+          ...(msg.uuid ? { uuid: msg.uuid } : {}),
+          ...(msg.parentUuid ? { parentUuid: msg.parentUuid } : {}),
+        },
+      });
+    }
+  }
+
   // Aggregate token usage, cache tokens, and model from assistant messages
   for (const msg of messages) {
     if (msg.type !== 'assistant') continue;
@@ -771,6 +891,7 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
   // Gap 4: Optionally exclude user messages that are entirely tool_result blocks
   const conversational = messages.filter((m) => {
     if (m.type !== 'user' && m.type !== 'assistant') return false;
+    if (isClaudeMetaMessage(m)) return false;
     if (m.isCompactSummary) return false;
 
     // Gap 4: When separateHumanFromToolResults is enabled, skip user messages
@@ -783,17 +904,28 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
   });
 
   const recentMessages: ConversationMessage[] = conversational.flatMap((msg) => {
-    const content = extractTextFromBlocks(msg.message?.content).trim();
+    const content = stripClaudeLocalCommandMarkup(extractTextFromBlocks(msg.message?.content)).trim();
     if (!content) return [];
     const role: ConversationMessage['role'] = msg.type === 'user' ? 'user' : 'assistant';
     return [
       {
         role,
-        content: truncate(content, cfg.maxMessageChars),
+        content,
         timestamp: new Date(msg.timestamp),
+        sourceId: msg.uuid,
+        sourceParentId: msg.parentUuid,
       },
     ];
   });
+  const timeline: SessionEvent[] = recentMessages.map((message, index) => ({
+    kind: 'message',
+    sequence: index,
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    sourceId: message.sourceId,
+    sourceParentId: message.sourceParentId,
+  }));
 
   // ── Gap 2: Parse subagent JSONL files ─────────────────────────────────
   if (cfg.agents.claude.parseSubagents) {
@@ -937,6 +1069,8 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
     toolSummaries,
     sessionNotes,
     cfg,
+    'inline',
+    timeline,
   );
   const chainPrefix = await buildChainedHistoryPrefix(session, messages, cfg);
   const markdown = chainPrefix ? `${chainPrefix}\n\n---\n\n${baseMarkdown}` : baseMarkdown;
@@ -948,6 +1082,7 @@ export async function extractClaudeContext(session: UnifiedSession, config?: Ver
     pendingTasks: dedupedPendingTasks,
     toolSummaries,
     sessionNotes,
+    timeline,
     markdown,
   };
 }

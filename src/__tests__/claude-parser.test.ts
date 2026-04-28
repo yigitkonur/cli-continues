@@ -117,4 +117,133 @@ describe('claude parser hardening', () => {
     expect(sessions[0].updatedAt.toISOString()).toBe('2026-04-15T11:30:00.000Z');
     expect(sessions[1].id).toBe(olderId);
   });
+
+  it('keeps Claude local-command and meta records out of conversation while preserving metadata', async () => {
+    const configDir = makeConfigDir();
+    const id = '44444444-4444-4444-8444-444444444444';
+    const cwd = '/tmp/claude-project';
+    const projectDir = path.join(configDir, 'projects', '-tmp-claude-project');
+    const filePath = path.join(projectDir, `${id}.jsonl`);
+    writeJsonl(filePath, [
+      {
+        type: 'permission-mode',
+        uuid: `${id}-permission`,
+        timestamp: '2026-04-15T10:00:03.000Z',
+        sessionId: id,
+        cwd,
+        permissionMode: 'bypassPermissions',
+      },
+      {
+        type: 'user',
+        uuid: `${id}-local-command`,
+        parentUuid: `${id}-permission`,
+        timestamp: '2026-04-15T10:00:01.000Z',
+        sessionId: id,
+        cwd,
+        isMeta: true,
+        version: '1.2.3',
+        entrypoint: 'cli',
+        userType: 'external',
+        message: {
+          role: 'user',
+          content:
+            '<command-name>/plugin</command-name><command-message>plugin</command-message><command-args></command-args>',
+        },
+      },
+      {
+        type: 'user',
+        uuid: `${id}-local-stdout`,
+        parentUuid: `${id}-local-command`,
+        timestamp: '2026-04-15T10:00:01.001Z',
+        sessionId: id,
+        cwd,
+        message: {
+          role: 'user',
+          content: '<local-command-stdout>ok</local-command-stdout>',
+        },
+      },
+      {
+        type: 'file-history-snapshot',
+        messageId: `${id}-snapshot-message`,
+        snapshot: {
+          messageId: `${id}-snapshot-message`,
+          trackedFileBackups: {
+            'src/parser.ts': { hash: 'abc123' },
+          },
+          timestamp: '2026-04-15T10:00:04.000Z',
+        },
+        isSnapshotUpdate: false,
+      },
+      {
+        type: 'user',
+        uuid: `${id}-user`,
+        timestamp: '2026-04-15T10:00:02.000Z',
+        sessionId: id,
+        cwd,
+        message: { role: 'user', content: [{ type: 'text', text: 'Implement the parser repair' }] },
+      },
+      {
+        type: 'assistant',
+        uuid: `${id}-assistant`,
+        parentUuid: `${id}-user`,
+        timestamp: '2026-04-15T10:00:05.000Z',
+        sessionId: id,
+        cwd,
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Parser repair complete with metadata preserved.' }],
+        },
+      },
+    ]);
+
+    const { parseClaudeSessions, extractClaudeContext } = await loadClaudeParser(configDir);
+    const [session] = await parseClaudeSessions();
+    const context = await extractClaudeContext(session);
+
+    expect(session.createdAt.toISOString()).toBe('2026-04-15T10:00:01.000Z');
+    expect(session.updatedAt.toISOString()).toBe('2026-04-15T10:00:05.000Z');
+    expect(context.recentMessages.map((message) => message.content)).toEqual([
+      'Implement the parser repair',
+      'Parser repair complete with metadata preserved.',
+    ]);
+    expect(context.sessionNotes?.sourceMetadata).toMatchObject({
+      permissionMode: 'bypassPermissions',
+      version: '1.2.3',
+      entrypoint: 'cli',
+      userType: 'external',
+      messageGraphSeen: true,
+    });
+    expect(context.sessionNotes?.bootstrap).toMatchObject([
+      {
+        type: 'local_command',
+        content: 'plugin',
+        metadata: {
+          commandName: '/plugin',
+          commandMessage: 'plugin',
+          uuid: `${id}-local-command`,
+          parentUuid: `${id}-permission`,
+        },
+      },
+      {
+        type: 'local_command',
+        content: 'ok',
+        metadata: {
+          uuid: `${id}-local-stdout`,
+          parentUuid: `${id}-local-command`,
+        },
+      },
+    ]);
+    expect(context.sessionNotes?.fileHistorySnapshots).toEqual([
+      {
+        timestamp: '2026-04-15T10:00:04.000Z',
+        metadata: {
+          messageId: `${id}-snapshot-message`,
+          snapshotMessageId: `${id}-snapshot-message`,
+          isSnapshotUpdate: false,
+          trackedFileBackupsCount: 1,
+        },
+      },
+    ]);
+    expect(context.markdown).not.toContain('local-command-stdout');
+  });
 });
