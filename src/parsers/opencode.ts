@@ -216,6 +216,8 @@ function renderToolPart(partData: Record<string, unknown>): {
   if (status === 'error' || metadataIndicatesError) success = false;
   else if (status === 'completed') success = true;
 
+  const normalizedArguments = normalizeToolArguments(state.input);
+
   return {
     content,
     toolName,
@@ -224,7 +226,7 @@ function renderToolPart(partData: Record<string, unknown>): {
     toolCall: {
       name: toolName,
       ...(typeof partData.callID === 'string' ? { id: partData.callID } : {}),
-      ...(normalizeToolArguments(state.input) ? { arguments: normalizeToolArguments(state.input) } : {}),
+      ...(normalizedArguments ? { arguments: normalizedArguments } : {}),
       ...(fullResult ? { result: fullResult } : {}),
       ...(success !== undefined ? { success } : {}),
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
@@ -1245,12 +1247,21 @@ function extractSessionNotesFromJson(sessionId: string): SessionNotes | undefine
       const sessionFile = path.join(projectDir, `${sessionId}.json`);
       if (!fs.existsSync(sessionFile)) continue;
       const content = fs.readFileSync(sessionFile, 'utf8');
-      const result = OpenCodeSessionSchema.safeParse(JSON.parse(content));
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(content);
+      } catch (err) {
+        // One malformed session file shouldn't lose the reasoning/token/activeTime
+        // already extracted from the message dir for this session.
+        logger.debug('opencode: skipping malformed session file', sessionFile, err);
+        continue;
+      }
+      const result = OpenCodeSessionSchema.safeParse(parsedJson);
       if (result.success) {
         notes.sourceMetadata = {
           ...(result.data.slug ? { slug: result.data.slug } : {}),
           ...(result.data.version ? { version: result.data.version } : {}),
-          projectId: result.data.projectID,
+          ...(result.data.projectID ? { projectId: result.data.projectID } : {}),
         };
       }
       break;
@@ -1370,6 +1381,20 @@ function buildOpenCodeTimeline(messages: ConversationMessage[], timelineWindow?:
   // round-robin over tool events from the latest cluster backwards.
   if (timelineWindow !== undefined && timelineWindow > 0 && totalEvents > timelineWindow) {
     const messageCount = clusters.length;
+    if (messageCount > timelineWindow) {
+      // Even the message events alone exceed the window; keep the most recent
+      // clusters (already preserves the latest user prompt) and drop all tool
+      // events so the consumer's tail-slice cannot evict messages.
+      const tail = clusters.slice(-timelineWindow);
+      tail.forEach((cluster) => {
+        cluster.tools = [];
+      });
+      clusters.length = 0;
+      clusters.push(...tail);
+      const trimmedEvents: SessionEvent[] = [];
+      for (const cluster of clusters) trimmedEvents.push(cluster.message);
+      return trimmedEvents;
+    }
     let toolBudget = Math.max(0, timelineWindow - messageCount);
     // Walk clusters from newest to oldest, allocating tool slots so trailing tool
     // activity is preserved alongside the user prompts that introduced it.
@@ -1381,8 +1406,9 @@ function buildOpenCodeTimeline(messages: ConversationMessage[], timelineWindow?:
     }
     for (let i = 0; i < clusters.length; i++) {
       // Keep the most recent tool calls within each cluster (the trailing ones the
-      // assistant emitted just before the next message).
-      clusters[i].tools = clusters[i].tools.slice(-allowed[i]);
+      // assistant emitted just before the next message). slice(-0) === slice(0)
+      // returns the full array, so guard the zero-budget case explicitly.
+      clusters[i].tools = allowed[i] > 0 ? clusters[i].tools.slice(-allowed[i]) : [];
     }
   }
 
