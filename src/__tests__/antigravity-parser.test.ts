@@ -173,6 +173,28 @@ describe('Antigravity parser', () => {
     expect(context.markdown).toContain('Implementation plan');
   });
 
+  it('does not auto-launch the IDE when CONTINUES_LAUNCH_ANTIGRAVITY=0', async () => {
+    const root = makeRoot();
+    const id = 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+
+    // Put an empty brain folder so the offline path also yields no transcript —
+    // mirroring real sessions whose .pb is encrypted and brain artifacts never landed.
+    writeFile(path.join(root, 'conversations', `${id}.pb`), Buffer.from([0x08, 0x04]));
+    fs.mkdirSync(path.join(root, 'brain', id), { recursive: true });
+
+    // Re-enable the RPC code path so the launch gate is the only thing keeping
+    // us offline, then disable launch explicitly. If the gate is honored we
+    // never spawn `open -a Antigravity` and we land in the offline fallback.
+    vi.stubEnv('ANTIGRAVITY_DISABLE_RPC', '');
+    vi.stubEnv('CONTINUES_LAUNCH_ANTIGRAVITY', '0');
+
+    const [session] = await parseAntigravitySessions();
+    const context = await extractAntigravityContext(session);
+
+    expect(context.recentMessages).toEqual([]);
+    expect(context.sessionNotes?.compactSummary).toContain('running Antigravity language server');
+  });
+
   it('keeps legacy JSONL support only for chat-shaped code_tracker files', async () => {
     const root = makeRoot();
     const legacyFile = path.join(root, 'code_tracker', 'project', 'session.jsonl');

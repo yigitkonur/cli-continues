@@ -25,6 +25,8 @@ const SUMMARY_STATE_KEYS = ['antigravityUnifiedStateSync.trajectorySummaries', '
 const BRAIN_ARTIFACT_BASE_FILES = ['task.md', 'implementation_plan.md', 'walkthrough.md'];
 const UUIDISH_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const RPC_TIMEOUT_MS = 1500;
+const LAUNCH_POLL_INTERVAL_MS = 500;
+const LAUNCH_TIMEOUT_MS = 25_000;
 
 interface SqlitePreparedStatement {
   get(...params: unknown[]): unknown | undefined;
@@ -377,9 +379,10 @@ async function discoverLegacyRecords(records: Map<string, AntigravityRecord>): P
     // sessions whose basenames collide across subdirectories don't merge in
     // addRecord. Falls back to basename for any file outside code_tracker/.
     const relative = path.relative(codeTrackerDir, filePath);
-    const idBase = relative && !relative.startsWith('..')
-      ? relative.slice(0, -ext.length).replace(/[\\/]/gu, ':')
-      : path.basename(filePath, ext);
+    const idBase =
+      relative && !relative.startsWith('..')
+        ? relative.slice(0, -ext.length).replace(/[\\/]/gu, ':')
+        : path.basename(filePath, ext);
     addRecord(records, `legacy:${idBase}`, { legacyPath: filePath });
   }
 }
@@ -1551,8 +1554,12 @@ function extractStepsResponse(response: unknown): unknown[] {
   return [];
 }
 
-async function extractLiveContext(session: UnifiedSession, config: VerbosityConfig): Promise<RpcStepExtraction | null> {
-  const connection = await findRpcConnection();
+async function extractLiveContext(
+  session: UnifiedSession,
+  config: VerbosityConfig,
+  preconnected?: RpcConnection,
+): Promise<RpcStepExtraction | null> {
+  const connection = preconnected ?? (await findRpcConnection());
   if (!connection) return null;
 
   const cascadeId = extractSessionId(session);
@@ -1578,6 +1585,114 @@ async function extractLiveContext(session: UnifiedSession, config: VerbosityConf
     if (tail.length > 0) extracted.messages.push(...tail);
   }
   return extracted;
+}
+
+function liveHasContent(live: RpcStepExtraction): boolean {
+  return (
+    live.messages.length > 0 ||
+    live.toolSummaries.length > 0 ||
+    live.filesModified.length > 0 ||
+    live.pendingTasks.length > 0 ||
+    Boolean(live.sessionNotes)
+  );
+}
+
+function buildLiveSessionContext(
+  session: UnifiedSession,
+  live: RpcStepExtraction,
+  config: VerbosityConfig,
+): SessionContext {
+  const recentMessages = trimMessages(live.messages, config.recentMessages);
+  const sessionNotes = live.sessionNotes;
+  const markdown = generateHandoffMarkdown(
+    session,
+    recentMessages,
+    live.filesModified,
+    live.pendingTasks,
+    live.toolSummaries,
+    sessionNotes,
+    config,
+  );
+  return {
+    session,
+    recentMessages,
+    filesModified: live.filesModified,
+    pendingTasks: live.pendingTasks,
+    toolSummaries: live.toolSummaries,
+    sessionNotes,
+    markdown,
+  };
+}
+
+function shouldAutoLaunchAntigravity(): boolean {
+  // Test/CI escape hatch — also honored by findRpcConnection.
+  if (process.env.ANTIGRAVITY_DISABLE_RPC === '1') return false;
+  const explicit = process.env.CONTINUES_LAUNCH_ANTIGRAVITY?.trim();
+  if (explicit === '0' || explicit === 'false' || explicit === 'no') return false;
+  if (explicit === '1' || explicit === 'true' || explicit === 'yes') return true;
+  // Default: only auto-launch in interactive terminals so piped/CI runs stay headless.
+  return Boolean(process.stdout.isTTY);
+}
+
+function spawnAntigravity(): boolean {
+  try {
+    if (process.platform === 'darwin') {
+      childProcess.spawn('open', ['-a', 'Antigravity'], { detached: true, stdio: 'ignore' }).unref();
+      return true;
+    }
+    if (process.platform === 'win32') {
+      childProcess.spawn('cmd', ['/c', 'start', '', 'antigravity'], { detached: true, stdio: 'ignore' }).unref();
+      return true;
+    }
+    childProcess.spawn('antigravity', [], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  } catch (err) {
+    logger.debug('antigravity: failed to spawn IDE', err);
+    return false;
+  }
+}
+
+async function pollForRpcConnection(timeoutMs: number, intervalMs: number): Promise<RpcConnection | null> {
+  const deadline = Date.now() + timeoutMs;
+  // Probe immediately — language_server may already be coming up from a prior launch.
+  const initial = await findRpcConnection();
+  if (initial) return initial;
+
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+    const connection = await findRpcConnection();
+    if (connection) return connection;
+  }
+  return null;
+}
+
+async function tryAutoLaunchAndConnect(): Promise<RpcConnection | null> {
+  if (!shouldAutoLaunchAntigravity()) return null;
+  if (!spawnAntigravity()) {
+    process.stderr.write('continues: could not launch Antigravity — falling back to offline brain artifacts.\n');
+    return null;
+  }
+
+  process.stderr.write(
+    'continues: Antigravity language server is offline — launching the IDE to read the encrypted transcript… ' +
+      '(set CONTINUES_LAUNCH_ANTIGRAVITY=0 to skip)\n',
+  );
+
+  const start = Date.now();
+  const connection = await pollForRpcConnection(LAUNCH_TIMEOUT_MS, LAUNCH_POLL_INTERVAL_MS);
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+
+  if (connection) {
+    process.stderr.write(`continues: Antigravity language server connected in ${elapsed}s.\n`);
+    return connection;
+  }
+
+  process.stderr.write(
+    `continues: Antigravity language server did not come online within ${LAUNCH_TIMEOUT_MS / 1000}s — falling back to offline brain artifacts.\n`,
+  );
+  return null;
 }
 
 async function extractOfflineContext(session: UnifiedSession, config: VerbosityConfig): Promise<SessionContext> {
@@ -1623,34 +1738,20 @@ export async function extractAntigravityContext(
   }
 
   const live = await extractLiveContext(session, resolvedConfig);
-  if (
-    live &&
-    (live.messages.length > 0 ||
-      live.toolSummaries.length > 0 ||
-      live.filesModified.length > 0 ||
-      live.pendingTasks.length > 0 ||
-      live.sessionNotes)
-  ) {
-    const recentMessages = trimMessages(live.messages, resolvedConfig.recentMessages);
-    const sessionNotes = live.sessionNotes;
-    const markdown = generateHandoffMarkdown(
-      session,
-      recentMessages,
-      live.filesModified,
-      live.pendingTasks,
-      live.toolSummaries,
-      sessionNotes,
-      resolvedConfig,
-    );
-    return {
-      session,
-      recentMessages,
-      filesModified: live.filesModified,
-      pendingTasks: live.pendingTasks,
-      toolSummaries: live.toolSummaries,
-      sessionNotes,
-      markdown,
-    };
+  if (live && liveHasContent(live)) {
+    return buildLiveSessionContext(session, live, resolvedConfig);
+  }
+
+  // Antigravity stores conversation .pb files as encrypted blobs — only the
+  // running language_server holds the decryption key. If it's offline, try to
+  // launch the IDE in the foreground and aggressively poll for the RPC port to
+  // come up so we can produce a real transcript instead of empty handoffs.
+  const connection = await tryAutoLaunchAndConnect();
+  if (connection) {
+    const relaunched = await extractLiveContext(session, resolvedConfig, connection);
+    if (relaunched && liveHasContent(relaunched)) {
+      return buildLiveSessionContext(session, relaunched, resolvedConfig);
+    }
   }
 
   return extractOfflineContext(session, resolvedConfig);
