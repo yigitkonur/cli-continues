@@ -590,7 +590,6 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
   const hasResponseItems =
     responseItemEntries.some((m) => m.role === 'user') || responseItemEntries.some((m) => m.role === 'assistant');
   const allMessages = hasResponseItems ? responseItemEntries : eventMsgEntries;
-  const timeline = buildCodexTimeline(allMessages, lifecycleEvents);
 
   // Build a balanced tail: keep the last N messages but ensure user messages aren't lost.
   // Codex sessions can have many consecutive assistant messages (status updates, subagent reports).
@@ -614,6 +613,10 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
       trimmed = tail;
     }
   }
+
+  // Build the timeline from the TRIMMED message set so the renderer's slice(-timelineWindow)
+  // doesn't evict the last user turn when lifecycle events flood the tail.
+  const timeline = buildCodexTimeline(trimmed, lifecycleEvents);
 
   // Generate markdown for injection
   const markdown = generateHandoffMarkdown(
