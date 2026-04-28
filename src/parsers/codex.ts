@@ -436,7 +436,11 @@ function extractSessionNotes(messages: CodexMessage[]): SessionNotes {
         ...(typeof payload?.originator === 'string' ? { originator: payload.originator } : {}),
         ...(typeof payload?.cli_version === 'string' ? { cliVersion: payload.cli_version } : {}),
         ...(typeof payload?.model_provider === 'string' ? { modelProvider: payload.model_provider } : {}),
-        ...(typeof git.commit_hash === 'string' ? { gitSha: git.commit_hash } : {}),
+        ...(typeof git.commit_hash === 'string'
+          ? { gitSha: git.commit_hash }
+          : typeof git.sha === 'string'
+            ? { gitSha: git.sha }
+            : {}),
       };
       continue;
     }
@@ -614,8 +618,10 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
     }
   }
 
-  // Build the timeline from the TRIMMED message set so the renderer's slice(-timelineWindow)
-  // doesn't evict the last user turn when lifecycle events flood the tail.
+  // Build the timeline from the trimmed message set to reduce the chance that
+  // older user turns are displaced before rendering. The final recent-activity
+  // window is still sliced by event count, so a lifecycle-heavy tail can still
+  // push the last user turn out of view.
   const timeline = buildCodexTimeline(trimmed, lifecycleEvents);
 
   // Generate markdown for injection
@@ -682,25 +688,54 @@ function extractCodexLifecycleMetadata(payload: Record<string, unknown>): Record
   return metadata;
 }
 
+function getFiniteTimestampMs(d?: Date): number | undefined {
+  if (!d) return undefined;
+  const ms = d.getTime();
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
+const TIMELINE_KIND_ORDER: Record<string, number> = {
+  message: 0,
+  lifecycle: 1,
+  reasoning: 2,
+  tool_call: 3,
+  tool_result: 4,
+  metadata: 5,
+  warning: 6,
+};
+
 function buildCodexTimeline(messages: ConversationMessage[], lifecycleEvents: SessionEvent[]): SessionEvent[] {
-  const messageEvents: SessionEvent[] = messages.map((message): SessionEvent => ({
-    kind: 'message',
-    sequence: 0, // assigned after merge
-    role: message.role,
-    content: message.content,
-    timestamp: message.timestamp,
+  const messageEvents: SessionEvent[] = messages.map(
+    (message): SessionEvent => ({
+      kind: 'message',
+      sequence: 0, // assigned after merge
+      role: message.role,
+      content: message.content,
+      // Drop non-finite (e.g. Invalid Date) so the comparator stays stable
+      // and downstream toISOString() never throws.
+      ...(getFiniteTimestampMs(message.timestamp) !== undefined ? { timestamp: message.timestamp } : {}),
+    }),
+  );
+  const lifecycleSanitized = lifecycleEvents.map((event) =>
+    getFiniteTimestampMs(event.timestamp) !== undefined ? event : { ...event, timestamp: undefined },
+  );
+
+  const indexed = [...messageEvents, ...lifecycleSanitized].map((event, originalIndex) => ({
+    event,
+    timestampMs: getFiniteTimestampMs(event.timestamp) ?? 0,
+    kindOrder: TIMELINE_KIND_ORDER[event.kind] ?? 99,
+    originalIndex,
   }));
 
-  const merged = [...messageEvents, ...lifecycleEvents].sort((left, right) => {
-    const leftTime = left.timestamp?.getTime() ?? 0;
-    const rightTime = right.timestamp?.getTime() ?? 0;
-    return leftTime - rightTime;
+  indexed.sort((a, b) => {
+    if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+    if (a.kindOrder !== b.kindOrder) return a.kindOrder - b.kindOrder;
+    return a.originalIndex - b.originalIndex;
   });
 
   // Assign sequence in final chronological order so windowing in markdown.ts is correct.
-  merged.forEach((event, index) => {
+  return indexed.map(({ event }, index) => {
     event.sequence = index;
+    return event;
   });
-
-  return merged;
 }

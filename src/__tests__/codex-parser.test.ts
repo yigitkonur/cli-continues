@@ -369,4 +369,41 @@ describe('codex parser hardening', () => {
     expect(context.markdown).toContain('Lifecycle task_started');
     expect(context.markdown).not.toContain('### Task');
   });
+
+  it('falls back to git.sha when commit_hash is absent (covers both UnifiedSession and SessionNotes.sourceMetadata)', async () => {
+    const home = makeCodexHome();
+    const originalPath = writeRollout(
+      home,
+      path.join('sessions', '2026', '04', '15'),
+      'rollout-2026-04-15T11-00-00-shaonly-session-id.jsonl',
+      [
+        {
+          timestamp: '2026-04-15T11:00:00.000Z',
+          type: 'session_meta',
+          payload: {
+            id: 'shaonly-session-id',
+            cwd: '/tmp/project',
+            git: {
+              branch: 'main',
+              repository_url: 'https://github.com/user/project.git',
+              sha: 'fedcba0987654321',
+            },
+          },
+        },
+        {
+          timestamp: '2026-04-15T11:00:01.000Z',
+          type: 'event_msg',
+          payload: { type: 'user_message', message: 'hello' },
+        },
+      ],
+    );
+
+    const { parseCodexSessions, extractCodexContext } = await loadCodexParser(home);
+    const [session] = await parseCodexSessions();
+    const context = await extractCodexContext(session);
+
+    expect(originalPath).toContain('shaonly-session-id');
+    expect(session.gitSha).toBe('fedcba0987654321');
+    expect(context.sessionNotes?.sourceMetadata).toMatchObject({ gitSha: 'fedcba0987654321' });
+  });
 });
