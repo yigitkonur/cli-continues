@@ -150,25 +150,17 @@ export async function extractCopilotContext(
   const events = await readJsonlFile<CopilotEvent>(eventsPath);
 
   const recentMessages: ConversationMessage[] = [];
-  const timeline: SessionEvent[] = [];
   const pendingTasks: string[] = [];
-  let sequence = 0;
 
-  // Process all events before trimming; Copilot tails often contain only tool execution events.
+  // First pass: collect messages only, so trimMessages can run before timeline construction.
+  // Tool-heavy assistant turns produce many tool_call/tool_result events that, if added to the
+  // timeline alongside untrimmed messages, get evicted by renderer's slice(-timelineWindow).
+  // Copilot tails often contain only tool execution events.
   for (const event of events) {
     if (event.type === 'user.message') {
       const content = event.data?.content || event.data?.transformedContent || '';
       if (content) {
         recentMessages.push({
-          role: 'user',
-          content,
-          timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
-        });
-        timeline.push({
-          kind: 'message',
-          sequence: sequence++,
           role: 'user',
           content,
           timestamp: new Date(event.timestamp),
@@ -193,15 +185,6 @@ export async function extractCopilotContext(
           sourceParentId: event.parentId ?? undefined,
           toolCalls,
         });
-        timeline.push({
-          kind: 'message',
-          sequence: sequence++,
-          role: 'assistant',
-          content: typeof content === 'string' ? content : JSON.stringify(content),
-          timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
-        });
       } else if (toolRequests.length > 0) {
         // Assistant message with only tool calls (no text content)
         const toolNames = toolRequests.map((t) => t.name).join(', ');
@@ -213,54 +196,7 @@ export async function extractCopilotContext(
           sourceParentId: event.parentId ?? undefined,
           toolCalls,
         });
-        timeline.push({
-          kind: 'message',
-          sequence: sequence++,
-          role: 'assistant',
-          content: `[Used tools: ${toolNames}]`,
-          timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
-        });
       }
-
-      for (const toolRequest of toolRequests) {
-        timeline.push({
-          kind: 'tool_call',
-          sequence: sequence++,
-          timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
-          toolName: toolRequest.name,
-          arguments: getCopilotToolArguments(toolRequest),
-        });
-      }
-    } else if (event.type === 'tool.execution_start') {
-      const toolName = getOptionalString(event.data?.toolName);
-      if (toolName) {
-        timeline.push({
-          kind: 'tool_call',
-          sequence: sequence++,
-          timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
-          toolName,
-          toolCallId: getOptionalString(event.data?.toolCallId),
-          arguments: normalizeCopilotArguments(event.data?.arguments),
-        });
-      }
-    } else if (event.type === 'tool.execution_complete') {
-      const result = extractCopilotResult(event.data?.result);
-      timeline.push({
-        kind: 'tool_result',
-        sequence: sequence++,
-        timestamp: new Date(event.timestamp),
-        sourceId: event.id,
-        sourceParentId: event.parentId ?? undefined,
-        toolCallId: getOptionalString(event.data?.toolCallId),
-        status: typeof event.data?.success === 'boolean' ? (event.data.success ? 'success' : 'error') : undefined,
-        result: result.resultText ?? result.resultDetail,
-      });
     }
   }
 
@@ -282,6 +218,110 @@ export async function extractCopilotContext(
   const { summaries: toolSummaries, filesModified } = extractCopilotToolSummaries(events, resolvedConfig);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
+
+  // Build timeline from trimmed messages so the user-retention guarantee survives the
+  // renderer's slice(-timelineWindow). The set of trimmed sourceIds bounds which message
+  // events appear; tool events still appear interleaved but only those tied to (or
+  // occurring on/after) the earliest retained message.
+  const trimmedIds = new Set<string>(
+    trimmed.map((m) => m.sourceId).filter((id): id is string => typeof id === 'string'),
+  );
+  const earliestRetainedTime = trimmed[0]?.timestamp?.getTime() ?? Number.NEGATIVE_INFINITY;
+  const timeline: SessionEvent[] = [];
+  let sequence = 0;
+
+  for (const event of events) {
+    const eventTime = event.timestamp ? new Date(event.timestamp).getTime() : NaN;
+    const withinWindow = !Number.isNaN(eventTime) && eventTime >= earliestRetainedTime;
+
+    if (event.type === 'user.message') {
+      if (!event.id || !trimmedIds.has(event.id)) continue;
+      const content = event.data?.content || event.data?.transformedContent || '';
+      if (!content) continue;
+      timeline.push({
+        kind: 'message',
+        sequence: sequence++,
+        role: 'user',
+        content,
+        timestamp: new Date(event.timestamp),
+        sourceId: event.id,
+        sourceParentId: event.parentId ?? undefined,
+      });
+    } else if (event.type === 'assistant.message') {
+      const content = event.data?.content || '';
+      const toolRequests = event.data?.toolRequests || [];
+      const messageRetained = Boolean(event.id && trimmedIds.has(event.id));
+
+      if (messageRetained) {
+        if (content) {
+          timeline.push({
+            kind: 'message',
+            sequence: sequence++,
+            role: 'assistant',
+            content: typeof content === 'string' ? content : JSON.stringify(content),
+            timestamp: new Date(event.timestamp),
+            sourceId: event.id,
+            sourceParentId: event.parentId ?? undefined,
+          });
+        } else if (toolRequests.length > 0) {
+          const toolNames = toolRequests.map((t) => t.name).join(', ');
+          timeline.push({
+            kind: 'message',
+            sequence: sequence++,
+            role: 'assistant',
+            content: `[Used tools: ${toolNames}]`,
+            timestamp: new Date(event.timestamp),
+            sourceId: event.id,
+            sourceParentId: event.parentId ?? undefined,
+          });
+        }
+      }
+
+      // Keep tool calls interleaved when the assistant turn occurs within the retained window,
+      // even if the assistant message itself was trimmed (e.g. trimmed kept a later user turn).
+      if (messageRetained || withinWindow) {
+        for (const toolRequest of toolRequests) {
+          timeline.push({
+            kind: 'tool_call',
+            sequence: sequence++,
+            timestamp: new Date(event.timestamp),
+            sourceId: event.id,
+            sourceParentId: event.parentId ?? undefined,
+            toolName: toolRequest.name,
+            arguments: getCopilotToolArguments(toolRequest),
+          });
+        }
+      }
+    } else if (event.type === 'tool.execution_start') {
+      if (!withinWindow) continue;
+      const toolName = getOptionalString(event.data?.toolName);
+      if (toolName) {
+        timeline.push({
+          kind: 'tool_call',
+          sequence: sequence++,
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+          toolName,
+          toolCallId: getOptionalString(event.data?.toolCallId),
+          arguments: normalizeCopilotArguments(event.data?.arguments),
+        });
+      }
+    } else if (event.type === 'tool.execution_complete') {
+      if (!withinWindow) continue;
+      const result = extractCopilotResult(event.data?.result);
+      timeline.push({
+        kind: 'tool_result',
+        sequence: sequence++,
+        timestamp: new Date(event.timestamp),
+        sourceId: event.id,
+        sourceParentId: event.parentId ?? undefined,
+        toolCallId: getOptionalString(event.data?.toolCallId),
+        status: typeof event.data?.success === 'boolean' ? (event.data.success ? 'success' : 'error') : undefined,
+        result: result.resultText ?? result.resultDetail,
+      });
+    }
+  }
 
   // Generate markdown for injection
   const markdown = generateHandoffMarkdown(
