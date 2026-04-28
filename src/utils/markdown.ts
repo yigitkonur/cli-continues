@@ -316,11 +316,11 @@ function renderRecentActivity(
 ): string[] {
   const window = config.handoff.timelineWindow;
   const events =
-    timeline.length > 0
-      ? window <= 0
-        ? []
-        : [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-window)
-      : messagesToTimeline(messages.slice(-config.recentMessages));
+    window <= 0
+      ? []
+      : timeline.length > 0
+        ? [...timeline].sort((left, right) => left.sequence - right.sequence).slice(-window)
+        : messagesToTimeline(messages.slice(-config.recentMessages));
 
   if (events.length === 0) return [];
 
