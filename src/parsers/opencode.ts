@@ -1303,7 +1303,7 @@ export async function extractOpenCodeContext(
   const sessionNotes = extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
-  const timeline = buildOpenCodeTimeline(trimmed);
+  const timeline = buildOpenCodeTimeline(trimmed, resolvedConfig.handoff.timelineWindow);
 
   const markdown = generateHandoffMarkdown(
     session,
@@ -1329,20 +1329,25 @@ export async function extractOpenCodeContext(
   };
 }
 
-function buildOpenCodeTimeline(messages: ConversationMessage[]): SessionEvent[] {
-  const events: SessionEvent[] = [];
+function buildOpenCodeTimeline(messages: ConversationMessage[], timelineWindow?: number): SessionEvent[] {
+  // Build per-message clusters of (one message event + N tool_call events) so we can
+  // budget the tool events without dropping any preserved user/assistant message.
+  type Cluster = { message: SessionEvent; tools: SessionEvent[] };
+  const clusters: Cluster[] = [];
   let sequence = 0;
+
   for (const message of messages) {
-    events.push({
+    const messageEvent: SessionEvent = {
       kind: 'message',
       sequence: sequence++,
       role: message.role,
       content: message.content,
       timestamp: message.timestamp,
       sourceId: message.sourceId,
-    });
+    };
+    const toolEvents: SessionEvent[] = [];
     for (const toolCall of message.toolCalls ?? []) {
-      events.push({
+      toolEvents.push({
         kind: 'tool_call',
         sequence: sequence++,
         timestamp: message.timestamp,
@@ -1354,6 +1359,37 @@ function buildOpenCodeTimeline(messages: ConversationMessage[]): SessionEvent[] 
         metadata: toolCall.metadata,
       });
     }
+    clusters.push({ message: messageEvent, tools: toolEvents });
+  }
+
+  const totalEvents = clusters.reduce((sum, cluster) => sum + 1 + cluster.tools.length, 0);
+
+  // When the consumer's tail-slice (timelineWindow) cannot fit every event we built,
+  // budget tool events around the messages so the slice still contains the preserved
+  // user prompts. Each cluster keeps its message event; remaining budget is distributed
+  // round-robin over tool events from the latest cluster backwards.
+  if (timelineWindow !== undefined && timelineWindow > 0 && totalEvents > timelineWindow) {
+    const messageCount = clusters.length;
+    let toolBudget = Math.max(0, timelineWindow - messageCount);
+    // Walk clusters from newest to oldest, allocating tool slots so trailing tool
+    // activity is preserved alongside the user prompts that introduced it.
+    const allowed: number[] = clusters.map(() => 0);
+    for (let i = clusters.length - 1; i >= 0 && toolBudget > 0; i--) {
+      const take = Math.min(toolBudget, clusters[i].tools.length);
+      allowed[i] = take;
+      toolBudget -= take;
+    }
+    for (let i = 0; i < clusters.length; i++) {
+      // Keep the most recent tool calls within each cluster (the trailing ones the
+      // assistant emitted just before the next message).
+      clusters[i].tools = clusters[i].tools.slice(-allowed[i]);
+    }
+  }
+
+  const events: SessionEvent[] = [];
+  for (const cluster of clusters) {
+    events.push(cluster.message);
+    for (const tool of cluster.tools) events.push(tool);
   }
   return events;
 }
