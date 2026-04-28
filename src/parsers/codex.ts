@@ -680,24 +680,24 @@ function extractCodexLifecycleMetadata(payload: Record<string, unknown>): Record
 }
 
 function buildCodexTimeline(messages: ConversationMessage[], lifecycleEvents: SessionEvent[]): SessionEvent[] {
-  let sequence = 0;
-  const messageEvents = messages.map(
-    (message): SessionEvent => ({
-      kind: 'message',
-      sequence: sequence++,
-      role: message.role,
-      content: message.content,
-      timestamp: message.timestamp,
-    }),
-  );
+  const messageEvents: SessionEvent[] = messages.map((message): SessionEvent => ({
+    kind: 'message',
+    sequence: 0, // assigned after merge
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+  }));
 
-  for (const event of lifecycleEvents) {
-    event.sequence = sequence++;
-  }
-
-  return [...messageEvents, ...lifecycleEvents].sort((left, right) => {
+  const merged = [...messageEvents, ...lifecycleEvents].sort((left, right) => {
     const leftTime = left.timestamp?.getTime() ?? 0;
     const rightTime = right.timestamp?.getTime() ?? 0;
-    return leftTime - rightTime || left.sequence - right.sequence;
+    return leftTime - rightTime;
   });
+
+  // Assign sequence in final chronological order so windowing in markdown.ts is correct.
+  merged.forEach((event, index) => {
+    event.sequence = index;
+  });
+
+  return merged;
 }
