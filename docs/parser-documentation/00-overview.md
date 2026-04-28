@@ -30,7 +30,7 @@ These are the most urgent mismatches repeatedly confirmed across contexts:
 | --- | --- | --- |
 | Gemini | Current upstream code writes JSONL append logs, while `src/parsers/gemini.ts` still targets older JSON session objects. | Discovery, message reconstruction, tool-call recovery, and pointer design are all at risk. |
 | Kiro | Public docs now describe SQLite-backed session storage under `~/.kiro/`, while `src/parsers/kiro.ts` targets legacy JSON under app-support paths. | The parser may be aimed at the wrong product surface or a stale backend. |
-| Antigravity | Current parser targets `code_tracker` records, while current evidence points toward other conversation stores and/or tracker formats. | Session discovery and transcript fidelity are highly provisional. |
+| Antigravity | Parser now discovers `conversations/*.pb`, `brain/<id>/`, state summaries, and optional live RPC; offline raw `.pb` transcript decoding remains unresolved. | Discovery is covered, but transcript fidelity depends on live RPC or brain artifacts. |
 | Qwen Code | Current official repo/runtime evidence points to different runtime roots than the parser assumes. | `continues` may miss sessions entirely on current installs. |
 | Crush | Current parser assumes a global DB path, but current evidence points to project-local `.crush/crush.db`. | Discovery and session selection can be wrong. |
 | Amp | Current parser assumptions about thread storage are weakly documented and likely incomplete. | Pointer design and reliability are low-confidence. |

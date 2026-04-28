@@ -2,7 +2,7 @@
 
 ## Highest-priority follow-ups
 
-- `antigravity`: what is the canonical session/transcript store? Local `code_tracker` samples look like prefixed file snapshots, not conversation logs, and no public first-party storage schema was found.
+- `antigravity`: discovery is now fixed around `.pb` conversations, brain artifacts, state summaries, and optional live RPC. Remaining gap: offline `.pb` transcript/tool-call decoding without private schema assumptions.
 - `kiro`: is `continues` meant to support Kiro CLI, Kiro IDE, or both? Official docs say SQLite under `~/.kiro/`; current parser targets JSON files under `Application Support/Kiro/workspace-sessions/`.
 - `kilo-code`: which backend is canonical today?
   - First-party issue evidence still references `ui_messages.json` under VS Code globalStorage.

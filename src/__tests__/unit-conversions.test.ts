@@ -307,25 +307,22 @@ function parseClineFixtureMessages(filePath: string): ConversationMessage[] {
   return messages;
 }
 
-function parseAntigravityFixtureMessages(filePath: string): ConversationMessage[] {
-  const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.trim().split('\n');
+function parseAntigravityFixtureMessages(brainDir: string): ConversationMessage[] {
   const messages: ConversationMessage[] = [];
+  const taskPath = path.join(brainDir, 'task.md');
+  const planPath = path.join(brainDir, 'implementation_plan.md');
+  const walkthroughPath = path.join(brainDir, 'walkthrough.md');
 
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (typeof parsed.content !== 'string' || !parsed.content) continue;
-
-      if (parsed.type === 'user') {
-        messages.push({ role: 'user', content: parsed.content });
-      } else if (parsed.type === 'assistant') {
-        messages.push({ role: 'assistant', content: parsed.content });
-      }
-    } catch {
-      // skip malformed lines
-    }
+  if (fs.existsSync(taskPath)) {
+    messages.push({ role: 'user', content: fs.readFileSync(taskPath, 'utf8').replace(/^#\s*/u, '').trim() });
   }
+  if (fs.existsSync(planPath)) {
+    messages.push({ role: 'assistant', content: fs.readFileSync(planPath, 'utf8').replace(/^#\s*/u, '').trim() });
+  }
+  if (fs.existsSync(walkthroughPath)) {
+    messages.push({ role: 'assistant', content: fs.readFileSync(walkthroughPath, 'utf8').trim() });
+  }
+
   return messages;
 }
 
@@ -783,22 +780,25 @@ beforeAll(() => {
 
   // Antigravity
   const antigravityFile = fs
-    .readdirSync(fixtures.antigravity.root)
+    .readdirSync(fixtures.antigravity.root, { recursive: true })
     .map((f) => path.join(fixtures.antigravity.root, f as string))
-    .find((f) => f.endsWith('.json') || f.endsWith('.jsonl'))!;
+    .find(
+      (f) => f.endsWith(`${path.sep}test-antigravity-session-1.pb`) || f.endsWith('/test-antigravity-session-1.pb'),
+    )!;
+  const antigravityBrainDir = path.join(fixtures.antigravity.root, 'brain', 'test-antigravity-session-1');
   const antigravitySession: UnifiedSession = {
     id: 'test-antigravity-session-1',
     source: 'antigravity',
     cwd: '/home/user/project',
     repo: 'user/project',
-    lines: 4,
-    bytes: 600,
+    lines: 3,
+    bytes: fs.statSync(antigravityFile).size,
     createdAt: now,
     updatedAt: now,
     originalPath: antigravityFile,
     summary: 'Fix auth bug',
   };
-  const antigravityMsgs = parseAntigravityFixtureMessages(antigravityFile);
+  const antigravityMsgs = parseAntigravityFixtureMessages(antigravityBrainDir);
   contexts.antigravity = {
     session: antigravitySession,
     recentMessages: antigravityMsgs,

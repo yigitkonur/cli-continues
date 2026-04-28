@@ -43,10 +43,10 @@ The key design point: `full` should add navigational depth, not just more prose.
 - `OpenCode` needs a variant-aware pointer because real installations may have both legacy JSON storage and SQLite, and migration behavior is a known source of drift.
 - `Codex` needs a split pointer between documented `CODEX_HOME` state and the actual rollout file the parser is reading. The docs emphasize `history.jsonl`; the open-source CLI code writes resumable rollouts under `sessions/YYYY/MM/DD/rollout-*.jsonl`.
 - `Cursor` needs a completeness warning. First-party forum posts confirm local `agent-transcripts` files exist, but Cursor staff also acknowledged that at least one `.jsonl` transcript/export path dropped `tool_use` data and likely omits `tool_result`.
-- `Gemini`, `Kiro`, and `Antigravity` are the highest-risk mismatches:
+- `Gemini` and `Kiro` remain the highest-risk mismatches; `Antigravity` is now discovery-fixed but transcript-completeness-sensitive:
   - `Gemini`: upstream repo code now records append-only JSONL chat logs, while `continues` still parses older single-file JSON session objects.
   - `Kiro`: official docs describe SQLite under `~/.kiro/`, while `continues` still parses legacy-looking JSON session files.
-  - `Antigravity`: upstream Gemini repo now exposes tracker JSON under per-project temp/session directories, while `continues` still targets an older `code_tracker` line-oriented format.
+  - `Antigravity`: `continues` now targets `.gemini/antigravity/` session IDs and brain artifacts; pointer blocks should still identify whether the handoff came from live RPC or offline artifacts.
 - `Droid` and `Amp` have weaker first-party disclosure for on-disk raw session layout than the repo currently assumes. Their pointer blocks should include confidence labels until the raw stores are re-verified from local captures or stronger first-party evidence.
 
 ## Recommended repo-level direction

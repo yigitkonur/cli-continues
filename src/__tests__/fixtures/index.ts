@@ -851,35 +851,34 @@ export function createKiloCodeFixture(): FixtureDir {
 }
 
 /**
- * Create a temporary directory with Antigravity session fixtures (JSONL with type/content/timestamp)
+ * Create a temporary directory with Antigravity session fixtures
+ * matching the current root layout: conversations/*.pb + brain/<id>/ artifacts.
  */
 export function createAntigravityFixture(): FixtureDir {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-antigravity-'));
+  const sessionId = 'test-antigravity-session-1';
 
-  const lines = [
-    JSON.stringify({
-      type: 'user',
-      content: 'Fix the authentication bug in login.ts',
-      timestamp: '2025-02-25T10:00:00Z',
-    }),
-    JSON.stringify({
-      type: 'assistant',
-      content: 'I found the issue in login.ts. The token validation was missing.',
-      timestamp: '2025-02-25T10:00:05Z',
-    }),
-    JSON.stringify({
-      type: 'user',
-      content: 'Great, please also add error handling',
-      timestamp: '2025-02-25T10:01:00Z',
-    }),
-    JSON.stringify({
-      type: 'assistant',
-      content: 'Done. I added try-catch blocks and proper error messages.',
-      timestamp: '2025-02-25T10:01:10Z',
-    }),
-  ];
+  const conversationsDir = path.join(root, 'conversations');
+  const brainDir = path.join(root, 'brain', sessionId);
+  const codeTrackerDir = path.join(root, 'code_tracker', 'active');
+  fs.mkdirSync(conversationsDir, { recursive: true });
+  fs.mkdirSync(brainDir, { recursive: true });
+  fs.mkdirSync(codeTrackerDir, { recursive: true });
 
-  fs.writeFileSync(path.join(root, 'session.jsonl'), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(conversationsDir, `${sessionId}.pb`), Buffer.from([0x08, 0x01]));
+  fs.writeFileSync(
+    path.join(brainDir, 'task.md'),
+    '# Task: Fix authentication bug in login.ts\n\n- [ ] Add error handling\n',
+  );
+  fs.writeFileSync(
+    path.join(brainDir, 'implementation_plan.md'),
+    '# Implementation Plan\n\nI found the issue in login.ts. The token validation was missing.\n',
+  );
+  fs.writeFileSync(
+    path.join(brainDir, 'walkthrough.md'),
+    'Done. I added try-catch blocks and proper error messages.\n',
+  );
+  fs.writeFileSync(path.join(codeTrackerDir, 'snapshot.json'), JSON.stringify({ file: 'login.ts' }));
 
   return {
     root,

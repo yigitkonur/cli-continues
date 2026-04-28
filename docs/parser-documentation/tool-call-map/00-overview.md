@@ -11,7 +11,7 @@ This folder documents how each canonical tool actually records tool activity, an
 - `opencode`: raw OpenCode storage is much richer than the current parser output. The local SQLite database stores exact tool names, inputs, outputs, statuses, attachments, and per-part timing, while `src/parsers/opencode.ts` reduces this to a session-level edit summary.
 - `crush`: upstream schema stores structured `tool_call` and `tool_result` parts, but `src/parsers/crush.ts` only extracts plain text from `messages.parts`, losing exact tool names, arguments, result metadata, and error state.
 - `kilo-code`: first-party evidence conflicts. Kilo issue traffic still references `ui_messages.json` under VS Code globalStorage, but the current official repo also ships `kilocode_change` modifications on top of an OpenCode-style session backend. `src/parsers/cline.ts` assumes only the older `ui_messages.json` family.
-- `antigravity`: no public session schema documentation was found, and the local `code_tracker` contents on this machine look like prefixed file snapshots rather than conversation logs. `src/parsers/antigravity.ts` should be treated as highly provisional.
+- `antigravity`: discovery now uses `.pb` conversations, brain artifacts, state summaries, and optional live RPC. Tool-call fidelity is still live-RPC-dependent because offline `.pb` transcript/tool schema is not public.
 
 ## Cross-cutting redesign implications
 

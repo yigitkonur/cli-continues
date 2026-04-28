@@ -189,7 +189,7 @@ Every tool stores sessions differently — different formats, different schemas,
 | Cline | JSON | VS Code `globalStorage/saoudrizwan.claude-dev/tasks/` |
 | Roo Code | JSON | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/` |
 | Kilo Code | JSON | VS Code `globalStorage/kilocode.kilo-code/tasks/` |
-| Antigravity | JSONL | `~/.gemini/antigravity/code_tracker/` |
+| Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 

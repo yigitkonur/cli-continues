@@ -5,7 +5,7 @@ Access date: 2026-04-15
 ## High Priority
 
 - Kiro internal store: the public Kiro docs confirm per-directory auto-saved sessions, UUID session IDs, JSON export/import, and resume behavior, but not the internal `workspace-sessions/*.json` schema assumed by `src/parsers/kiro.ts`. A live install or first-party desktop code would close this gap.
-- Antigravity protobuf schema: current local installs store binary `.pb` files under `.gemini/antigravity/conversations/`, but I did not find a first-party schema for those files. The current JSONL parser is almost certainly stale.
+- Antigravity protobuf schema: parser discovery now uses `.gemini/antigravity/conversations/*.pb`, `brain/<id>/`, state summaries, and optional live RPC, but the offline raw `.pb` transcript schema is still not public.
 - Cursor transcript completeness: sampled local `agent-transcripts/*.jsonl` files were text-only, while the parser expects optional Anthropic tool/usage passthrough. A larger sample set or first-party schema doc is needed to know when tool-use blocks are actually present.
 
 ## Medium Priority

@@ -1,43 +1,51 @@
 # Antigravity Access Recipes
 
-## Raw Source
+## Raw Sources
 
-- Documented fact: current first-party Antigravity docs pages reviewed for this audit do not describe local session storage, `code_tracker`, browser recordings, or raw transcript files. Sources: [docs root](https://antigravity.google/docs), [docs home](https://antigravity.google/docs/home), [browser docs](https://antigravity.google/docs/browser) (accessed 2026-04-15).
-- Current parser assumption: `~/.gemini/antigravity/code_tracker/` contains JSON or JSONL conversation logs with `{type, content, timestamp}` style entries.
-- Observed example: this machine does have `~/.gemini/antigravity/code_tracker/`, but `code_tracker/active/` looks like tracked workspace file snapshots, not chat transcripts, and a search for `*.json` / `*.jsonl` under `code_tracker/` returned only a normal project JSON file, not a session log. Observed 2026-04-15.
-- Observed example: this machine also has `~/.gemini/antigravity/browser_recordings/<id>/*.jpg`, which may matter for browser-task replay but is not currently surfaced by the parser.
-- Unresolved: the current parser appears likely wrong or at least incomplete for present-day Antigravity storage.
+- Primary root: `~/.gemini/antigravity/`
+- Session discovery: `conversations/*.pb`, `brain/<id>/`, and `state.vscdb` trajectory summaries.
+- Context extraction:
+  - Offline: `brain/<id>/task.md`, `implementation_plan.md`, `walkthrough.md`, and `.resolved*` variants.
+  - Live: local Antigravity language-server RPC when the app is running.
+- Legacy fallback: chat-shaped JSON/JSONL under `code_tracker/`; snapshot-only files are ignored.
 
 ## Retrieval Patterns
 
-### Inspect directory composition before assuming transcript files exist
+### Inspect current session IDs
 
 ```bash
-find ~/.gemini/antigravity -maxdepth 3 | head -n 80
-find ~/.gemini/antigravity/code_tracker -type f | head -n 40
+find ~/.gemini/antigravity/conversations -maxdepth 1 -name '*.pb' -print
+find ~/.gemini/antigravity/brain -maxdepth 1 -type d -print
 ```
 
-### Check whether any chat-like JSON/JSONL logs exist
+### Inspect offline handoff artifacts
+
+```bash
+find ~/.gemini/antigravity/brain/<conversation-id> -maxdepth 1 -type f \
+  \( -name 'task.md*' -o -name 'implementation_plan.md*' -o -name 'walkthrough.md*' \)
+```
+
+### Inspect state-summary availability
+
+```bash
+sqlite3 "$HOME/Library/Application Support/Antigravity/User/globalStorage/state.vscdb" \
+  "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%trajectorySummaries%'"
+```
+
+### Confirm `code_tracker` is not being mistaken for chat
 
 ```bash
 find ~/.gemini/antigravity/code_tracker -type f \( -name '*.json' -o -name '*.jsonl' \)
 ```
 
-### Inspect browser recordings if the task involved the Antigravity browser
-
-```bash
-find ~/.gemini/antigravity/browser_recordings -maxdepth 2 -type f | head -n 40
-```
-
 ## Current Parser Comparison
 
-- This is the highest-risk mismatch in the audit.
-- The parser expects chat-like JSON entries in `code_tracker/`, but local observation suggests `code_tracker/active/` is a file-tracking area rather than a conversation log.
-- A redesign pointer block should not pretend this raw source is verified. It should surface the path as tentative and fall back to directory inspection instructions.
+- The parser now indexes current Antigravity installs even when `code_tracker` contains only file snapshots.
+- Offline handoffs are artifact-backed and explicitly note that full raw transcript extraction requires live Antigravity.
+- Legacy JSONL remains supported only for files with real user/assistant chat entries.
 
 ## Sources
 
-- [Antigravity docs root](https://antigravity.google/docs) (accessed 2026-04-15)
-- [Antigravity docs home](https://antigravity.google/docs/home) (accessed 2026-04-15)
-- [Antigravity browser docs](https://antigravity.google/docs/browser) (accessed 2026-04-15)
-
+- [Antigravity docs root](https://antigravity.google/docs)
+- [Antigravity artifacts docs](https://antigravity.google/docs/artifacts)
+- Third-party sync evidence: https://github.com/mrd9999/antigravity-sync

@@ -14,9 +14,8 @@
 
 ### Antigravity
 
-- Current parser targets `~/.gemini/antigravity/code_tracker/` line logs with binary prefixes.
-- Upstream Gemini repo evidence in this pass points instead to tracker JSON under per-project temp/session directories.
-- Open question: is `code_tracker` still a live product surface, or should the parser be rewritten around the newer tracker layout?
+- Parser discovery now targets `.gemini/antigravity/` session IDs, brain artifacts, state summaries, and optional live RPC.
+- Open question: how stable is the private live RPC step schema, and can offline `.pb` transcript decoding be supported without private decryption/schema assumptions?
 
 ### Cursor
 

@@ -8,11 +8,10 @@
 - Current first-party Kiro CLI docs describe `~/.kiro/` SQLite-backed auto-save plus JSON save/load commands.
 - Action: verify a current Kiro install with active sessions and identify whether the macOS JSON layout still exists for the IDE or whether the parser is stale.
 
-### Antigravity: is `code_tracker` session data or file-tracking data?
+### Antigravity: can offline `.pb` transcript decoding be supported safely?
 
-- Current parser assumes chat-like JSON/JSONL logs in `~/.gemini/antigravity/code_tracker/`.
-- Local observation on 2026-04-15 showed `code_tracker/active/` behaving like file snapshots, not transcripts.
-- Action: find first-party engineering docs or current installs that actually show Antigravity conversation storage before trusting this parser path.
+- Parser now treats `code_tracker` as legacy-only and discovers current sessions from `.pb`, brain artifacts, state summaries, and optional live RPC.
+- Action: find first-party protobuf/decryption documentation before adding offline full-transcript extraction from `conversations/*.pb`.
 
 ### Qwen Code: which root is current, `projects/` or `tmp/`?
 

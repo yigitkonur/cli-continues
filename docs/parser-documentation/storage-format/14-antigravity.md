@@ -1,57 +1,38 @@
 # Antigravity
 
-Accessed: 2026-04-15
+Accessed: 2026-04-28
 
-## Observed Example
+## Observed Storage
 
-- Third-party sync tooling built specifically for Antigravity documents the local root as:
-  - `~/.gemini/antigravity/`
-- The same tooling says user-visible chat history is in:
-  - `conversations/*.pb`
-- It also explicitly lists these Antigravity-local paths:
-  - `brain/`
-  - `knowledge/`
-  - `browser_recordings/`
-  - `code_tracker/`
-  - `implicit/`
-  - `google_accounts.json`
-  - `oauth_creds.json`
-  - `user_settings.pb`
-- No env-var override for the Antigravity storage root was surfaced in the available evidence.
+- Root: `~/.gemini/antigravity/`
+- Persisted conversation IDs: `conversations/*.pb`
+- Handoff artifacts: `brain/<conversation-id>/task.md`, `implementation_plan.md`, `walkthrough.md`, plus `.resolved*` variants.
+- UI/index metadata: Antigravity global storage SQLite at `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` on macOS.
+- Auxiliary local data: `code_tracker/`, `browser_recordings/`, `implicit/`, `knowledge/`, and account/setting files.
 
-## Inference
+## Parser Behavior
 
-- `conversations/*.pb` is likely the current user-facing conversation store.
-- `code_tracker/` appears machine-local and auxiliary, not the main syncable history substrate, because the sync extension excludes it by default while syncing `conversations/*.pb`.
-- Absolute workspace path matters for conversation visibility across machines.
+- `src/parsers/antigravity.ts` now discovers sessions from the union of `conversations/*.pb`, `brain/<id>/`, `state.vscdb` trajectory summaries, and optional live language-server RPC.
+- `code_tracker/` is no longer treated as canonical. It is parsed only as a legacy fallback when a file actually contains chat-shaped `{type, content, timestamp}` records.
+- Offline extraction does not decrypt `.pb`; it builds a useful handoff from brain artifacts and state metadata.
+- When Antigravity is running, the parser attempts read-only RPC extraction for full steps, messages, tool activity, and modified files.
 
-## Unresolved Uncertainty
+## Remaining Uncertainty
 
-- I did not find first-party Antigravity storage documentation.
-- I did not verify:
-  - the protobuf schema for `conversations/*.pb`
-  - the exact role of `code_tracker/`
-  - the canonical on-disk session ID location
-  - append/update behavior for protobuf conversation files
-  - whether `code_tracker/` is still a recoverable coding-session source or merely local telemetry/index data
-
-## Comparison Against `continues`
-
-- Registry/parser: `src/parsers/registry.ts` and `src/parsers/antigravity.ts` assume `~/.gemini/antigravity/code_tracker/` contains JSON or JSONL session files with `type`, `content`, and `timestamp`.
-- External evidence points elsewhere:
-  - synced conversation history appears protobuf-backed in `conversations/*.pb`
-  - `code_tracker/` is excluded from sync
-- Risk: very high. The current parser may be aimed at an auxiliary store rather than the product’s primary conversation history.
+- First-party docs still do not publish the raw `conversations/*.pb` schema.
+- Offline full transcript reconstruction from `.pb` remains intentionally unsupported by default because it would require private schema/decryption behavior.
+- Live RPC method and field names are private implementation details, so extraction is best-effort and falls back to offline artifacts.
 
 ## Direct Access Recipe
 
-- Inspect root:
-  - `~/.gemini/antigravity/`
-- Compare:
-  - `conversations/*.pb`
-  - `code_tracker/`
-  - `browser_recordings/`
+```bash
+find ~/.gemini/antigravity/conversations -name '*.pb'
+find ~/.gemini/antigravity/brain -maxdepth 2 -type f | head -n 80
+sqlite3 "$HOME/Library/Application Support/Antigravity/User/globalStorage/state.vscdb" \
+  "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%trajectorySummaries%'"
+```
 
 ## Sources
 
-- Third-party extension evidence: https://marketplace.visualstudio.com/items?itemName=mrd9999.antigravity-sync
+- Third-party sync evidence: https://github.com/mrd9999/antigravity-sync
+- Google Antigravity docs root: https://antigravity.google/docs

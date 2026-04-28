@@ -78,16 +78,17 @@ Required outcome:
 
 ### 6. Antigravity source-of-truth correction
 
+Status: implemented for discovery and offline artifact handoff; live transcript/tool extraction is best-effort through private local RPC.
+
 Current anchor:
 
 - `src/parsers/antigravity.ts`
 
 Required outcome:
 
-- verify canonical session store
-- shift the documented default toward `conversations/*.pb` + `brain/<id>/` + UI/index state where evidence supports it
-- stop treating provisional tracker assumptions as settled
-- downgrade confidence or disable parser path if evidence remains weak
+- keep canonical discovery on `conversations/*.pb` + `brain/<id>/` + UI/index state
+- keep `code_tracker` as legacy-only for chat-shaped JSON/JSONL
+- preserve explicit confidence notes for offline `.pb` transcript decoding
 
 ### 7. Qwen Code runtime-root correction
 

@@ -1,50 +1,38 @@
 # Antigravity
 
-## Raw storage
+## Raw Storage
 
-- Documented fact:
-  - A first-party public product announcement for Google Antigravity exists, but no first-party session-schema or code-tracker-storage reference was found.
-- Observed example:
-  - Local Antigravity files exist under `~/.gemini/antigravity/code_tracker/`.
-  - Sampled files in `code_tracker/active/...` looked like prefixed file snapshots such as `*_CLAUDE.md`, `*.tsx`, and `*.py`, not obvious conversation transcripts.
-  - Local Antigravity data also includes `browser_recordings/.../*.jpg`.
-- Inference:
-  - The local `code_tracker` on this machine appears to be a file-tracking corpus, not an obviously parseable assistant/user conversation log.
-- Unresolved uncertainty:
-  - No public first-party schema was found for Antigravity session history, transcript logs, or exact tool-call persistence.
+- Persisted sessions are discovered from `~/.gemini/antigravity/conversations/*.pb`, `brain/<id>/`, and state trajectory summaries.
+- `code_tracker/` is auxiliary; snapshot files there are not treated as tool-call logs or transcripts.
+- Tool-call details are best recovered from the running Antigravity language server via local read-only RPC.
 
-## Tool-call encoding
+## Tool-Call Encoding
 
-- Observed example:
-  - No local evidence of structured `tool_use`, `tool_result`, `toolCalls`, or conversation-role JSON was found inside the sampled `code_tracker` files.
-- Inference:
-  - `src/parsers/antigravity.ts` should be treated as provisional until a canonical upstream log format is confirmed.
-- Unresolved uncertainty:
-  - Whether Antigravity stores raw chat history outside `code_tracker`, or inside other machine-local directories, remains open.
+- Live `CORTEX_STEP_TYPE_RUN_COMMAND` steps map to shell summaries.
+- Live `CORTEX_STEP_TYPE_VIEW_FILE` steps map to read-file summaries.
+- Live `CORTEX_STEP_TYPE_TOOL_EXECUTION` and planner tool-call payloads map to generic MCP/tool summaries unless a high-confidence file write/edit path is present.
+- Planner thinking is captured as session reasoning, not as a user-visible assistant message prefix.
 
-## Write, edit, delete, search, MCP, shell
+## Offline Behavior
 
-- Unresolved uncertainty:
-  - No evidence-backed first-party schema was found for Antigravity write/edit/delete/search/shell tool logging.
+- Offline `.pb` files are not decrypted or parsed for tool calls.
+- Offline handoffs use `brain/<id>/task.md*`, `implementation_plan.md*`, and `walkthrough.md*`; tool activity is empty unless live RPC was available.
+- Pending tasks are extracted from unchecked markdown task items in brain artifacts.
 
-## What `continues` abstracts away today
+## Legacy Behavior
 
-- `src/parsers/antigravity.ts` assumes JSON/JSONL conversation entries with `{type, content, timestamp}` inside `code_tracker`.
-- Local evidence here points the other way: sampled files look like tracked file snapshots with binary-ish prefixes.
-- This is the single weakest parser/storage match in the current product.
+- Legacy `code_tracker` JSON/JSONL contributes messages only when records contain `type: "user" | "assistant"` plus string `content`.
+- Snapshot-only JSON in `code_tracker` is ignored.
 
-## Direct-access recipe
+## Direct-Access Recipe
 
 ```bash
-find ~/.gemini/antigravity/code_tracker -type f | head -n 20
-
-find ~/.gemini/antigravity/code_tracker -type f | head -n 3 | while read f; do
-  echo "$f"
-  xxd -l 64 "$f"
-done
+find ~/.gemini/antigravity/conversations -name '*.pb'
+find ~/.gemini/antigravity/brain/<conversation-id> -maxdepth 1 -type f
+ps -axo pid=,command= | rg 'language_server_.*--app_data_dir antigravity'
 ```
 
 ## Sources
 
-- Accessed 2026-04-15: https://developers.googleblog.com/build-with-google-antigravity-our-new-agentic-development-platform/
-- Observed locally on 2026-04-15: `~/.gemini/antigravity/code_tracker/...`
+- Google Antigravity announcement: https://developers.googleblog.com/build-with-google-antigravity-our-new-agentic-development-platform/
+- Antigravity docs: https://antigravity.google/docs

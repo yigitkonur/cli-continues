@@ -1,42 +1,36 @@
 # Antigravity Message Schema
 
-Access date: 2026-04-15
+Access date: 2026-04-28
 
 ## Raw Schema
 
-- Observed example: The local Antigravity install stores conversation-like artifacts under `~/.gemini/antigravity/conversations/*.pb`.
-- Observed example: Sampled `.pb` files are binary, not JSON or JSONL; `file` reported generic binary data and a hex dump showed no JSON framing.
-- Observed example: `~/.gemini/antigravity/code_tracker/` primarily contained active-file snapshots and related artifacts, not line-delimited conversation logs.
-- Observed example: Additional directories existed under `.gemini/antigravity/`, including `brain/`, `daemon/`, `browser_recordings/`, and `code_tracker/`.
-- Unresolved uncertainty: I did not locate a first-party public schema for the protobuf conversation files during this audit.
+- Persisted conversation files live at `~/.gemini/antigravity/conversations/*.pb`.
+- The public protobuf schema for those files is not documented in the sources reviewed.
+- Session metadata is recoverable from Antigravity global `state.vscdb` trajectory summaries.
+- Human-readable task context is recoverable from `brain/<id>/` markdown artifacts and `.resolved*` variants.
+- Full message/tool steps are available only when the local Antigravity language server is running.
 
-## Assistant Messages
+## Parser Mapping
 
-- Unresolved uncertainty: The exact assistant-message representation inside `conversations/*.pb` is not publicly documented in the evidence reviewed here.
-- Inference: Assistant turns almost certainly exist in the protobuf conversation files, but the current parser does not read that format.
+- Discovery merges `.pb` files, brain artifact folders, state summaries, and live RPC summaries by conversation ID.
+- Live user steps map to normalized `user` messages.
+- Live planner responses map to normalized `assistant` messages; planner thinking is recorded as session reasoning highlights.
+- Live command/file/tool steps map to `SummaryCollector` tool summaries and modified-file tracking where paths are available.
+- Offline fallback produces synthetic recent messages from `task.md`, `implementation_plan.md`, and `walkthrough.md` so the handoff remains useful without decrypting `.pb`.
 
-## User Messages
+## Legacy Compatibility
 
-- Unresolved uncertainty: Same as assistant messages; the current protobuf wire shape is not publicly documented in the sources reviewed here.
-
-## Ordering, Boundaries, And Related Artifacts
-
-- Observed example: The existence of per-conversation `.pb` files suggests one conversation artifact per session or thread.
-- Observed example: `code_tracker/active/...` looks like file-tracking/storage support, not the canonical message transcript.
-- Inference: The current parser’s assumption of `{type, content, timestamp}` JSON lines under `code_tracker/` is likely based on an older or different Antigravity storage surface than the one currently installed.
+- `code_tracker` JSON/JSONL is accepted only when it contains chat-shaped `{type, content, timestamp}` entries.
+- Arbitrary JSON snapshots in `code_tracker/active` are ignored and do not create sessions.
 
 ## Direct Access
 
-- Conversation artifacts: `find ~/.gemini/antigravity/conversations -name '*.pb'`
-- Supporting artifacts: `find ~/.gemini/antigravity -maxdepth 2 -type d`
+```bash
+find ~/.gemini/antigravity/conversations -name '*.pb'
+find ~/.gemini/antigravity/brain/<conversation-id> -maxdepth 1 -type f
+```
 
-## Parser Comparison
+## Remaining Uncertainty
 
-- `src/parsers/antigravity.ts` currently assumes `.json`/`.jsonl` conversation logs under `.gemini/antigravity/code_tracker/` and parses lines into `{type, timestamp, content}`.
-- The local install contradicts that assumption: the only clearly conversation-scoped artifacts I found were binary `.pb` files under `.gemini/antigravity/conversations/`.
-- This is a high-confidence, high-severity mismatch. On current local evidence, the parser is likely outdated and may not parse real Antigravity sessions at all.
-
-## Sources
-
-- Observed local conversation file: `~/.gemini/antigravity/conversations/b88b0608-c1e9-4029-a7ac-f932303fef5f.pb` (accessed 2026-04-15)
-- Observed local directories: `~/.gemini/antigravity/` (accessed 2026-04-15)
+- Offline raw transcript reconstruction from `.pb` remains unresolved without a stable first-party schema.
+- Live RPC is private and best-effort; when unavailable, artifact-based handoff is the supported fallback.

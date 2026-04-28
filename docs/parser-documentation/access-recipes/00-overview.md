@@ -63,7 +63,7 @@ sqlite3 "$DB" 'PRAGMA table_info(session);'
 - Codex: current parser reads rollout JSONL only; local installs also expose `session_index.jsonl`, `history.jsonl`, `archived_sessions/`, and a state SQLite DB with `threads` and `thread_spawn_edges`.
 - Copilot: current parser reads `workspace.yaml` and `events.jsonl`, but local sessions also contain `rewind-snapshots/`, `files/`, `checkpoints/`, `vscode.metadata.json`, and `session.db`.
 - Kiro: current parser targets `~/Library/Application Support/Kiro/workspace-sessions/*.json`, but current first-party Kiro CLI docs describe `~/.kiro/` SQLite-backed auto-save plus JSON export/import commands.
-- Antigravity: current parser assumes `~/.gemini/antigravity/code_tracker/` contains JSON/JSONL conversation logs; local observation on this machine shows `code_tracker/active/` behaving like tracked file snapshots, not chat transcripts.
+- Antigravity: parser now reads `~/.gemini/antigravity/` via `conversations/*.pb`, `brain/<id>/`, state summaries, and optional live RPC; `code_tracker` is legacy-only.
 - Claude: local observation confirmed `.jsonl` transcripts plus sibling `subagents/` and `tool-results/`, but did not find `sessions-index.json` even though multiple first-party issues discuss it.
 
 ## Recommended Pointer Block Shape
@@ -89,4 +89,3 @@ Deeper artifacts: ~/.codex/state_5.sqlite -> tables: threads, thread_spawn_edges
 - [openai/codex: codex-rs/rollout/src/recorder.rs](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs) (accessed 2026-04-15)
 - [anomalyco/opencode: session.sql.ts](https://github.com/anomalyco/opencode/blob/main/packages/opencode/src/session/session.sql.ts) (accessed 2026-04-15)
 - [docs.cline.bot: Task History Recovery Guide](https://docs.cline.bot/troubleshooting/task-history-recovery) (accessed 2026-04-15)
-

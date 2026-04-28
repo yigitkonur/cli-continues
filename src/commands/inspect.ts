@@ -19,7 +19,7 @@ import { readJsonlFile } from '../utils/jsonl.js';
 
 // ── Format Detection ────────────────────────────────────────────────────────
 
-type SessionFormat = 'jsonl' | 'json' | 'sqlite' | 'yaml';
+type SessionFormat = 'jsonl' | 'json' | 'sqlite' | 'yaml' | 'binary';
 
 function getSessionFormat(source: string): SessionFormat {
   switch (source) {
@@ -27,8 +27,9 @@ function getSessionFormat(source: string): SessionFormat {
     case 'codex':
     case 'droid':
     case 'cursor':
-    case 'antigravity':
       return 'jsonl';
+    case 'antigravity':
+      return 'binary';
     case 'gemini':
     case 'amp':
     case 'kiro':
@@ -652,6 +653,8 @@ export async function inspectSession(
     rawEventNote = '(raw event analysis not available for SQLite sessions)';
   } else if (format === 'yaml') {
     rawEventNote = '(raw event analysis not available for YAML sessions)';
+  } else if (format === 'binary') {
+    rawEventNote = '(raw event analysis not available for binary/artifact-backed sessions)';
   }
 
   const { events, blocks, tools, model } = analyzeRawMessages(rawMessages);
@@ -659,7 +662,8 @@ export async function inspectSession(
   // 3. File stats
   const mainFileStats = fs.statSync(session.originalPath);
   const mainSize = mainFileStats.size;
-  const mainLines = format === 'jsonl' ? rawMessages.length : countLines(session.originalPath);
+  const mainLines =
+    format === 'jsonl' ? rawMessages.length : format === 'binary' ? session.lines : countLines(session.originalPath);
 
   // 4. Subagent & tool-result files (Claude-specific)
   const sessionDir = session.originalPath.replace(/\.jsonl$/, '');
