@@ -21,15 +21,25 @@ import { readJsonlFile } from '../utils/jsonl.js';
 
 type SessionFormat = 'jsonl' | 'json' | 'sqlite' | 'yaml' | 'binary';
 
-function getSessionFormat(source: string): SessionFormat {
+function getSessionFormat(source: string, session?: UnifiedSession): SessionFormat {
   switch (source) {
     case 'claude':
     case 'codex':
     case 'droid':
     case 'cursor':
       return 'jsonl';
-    case 'antigravity':
+    case 'antigravity': {
+      // Antigravity normally stores sessions as protobuf-backed binary
+      // artifacts, but the parser still discovers legacy JSON/JSONL files
+      // (id prefixed `legacy:`). Detect from the file extension so `inspect`
+      // can read raw events for those sessions instead of always reporting
+      // raw analysis as unavailable.
+      if (session && session.id.startsWith('legacy:')) {
+        if (session.originalPath.endsWith('.jsonl')) return 'jsonl';
+        if (session.originalPath.endsWith('.json')) return 'json';
+      }
       return 'binary';
+    }
     case 'gemini':
     case 'amp':
     case 'kiro':
@@ -635,7 +645,7 @@ export async function inspectSession(
   }
 
   // 2. Read raw events (format-aware)
-  const format = getSessionFormat(session.source);
+  const format = getSessionFormat(session.source, session);
   let rawMessages: Array<Record<string, unknown>> = [];
   let rawEventNote = '';
 
