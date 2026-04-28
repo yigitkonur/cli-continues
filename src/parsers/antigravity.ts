@@ -807,8 +807,12 @@ function parseFallbackPort(commandLine: string): number | undefined {
   return explicit;
 }
 
+function isAntigravityLanguageServer(commandLine: string): boolean {
+  return commandLine.includes('language_server_') && commandLine.includes('--app_data_dir antigravity');
+}
+
 function parseRpcConnectionFromCommand(commandLine: string, listeningPorts: number[]): RpcConnection | null {
-  if (!commandLine.includes('language_server_') || !commandLine.includes('--app_data_dir antigravity')) return null;
+  if (!isAntigravityLanguageServer(commandLine)) return null;
   const csrfToken = commandLine.match(/--csrf_token\s+(\S+)/u)?.[1];
   const preferredPort = parsePortFlag(commandLine, 'server_port');
   const port =
@@ -903,7 +907,12 @@ async function getListeningPorts(pid: string | undefined): Promise<number[]> {
 async function findRpcConnection(): Promise<RpcConnection | null> {
   if (process.env.ANTIGRAVITY_DISABLE_RPC === '1') return null;
 
-  for (const processRecord of await getProcessRecords()) {
+  // Filter by the cheap command-line predicate first so we only spawn
+  // `lsof` for genuine Antigravity language-server candidates. Without this,
+  // normal indexing on machines where Antigravity is not running would
+  // shell out once per process listed by `ps` (hundreds of invocations).
+  const candidates = (await getProcessRecords()).filter((record) => isAntigravityLanguageServer(record.commandLine));
+  for (const processRecord of candidates) {
     const listeningPorts = await getListeningPorts(processRecord.pid);
     const connection = parseRpcConnectionFromCommand(processRecord.commandLine, listeningPorts);
     if (connection) return connection;
