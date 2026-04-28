@@ -231,6 +231,10 @@ export function generateHandoffMarkdown(
   lines.push('');
   lines.push('');
 
+  // Surface fidelity warnings up-front so the receiving agent sees provenance caveats
+  // before consuming the conversation/tool activity below.
+  lines.push(...renderSourceFidelity(sessionNotes, session.cwd, config));
+
   if (session.summary) {
     lines.push('## Summary');
     lines.push('');
@@ -305,8 +309,6 @@ export function generateHandoffMarkdown(
     lines.push('');
     lines.push('');
   }
-
-  lines.push(...renderSourceFidelity(sessionNotes, session.cwd, config));
 
   if (session.originalPath) {
     lines.push('## Session Origin');

@@ -1132,6 +1132,17 @@ describe('Shared generateHandoffMarkdown', () => {
       '- **Fidelity warning**: SQLite history omits file edits and command output. Confidence is partial.',
     );
     expect(md).not.toContain('## Key Decisions');
+    // Source Fidelity must precede Session Origin so receiving agents see provenance
+    // caveats before processing the rest of the handoff.
+    const fidelityIdx = md.indexOf('## Source Fidelity');
+    const originIdx = md.indexOf('## Session Origin');
+    expect(fidelityIdx).toBeGreaterThan(-1);
+    expect(originIdx).toBeGreaterThan(fidelityIdx);
+    // It must also appear immediately after Session Overview, before any conversation
+    // content or tool activity.
+    const overviewIdx = md.indexOf('## Session Overview');
+    expect(overviewIdx).toBeGreaterThan(-1);
+    expect(fidelityIdx).toBeGreaterThan(overviewIdx);
   });
 
   it('does not render redacted raw source paths', () => {
