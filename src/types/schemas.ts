@@ -66,6 +66,9 @@ export const CodexSessionMetaSchema = z
           })
           .optional(),
         source: z.string().optional(),
+        originator: z.string().optional(),
+        cli_version: z.string().optional(),
+        model_provider: z.string().optional(),
       })
       .passthrough()
       .optional(),
