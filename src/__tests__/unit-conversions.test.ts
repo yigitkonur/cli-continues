@@ -1165,6 +1165,150 @@ describe('Shared generateHandoffMarkdown', () => {
     expect(md).not.toContain('/Users/alice/private/session.jsonl');
   });
 
+  it('renders directory rawAccess kind without sqlite friendly label', () => {
+    // Kimi parser emits `kind: 'directory'` when a session sidecar dir is found,
+    // so the renderer must surface that discriminant verbatim.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'kimi',
+      cwd: '/home/user/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/home/user/project/session-dir',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      rawAccess: { kind: 'directory', path: '/home/user/project/session-dir' },
+    });
+
+    expect(md).toContain('## Source Fidelity');
+    expect(md).toContain('- **Raw source**: directory at `./session-dir`');
+    expect(md).not.toContain('SQLite database');
+  });
+
+  it('renders fidelity warnings without rawAccess (warnings-only path)', () => {
+    // Cursor/Kiro/Roo parsers push warnings without setting rawAccess — the
+    // renderer must still emit the section in that shape.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'cursor',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/transcript.jsonl',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      fidelityWarnings: ['Cursor transcript may omit redacted file content.'],
+    });
+
+    expect(md).toContain('## Source Fidelity');
+    expect(md).toContain('- **Fidelity warning**: Cursor transcript may omit redacted file content.');
+    expect(md).not.toContain('- **Raw source**:');
+  });
+
+  it('renders multiple fidelity warnings in parser order, one bullet each', () => {
+    // Kimi pushes up to four warnings in a single emission — they should
+    // render as separate bullets in the order the parser appended them.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'kimi',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/session-dir',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      fidelityWarnings: [
+        'Kimi cwd/repo could not be resolved.',
+        'Kimi legacy flat JSONL session has no sidecar metadata.',
+        'Kimi wire.jsonl was not present.',
+      ],
+    });
+
+    const idxA = md.indexOf('Kimi cwd/repo could not be resolved.');
+    const idxB = md.indexOf('Kimi legacy flat JSONL session has no sidecar metadata.');
+    const idxC = md.indexOf('Kimi wire.jsonl was not present.');
+    expect(idxA).toBeGreaterThan(-1);
+    expect(idxB).toBeGreaterThan(idxA);
+    expect(idxC).toBeGreaterThan(idxB);
+    // All three appear as separate bullets, not collapsed.
+    const bulletCount = (md.match(/- \*\*Fidelity warning\*\*:/g) || []).length;
+    expect(bulletCount).toBe(3);
+  });
+
+  it('omits Source Fidelity section when warnings are empty/whitespace-only and no rawAccess', () => {
+    // A parser that pushes a stray empty/whitespace string should not produce
+    // a stray bullet or an empty section.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'cursor',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/transcript.jsonl',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      fidelityWarnings: ['', '   ', '\n\t'],
+    });
+
+    expect(md).not.toContain('## Source Fidelity');
+    expect(md).not.toContain('- **Fidelity warning**:');
+  });
+
+  it('omits Source Fidelity section when SessionNotes is undefined', () => {
+    // The renderer must not throw or emit a section when sessionNotes is absent.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'claude',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/session.jsonl',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], []);
+    expect(md).not.toContain('## Source Fidelity');
+  });
+
+  it('renders both rawAccess and warnings together with rawAccess line first', () => {
+    // Crush + Kimi (when emitting both) order: raw source bullet, then warnings.
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'crush',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/.crush/crush.db',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      rawAccess: { kind: 'sqlite', path: '/tmp/project/.crush/crush.db' },
+      fidelityWarnings: ['Warning A', 'Warning B'],
+    });
+
+    const rawIdx = md.indexOf('- **Raw source**: SQLite database');
+    const warnAIdx = md.indexOf('- **Fidelity warning**: Warning A');
+    const warnBIdx = md.indexOf('- **Fidelity warning**: Warning B');
+    expect(rawIdx).toBeGreaterThan(-1);
+    expect(warnAIdx).toBeGreaterThan(rawIdx);
+    expect(warnBIdx).toBeGreaterThan(warnAIdx);
+  });
+
   it('always ends with continuation prompt', () => {
     for (const source of ALL_SOURCES) {
       const ctx = contexts[source];
