@@ -187,13 +187,13 @@ Every tool stores sessions differently — different formats, different schemas,
 | Cursor | JSONL | `~/.cursor/projects/*/agent-transcripts/` |
 | Amp | JSON | `~/.local/share/amp/threads/` |
 | Kiro | JSON | `~/Library/Application Support/Kiro/workspace-sessions/` |
-| Crush | SQLite | Project `.crush/crush.db` via Crush's global projects index (`~/.local/share/crush/projects.json`, `$XDG_DATA_HOME`, or `$CRUSH_GLOBAL_DATA`); legacy `~/.crush/crush.db` |
+| Crush | SQLite | `~/.crush/crush.db` |
 | Cline | JSON | VS Code `globalStorage/saoudrizwan.claude-dev/tasks/` |
 | Roo Code | JSON | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/` |
 | Kilo Code | JSON | VS Code `globalStorage/kilocode.kilo-code/tasks/` |
 | Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
 | Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
-| Qwen Code | JSONL | `$QWEN_RUNTIME_DIR/projects/*/chats/` (default `~/.qwen/projects/*/chats/`) |
+| Qwen Code | JSONL | `~/.qwen/projects/*/chats/` |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 
@@ -239,7 +239,7 @@ This started as a 7-tool project and grew fast thanks to contributors:
 - **Factory Droid support** — [#1](https://github.com/yigitkonur/cli-continues/pull/1), first community parser
 - **Cursor AI support** — [#4](https://github.com/yigitkonur/cli-continues/pull/4) by [@Evrim267](https://github.com/Evrim267), with smart slug-to-path resolution
 - **Single-tool error handling** — [#3](https://github.com/yigitkonur/cli-continues/pull/3) by [@barisgirismen](https://github.com/barisgirismen), clear error when only one CLI is installed
-- **Env var overrides** — [#14](https://github.com/yigitkonur/cli-continues/pull/14) by [@yutakobayashidev](https://github.com/yutakobayashidev), respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`, `QWEN_RUNTIME_DIR`
+- **Env var overrides** — [#14](https://github.com/yigitkonur/cli-continues/pull/14) by [@yutakobayashidev](https://github.com/yutakobayashidev), respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`
 
 The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, Antigravity, Kimi CLI, and Qwen Code** — was added by reverse-engineering [mnemo](https://github.com/Pilan-AI/mnemo)'s Go adapters and adapting the schemas for TypeScript. Along the way we also improved token/cache/model extraction for the existing Claude, Codex, Cursor, and Gemini parsers.
 
@@ -250,8 +250,9 @@ The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, Antigravity
 
 ## Requirements
 
-- **Node.js 22+** (uses built-in `node:sqlite` for OpenCode and Crush)
+- **Node.js 22+** (uses built-in `node:sqlite` for OpenCode)
 - At least one of the 16 supported tools installed
+- `sqlite3` CLI binary (only needed for Crush — ships with macOS)
 
 ## Development
 
