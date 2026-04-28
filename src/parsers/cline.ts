@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
@@ -23,6 +24,8 @@ import {
   truncate,
   withResult,
 } from '../utils/tool-summarizer.js';
+
+const require = createRequire(import.meta.url);
 
 // ── Extension Configs ───────────────────────────────────────────────────────
 
@@ -165,6 +168,33 @@ interface ToolResultEntry {
 interface ToolData {
   summaries: ToolUsageSummary[];
   filesModified: string[];
+}
+
+interface SqlitePreparedStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown | undefined;
+}
+
+interface SqliteDatabase {
+  prepare(sql: string): SqlitePreparedStatement;
+  close(): void;
+}
+
+interface KiloDbSchema {
+  session: Set<string>;
+  message: Set<string>;
+  part: Set<string>;
+  project: Set<string>;
+  supported: boolean;
+  warnings: string[];
+}
+
+interface KiloDbMessageRead {
+  messages: ConversationMessage[];
+  notes: SessionNotes;
+  rowCount: number;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
 }
 
 // ── Path Discovery ──────────────────────────────────────────────────────────
@@ -357,6 +387,143 @@ async function discoverTaskDirs(filterSource?: ClineSource): Promise<TaskEntry[]
   }
 
   return results;
+}
+
+// ── Kilo Code SQLite Discovery ──────────────────────────────────────────────
+
+function cleanEnvPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Build the ordered list of candidate Kilo data roots. The default app
+ * directory upstream is the literal "kilo" name appended to xdg-basedir's
+ * data root (packages/opencode/src/global/index.ts: `const app = "kilo"`),
+ * so on every platform Kilo first writes under `$XDG_DATA_HOME/kilo` or
+ * `~/.local/share/kilo`. The macOS / Windows fallbacks below are defensive
+ * paths for non-default installs (sandboxed environments, custom XDG layouts
+ * that mirror native OS conventions). Upstream Kilo does NOT itself write to
+ * `~/Library/Application Support/kilo` or `%APPDATA%\kilo`; we probe them
+ * only so a non-canonical install does not silently disappear from discovery.
+ */
+function getKiloDataRoots(): string[] {
+  const home = homeDir();
+  const roots: string[] = [];
+  const xdgDataHome = cleanEnvPath(process.env.XDG_DATA_HOME);
+
+  if (xdgDataHome) roots.push(path.join(xdgDataHome, 'kilo'));
+
+  // Kilo's canonical default on every platform via xdg-basedir fallback.
+  roots.push(path.join(home, '.local', 'share', 'kilo'));
+
+  if (process.platform === 'darwin') {
+    roots.push(path.join(home, 'Library', 'Application Support', 'kilo'));
+  } else if (process.platform === 'win32') {
+    const localAppData = cleanEnvPath(process.env.LOCALAPPDATA);
+    const appData = cleanEnvPath(process.env.APPDATA);
+    if (localAppData) roots.push(path.join(localAppData, 'kilo'));
+    if (appData) roots.push(path.join(appData, 'kilo'));
+  }
+
+  return uniquePaths(roots);
+}
+
+function getKiloDbCandidatePaths(): string[] {
+  const kiloDb = cleanEnvPath(process.env.KILO_DB);
+  if (kiloDb) {
+    if (kiloDb === ':memory:') return [];
+    if (path.isAbsolute(kiloDb)) return [kiloDb];
+    return uniquePaths(getKiloDataRoots().map((root) => path.join(root, kiloDb)));
+  }
+
+  return uniquePaths(getKiloDataRoots().map((root) => path.join(root, 'kilo.db')));
+}
+
+async function discoverKiloDbPaths(): Promise<string[]> {
+  const dbPaths: string[] = [];
+  for (const dbPath of getKiloDbCandidatePaths()) {
+    if (await pathExists(dbPath)) dbPaths.push(dbPath);
+  }
+  return dbPaths;
+}
+
+/**
+ * Open Kilo's SQLite session store strictly read-only. Read-only is enforced
+ * via `node:sqlite`'s `readOnly: true` flag (Node.js v22+; verified at
+ * runtime by our integration test, which asserts that any write through this
+ * handle throws). Read-only is non-negotiable: this parser must never mutate
+ * a user's `kilo.db`.
+ */
+function openKiloDb(dbPath: string): { db: SqliteDatabase; close: () => void } | null {
+  try {
+    const sqliteModule = require('node:sqlite') as {
+      DatabaseSync: new (database: string, options?: { open?: boolean; readOnly?: boolean }) => SqliteDatabase;
+    };
+    const db = new sqliteModule.DatabaseSync(dbPath, { open: true, readOnly: true });
+    return { db, close: () => db.close() };
+  } catch (err) {
+    logger.debug('kilo-code: failed to open SQLite database', dbPath, err);
+    return null;
+  }
+}
+
+function tableColumns(db: SqliteDatabase, tableName: 'session' | 'message' | 'part' | 'project'): Set<string> {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    const columns = new Set<string>();
+    for (const row of rows) {
+      if (isRecord(row) && typeof row.name === 'string') columns.add(row.name);
+    }
+    return columns;
+  } catch (err) {
+    logger.debug('kilo-code: failed to inspect SQLite table', tableName, err);
+    return new Set();
+  }
+}
+
+function missingColumns(columns: Set<string>, required: readonly string[]): string[] {
+  return required.filter((column) => !columns.has(column));
+}
+
+function inspectKiloDbSchema(db: SqliteDatabase): KiloDbSchema {
+  const schema: KiloDbSchema = {
+    session: tableColumns(db, 'session'),
+    message: tableColumns(db, 'message'),
+    part: tableColumns(db, 'part'),
+    project: tableColumns(db, 'project'),
+    supported: true,
+    warnings: [],
+  };
+
+  const required: Array<[keyof Pick<KiloDbSchema, 'session' | 'message' | 'part'>, readonly string[]]> = [
+    ['session', ['id']],
+    ['message', ['id', 'session_id', 'data']],
+    ['part', ['message_id', 'data']],
+  ];
+
+  for (const [tableName, requiredColumns] of required) {
+    const columns = schema[tableName];
+    if (columns.size === 0) {
+      schema.warnings.push(`Kilo SQLite schema unsupported: missing "${tableName}" table.`);
+      continue;
+    }
+
+    const missing = missingColumns(columns, requiredColumns);
+    if (missing.length > 0) {
+      schema.warnings.push(
+        `Kilo SQLite schema unsupported: "${tableName}" table is missing column(s): ${missing.join(', ')}.`,
+      );
+    }
+  }
+
+  schema.supported = schema.warnings.length === 0;
+  return schema;
+}
+
+function warnKiloDbFidelity(dbPath: string, warnings: string[]): void {
+  if (warnings.length === 0) return;
+  logger.warn('kilo-code: skipping SQLite database with unsupported schema', dbPath, warnings.join(' '));
 }
 
 // ── Message Parsing ─────────────────────────────────────────────────────────
@@ -749,6 +916,394 @@ function buildApiConversation(messages: ClineApiMessage[], config: VerbosityConf
 
 function isApiRequestMetadata(msg: ClineRawMessage): boolean {
   return msg.type === 'say' && (msg.say === 'api_req_started' || msg.say === 'api_req_finished');
+}
+
+function parseJsonRecord(value: unknown, context: string): Record<string, unknown> | null {
+  if (isRecord(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch (err) {
+    logger.debug('kilo-code: failed to parse SQLite JSON', context, err);
+    return null;
+  }
+}
+
+function firstString(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = readString(record, key);
+    if (value?.trim()) return value;
+  }
+  return undefined;
+}
+
+function previewValue(value: unknown, maxLength = 160): string {
+  if (typeof value === 'string') return truncate(value.replace(/\s+/g, ' ').trim(), maxLength);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) return '';
+  try {
+    return truncate(JSON.stringify(value).replace(/\s+/g, ' ').trim(), maxLength);
+  } catch (err) {
+    logger.debug('kilo-code: failed to stringify SQLite part preview', err);
+    return '';
+  }
+}
+
+function timestampFromValue(value: unknown): Date | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  const millis = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function roleFromMessageData(data: Record<string, unknown>): ConversationMessage['role'] | null {
+  const role = readString(data, 'role');
+  if (role === 'user' || role === 'assistant' || role === 'system') return role;
+  return null;
+}
+
+/**
+ * Convert a Kilo part record into a single-line preview string for the
+ * cross-tool handoff conversation.
+ *
+ * Design decision (per PR open question on tool-part fidelity):
+ *   We summarize tool / patch / snapshot / agent / compaction / file / subtask
+ *   parts as `[type] preview` text rather than projecting them as structured
+ *   ConversationMessage.toolCall records. The rest of the Cline-family pipeline
+ *   feeds a markdown handoff (see `generateHandoffMarkdown`) — preview text
+ *   keeps the next-tool prompt compact, faithful to source ordering, and
+ *   consistent with how the legacy `ui_messages.json` path already flattens
+ *   tool activity into prose. Promoting these to structured tool calls would
+ *   require a parallel toolSummaries pipeline that the handoff renderer does
+ *   not currently consume.
+ *
+ * Part types covered (Kilo MessageV2 schema, packages/opencode/src/session/message-v2.ts):
+ *   text, reasoning, tool, file, snapshot, patch, agent, compaction, subtask, retry
+ *
+ * Part types intentionally elided (internal markers without user-meaningful prose):
+ *   step-start, step-finish — token totals are read at the message level via
+ *   `addKiloTokenUsage`; carrying them in conversation would dilute signal.
+ */
+function extractKiloPartContent(partData: Record<string, unknown>): string {
+  const type = readString(partData, 'type');
+
+  if (type === 'text') {
+    return firstString(partData, ['text', 'content', 'message']) ?? '';
+  }
+
+  if (type === 'reasoning') {
+    const text = firstString(partData, ['text', 'summary', 'content']);
+    return text ? `[reasoning] ${text}` : '';
+  }
+
+  if (type === 'tool') {
+    const toolName = readString(partData, 'tool') ?? readString(partData, 'name') ?? 'tool';
+    const state = readRecord(partData, 'state');
+    const status = state ? readString(state, 'status') : undefined;
+    const input = state ? previewValue(state.input, 90) : previewValue(partData.input, 90);
+    const output = state
+      ? previewValue(state.output ?? state.error, 120)
+      : previewValue(partData.output ?? partData.error, 120);
+    const label = status && status !== 'completed' ? `[tool:${toolName}:${status}]` : `[tool:${toolName}]`;
+    return [label, input, output].filter(Boolean).join(' ');
+  }
+
+  if (type === 'file') {
+    const filename = readString(partData, 'filename') ?? readString(partData, 'name') ?? '';
+    const mime = readString(partData, 'mime') ?? readString(partData, 'mediaType');
+    const url = readString(partData, 'url');
+    const descriptor = filename || url || mime || 'attachment';
+    return mime && filename ? `[file] ${descriptor} (${mime})` : `[file] ${descriptor}`;
+  }
+
+  if (type === 'subtask') {
+    const agent = readString(partData, 'agent') ?? 'subtask';
+    const description = firstString(partData, ['description', 'prompt', 'command']) ?? '';
+    return description ? `[subtask:${agent}] ${description}` : `[subtask:${agent}]`;
+  }
+
+  if (type === 'retry') {
+    const attempt = readNumber(partData, 'attempt');
+    const error = readRecord(partData, 'error');
+    const errorMessage =
+      (error && firstString(error, ['message', 'name', 'code'])) ?? readString(partData, 'error') ?? '';
+    const prefix = attempt !== undefined ? `[retry:${attempt}]` : '[retry]';
+    return errorMessage ? `${prefix} ${errorMessage}` : prefix;
+  }
+
+  if (type === 'patch' || type === 'snapshot' || type === 'agent' || type === 'compaction') {
+    const preview = firstString(partData, ['text', 'summary', 'content', 'diff', 'message']) ?? previewValue(partData);
+    return preview ? `[${type}] ${preview}` : '';
+  }
+
+  // step-start, step-finish: deliberately empty — tracked at message level only.
+  return '';
+}
+
+function addKiloTokenUsage(notes: SessionNotes, messageData: Record<string, unknown>): void {
+  const tokens = readRecord(messageData, 'tokens');
+  const usage = readRecord(messageData, 'usage');
+  if (!tokens && !usage) return;
+
+  const input =
+    (tokens && (readNumber(tokens, 'input') ?? readNumber(tokens, 'inputTokens'))) ??
+    (usage && (readNumber(usage, 'input_tokens') ?? readNumber(usage, 'inputTokens'))) ??
+    0;
+  const output =
+    (tokens && (readNumber(tokens, 'output') ?? readNumber(tokens, 'outputTokens'))) ??
+    (usage && (readNumber(usage, 'output_tokens') ?? readNumber(usage, 'outputTokens'))) ??
+    0;
+
+  if (input > 0 || output > 0) {
+    notes.tokenUsage = {
+      input: (notes.tokenUsage?.input ?? 0) + input,
+      output: (notes.tokenUsage?.output ?? 0) + output,
+    };
+  }
+
+  const reasoning =
+    (tokens && readNumber(tokens, 'reasoning')) ?? (usage && readNumber(usage, 'reasoning_tokens')) ?? 0;
+  if (reasoning > 0) notes.thinkingTokens = (notes.thinkingTokens ?? 0) + reasoning;
+
+  const cache = tokens && readRecord(tokens, 'cache');
+  const cacheRead =
+    (cache && readNumber(cache, 'read')) ??
+    (tokens && readNumber(tokens, 'cacheRead')) ??
+    (usage && readNumber(usage, 'cache_read_input_tokens')) ??
+    0;
+  const cacheCreation =
+    (cache && (readNumber(cache, 'write') ?? readNumber(cache, 'creation'))) ??
+    (tokens && readNumber(tokens, 'cacheWrite')) ??
+    (usage && readNumber(usage, 'cache_creation_input_tokens')) ??
+    0;
+
+  if (cacheRead > 0 || cacheCreation > 0) {
+    notes.cacheTokens = {
+      read: (notes.cacheTokens?.read ?? 0) + cacheRead,
+      creation: (notes.cacheTokens?.creation ?? 0) + cacheCreation,
+    };
+  }
+}
+
+function addKiloReasoning(partData: Record<string, unknown>, reasoning: string[], maxHighlights: number): void {
+  if (reasoning.length >= maxHighlights || readString(partData, 'type') !== 'reasoning') return;
+  const text = firstString(partData, ['text', 'summary', 'content']);
+  if (!text || text.length < 10) return;
+  reasoning.push(truncate(text.trim(), 200));
+}
+
+function selectColumns(columns: Set<string>, preferred: readonly string[]): string {
+  return preferred.filter((column) => columns.has(column)).join(', ');
+}
+
+function orderBy(columns: Set<string>, preferred: string, fallback: string): string {
+  if (columns.has(preferred) && columns.has(fallback)) return `${preferred} ASC, ${fallback} ASC`;
+  if (columns.has(preferred)) return `${preferred} ASC`;
+  if (columns.has(fallback)) return `${fallback} ASC`;
+  return 'rowid ASC';
+}
+
+interface KiloDbDiscoverySummary {
+  rowCount: number;
+  firstUserMessage: string;
+  model?: string;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
+}
+
+/**
+ * Lightweight summary used during session discovery.
+ *
+ * Issues a single message query (no parts) to determine row count and
+ * timestamps, then makes at most two follow-up part queries to recover
+ * the first-user content (for summary fallback) and model (for the
+ * unified session card). Avoids the N+1 message/part scan that the
+ * full extraction path requires, so listing remains fast on large DBs.
+ */
+function readKiloDbDiscoverySummary(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+): KiloDbDiscoverySummary {
+  const messageColumns = selectColumns(schema.message, ['id', 'time_created', 'data']);
+  let msgRows: unknown[];
+  try {
+    msgRows = db
+      .prepare(
+        `SELECT ${messageColumns} FROM message WHERE session_id = ? ORDER BY ${orderBy(schema.message, 'time_created', 'id')}`,
+      )
+      .all(sessionId);
+  } catch (err) {
+    logger.debug('kilo-code: failed to read message metadata for discovery', sessionId, err);
+    return { rowCount: 0, firstUserMessage: '' };
+  }
+
+  let firstTimestamp: Date | undefined;
+  let lastTimestamp: Date | undefined;
+  let firstUserMessageId: string | undefined;
+  let firstAssistantMessageId: string | undefined;
+  let model: string | undefined;
+
+  for (const msgRow of msgRows) {
+    if (!isRecord(msgRow)) continue;
+    const messageId = readString(msgRow, 'id');
+    if (!messageId) continue;
+
+    const messageData = parseJsonRecord(msgRow.data, `message:${messageId}`);
+    if (!messageData) continue;
+
+    const role = roleFromMessageData(messageData);
+    if (!role) continue;
+
+    const timestamp = timestampFromValue(msgRow.time_created);
+    if (timestamp) {
+      if (!firstTimestamp || timestamp.getTime() < firstTimestamp.getTime()) firstTimestamp = timestamp;
+      if (!lastTimestamp || timestamp.getTime() > lastTimestamp.getTime()) lastTimestamp = timestamp;
+    }
+
+    if (role === 'user' && !firstUserMessageId) firstUserMessageId = messageId;
+    if (role === 'assistant' && !firstAssistantMessageId) {
+      firstAssistantMessageId = messageId;
+      if (!model) {
+        model = firstString(messageData, ['modelID', 'modelId', 'model', 'providerID', 'providerId']);
+      }
+    }
+
+    if (firstUserMessageId && firstAssistantMessageId && model) break;
+  }
+
+  const firstUserMessage = firstUserMessageId ? readKiloDbPartsContent(db, schema, firstUserMessageId) : '';
+
+  return {
+    rowCount: msgRows.length,
+    firstUserMessage,
+    model,
+    firstTimestamp,
+    lastTimestamp,
+  };
+}
+
+/** Read and concatenate the text content of all parts for a single message. */
+function readKiloDbPartsContent(db: SqliteDatabase, schema: KiloDbSchema, messageId: string): string {
+  const partColumns = selectColumns(schema.part, ['id', 'message_id', 'time_created', 'data']);
+  let partRows: unknown[];
+  try {
+    partRows = db
+      .prepare(
+        `SELECT ${partColumns} FROM part WHERE message_id = ? ORDER BY ${orderBy(schema.part, 'time_created', 'id')}`,
+      )
+      .all(messageId);
+  } catch (err) {
+    logger.debug('kilo-code: failed to read part rows', messageId, err);
+    return '';
+  }
+
+  const contentParts: string[] = [];
+  for (const partRow of partRows) {
+    if (!isRecord(partRow)) continue;
+    const partData = parseJsonRecord(partRow.data, `part:${messageId}`);
+    if (!partData) continue;
+    const content = extractKiloPartContent(partData).trim();
+    if (content) contentParts.push(content);
+  }
+  return contentParts.join('\n').trim();
+}
+
+function readKiloDbMessagesFromHandle(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+  maxReasoningHighlights = 10,
+): KiloDbMessageRead {
+  const messageColumns = selectColumns(schema.message, ['id', 'session_id', 'time_created', 'data']);
+  const partColumns = selectColumns(schema.part, ['id', 'message_id', 'time_created', 'data']);
+  const msgRows = db
+    .prepare(
+      `SELECT ${messageColumns} FROM message WHERE session_id = ? ORDER BY ${orderBy(schema.message, 'time_created', 'id')}`,
+    )
+    .all(sessionId);
+
+  const messages: ConversationMessage[] = [];
+  const notes: SessionNotes = {};
+  const reasoning: string[] = [];
+  let firstTimestamp: Date | undefined;
+  let lastTimestamp: Date | undefined;
+
+  for (const msgRow of msgRows) {
+    if (!isRecord(msgRow)) continue;
+    const messageId = readString(msgRow, 'id');
+    if (!messageId) continue;
+
+    const messageData = parseJsonRecord(msgRow.data, `message:${messageId}`);
+    if (!messageData) continue;
+
+    const role = roleFromMessageData(messageData);
+    if (!role) continue;
+
+    const timestamp = timestampFromValue(msgRow.time_created);
+    if (timestamp) {
+      if (!firstTimestamp || timestamp.getTime() < firstTimestamp.getTime()) firstTimestamp = timestamp;
+      if (!lastTimestamp || timestamp.getTime() > lastTimestamp.getTime()) lastTimestamp = timestamp;
+    }
+
+    if (role === 'assistant' && !notes.model) {
+      notes.model = firstString(messageData, ['modelID', 'modelId', 'model', 'providerID', 'providerId']) ?? undefined;
+    }
+    addKiloTokenUsage(notes, messageData);
+
+    const partRows = db
+      .prepare(
+        `SELECT ${partColumns} FROM part WHERE message_id = ? ORDER BY ${orderBy(schema.part, 'time_created', 'id')}`,
+      )
+      .all(messageId);
+
+    const contentParts: string[] = [];
+    for (const partRow of partRows) {
+      if (!isRecord(partRow)) continue;
+      const partData = parseJsonRecord(partRow.data, `part:${messageId}`);
+      if (!partData) continue;
+
+      const content = extractKiloPartContent(partData).trim();
+      if (content) contentParts.push(content);
+      addKiloReasoning(partData, reasoning, maxReasoningHighlights);
+    }
+
+    const content = contentParts.join('\n').trim();
+    if (content) messages.push({ role, content, timestamp, sourceId: messageId });
+  }
+
+  if (reasoning.length > 0) notes.reasoning = reasoning;
+  if (firstTimestamp && lastTimestamp && lastTimestamp.getTime() >= firstTimestamp.getTime()) {
+    notes.activeTimeMs = lastTimestamp.getTime() - firstTimestamp.getTime();
+  }
+
+  return { messages, notes, rowCount: msgRows.length, firstTimestamp, lastTimestamp };
+}
+
+function getProjectWorktree(db: SqliteDatabase, schema: KiloDbSchema, projectId: string | undefined): string {
+  if (!projectId || !schema.project.has('id') || !schema.project.has('worktree')) return '';
+  try {
+    const row = db.prepare('SELECT worktree FROM project WHERE id = ?').get(projectId);
+    return isRecord(row) ? (readString(row, 'worktree') ?? '') : '';
+  } catch (err) {
+    logger.debug('kilo-code: failed to read SQLite project row', projectId, err);
+    return '';
+  }
+}
+
+function sessionSourceMetadata(row: Record<string, unknown>, dbPath: string): Record<string, unknown> {
+  return {
+    storage: 'sqlite',
+    dbPath,
+    ...(readString(row, 'slug') ? { slug: readString(row, 'slug') } : {}),
+    ...(readString(row, 'version') ? { version: readString(row, 'version') } : {}),
+    ...(readString(row, 'project_id') ? { projectId: readString(row, 'project_id') } : {}),
+  };
+}
+
+function isUnhelpfulDbTitle(title: string): boolean {
+  return title.trim().length === 0 || /^new session\b/iu.test(title.trim());
 }
 
 /**
@@ -1528,6 +2083,100 @@ async function parseSessionsForSource(filterSource?: ClineSource): Promise<Unifi
   return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
+async function parseKiloDbSessions(): Promise<UnifiedSession[]> {
+  const sessionsById = new Map<string, UnifiedSession>();
+
+  for (const dbPath of await discoverKiloDbPaths()) {
+    const handle = openKiloDb(dbPath);
+    if (!handle) continue;
+
+    const { db, close } = handle;
+    try {
+      const schema = inspectKiloDbSchema(db);
+      if (!schema.supported) {
+        warnKiloDbFidelity(dbPath, schema.warnings);
+        continue;
+      }
+
+      const dbStats = await fs.stat(dbPath);
+      const sessionColumns = selectColumns(schema.session, [
+        'id',
+        'project_id',
+        'slug',
+        'directory',
+        'title',
+        'version',
+        'time_created',
+        'time_updated',
+      ]);
+      const sortColumn = schema.session.has('time_updated') ? 'time_updated' : 'id';
+      const rows = db.prepare(`SELECT ${sessionColumns} FROM session ORDER BY ${sortColumn} DESC`).all();
+
+      for (const row of rows) {
+        if (!isRecord(row)) continue;
+        const id = readString(row, 'id');
+        if (!id) continue;
+
+        // Discovery uses a lightweight summary (one message-table query + at
+        // most one part query for the first user message) instead of walking
+        // every message and part for every session.
+        const summaryRead = readKiloDbDiscoverySummary(db, schema, id);
+        if (summaryRead.rowCount === 0) continue;
+
+        const title = readString(row, 'title') ?? '';
+        const slug = readString(row, 'slug') ?? '';
+        const summarySource = isUnhelpfulDbTitle(title) ? summaryRead.firstUserMessage || slug : title;
+        const summary = cleanSummary(summarySource || slug || summaryRead.firstUserMessage);
+        if (!summary) continue;
+
+        const projectId = readString(row, 'project_id');
+        const cwd = readString(row, 'directory') || getProjectWorktree(db, schema, projectId);
+        const createdAt = timestampFromValue(row.time_created) ?? summaryRead.firstTimestamp ?? dbStats.birthtime;
+        const updatedAt = timestampFromValue(row.time_updated) ?? summaryRead.lastTimestamp ?? dbStats.mtime;
+
+        const session: UnifiedSession = {
+          id,
+          source: 'kilo-code',
+          cwd,
+          repo: extractRepoFromCwd(cwd),
+          lines: summaryRead.rowCount,
+          bytes: dbStats.size,
+          createdAt,
+          updatedAt,
+          originalPath: dbPath,
+          summary,
+          model: summaryRead.model,
+        };
+
+        const existing = sessionsById.get(id);
+        if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+          sessionsById.set(id, session);
+        }
+      }
+    } catch (err) {
+      logger.debug('kilo-code: failed to parse SQLite sessions', dbPath, err);
+    } finally {
+      close();
+    }
+  }
+
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+async function parseKiloSessionsAll(): Promise<UnifiedSession[]> {
+  const sessionsById = new Map<string, UnifiedSession>();
+  for (const session of await parseKiloDbSessions()) {
+    sessionsById.set(session.id, session);
+  }
+  for (const session of await parseSessionsForSource('kilo-code')) {
+    const existing = sessionsById.get(session.id);
+    if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+      sessionsById.set(session.id, session);
+    }
+  }
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
 // ── Context Extraction (shared) ─────────────────────────────────────────────
 
 /**
@@ -1608,6 +2257,103 @@ async function extractContextShared(session: UnifiedSession, config?: VerbosityC
   };
 }
 
+function isTaskCompanionPath(filePath: string): boolean {
+  return path.basename(path.dirname(path.dirname(filePath))) === 'tasks';
+}
+
+function isKiloDbSession(session: UnifiedSession): boolean {
+  return session.source === 'kilo-code' && !isTaskCompanionPath(session.originalPath);
+}
+
+function emptyKiloDbContext(session: UnifiedSession, cfg: VerbosityConfig, fidelityWarnings: string[]): SessionContext {
+  const sessionNotes: SessionNotes = {
+    rawAccess: { kind: 'sqlite', path: session.originalPath },
+    sourceMetadata: { storage: 'sqlite', dbPath: session.originalPath },
+    fidelityWarnings,
+  };
+  const markdown = generateHandoffMarkdown(session, [], [], [], [], sessionNotes, cfg);
+
+  return {
+    session,
+    recentMessages: [],
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    sessionNotes,
+    markdown,
+  };
+}
+
+function readKiloSessionRow(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+): Record<string, unknown> | null {
+  const sessionColumns = selectColumns(schema.session, ['id', 'project_id', 'slug', 'directory', 'title', 'version']);
+  try {
+    const row = db.prepare(`SELECT ${sessionColumns} FROM session WHERE id = ?`).get(sessionId);
+    return isRecord(row) ? row : null;
+  } catch (err) {
+    logger.debug('kilo-code: failed to read SQLite session metadata', sessionId, err);
+    return null;
+  }
+}
+
+async function extractKiloDbContext(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
+  const cfg = config ?? getPreset('standard');
+  const handle = openKiloDb(session.originalPath);
+  if (!handle) {
+    return emptyKiloDbContext(session, cfg, [`Kilo SQLite database could not be opened: ${session.originalPath}`]);
+  }
+
+  const { db, close } = handle;
+  try {
+    const schema = inspectKiloDbSchema(db);
+    if (!schema.supported) {
+      warnKiloDbFidelity(session.originalPath, schema.warnings);
+      return emptyKiloDbContext(session, cfg, schema.warnings);
+    }
+
+    const messageRead = readKiloDbMessagesFromHandle(db, schema, session.id, cfg.thinking?.maxHighlights ?? 5);
+    const sessionRow = readKiloSessionRow(db, schema, session.id);
+    const warnings =
+      messageRead.rowCount === 0 ? [`Kilo SQLite session "${session.id}" has no readable message rows.`] : [];
+
+    const sessionNotes: SessionNotes = {
+      ...messageRead.notes,
+      rawAccess: { kind: 'sqlite', path: session.originalPath },
+      sourceMetadata: {
+        ...(messageRead.notes.sourceMetadata ?? {}),
+        ...(sessionRow ? sessionSourceMetadata(sessionRow, session.originalPath) : {}),
+        storage: 'sqlite',
+        dbPath: session.originalPath,
+      },
+      ...(warnings.length > 0 ? { fidelityWarnings: warnings } : {}),
+    };
+
+    const recentMessages = messageRead.messages.slice(-cfg.recentMessages);
+    const enrichedSession = sessionNotes.model ? { ...session, model: sessionNotes.model } : session;
+    const markdown = generateHandoffMarkdown(enrichedSession, recentMessages, [], [], [], sessionNotes, cfg);
+
+    return {
+      session: enrichedSession,
+      recentMessages,
+      filesModified: [],
+      pendingTasks: [],
+      toolSummaries: [],
+      sessionNotes,
+      markdown,
+    };
+  } catch (err) {
+    logger.debug('kilo-code: failed to extract SQLite context', session.originalPath, session.id, err);
+    return emptyKiloDbContext(session, cfg, [
+      `Kilo SQLite session "${session.id}" could not be extracted without losing fidelity.`,
+    ]);
+  } finally {
+    close();
+  }
+}
+
 // ── Public API: Cline ───────────────────────────────────────────────────────
 
 /** Discover sessions for Cline only */
@@ -1639,7 +2385,7 @@ export async function extractRooCodeContext(
 
 /** Discover sessions for Kilo Code only */
 export async function parseKiloCodeSessions(): Promise<UnifiedSession[]> {
-  return parseSessionsForSource('kilo-code');
+  return parseKiloSessionsAll();
 }
 
 /** Extract context from a Kilo Code session (delegates to shared implementation) */
@@ -1647,5 +2393,6 @@ export async function extractKiloCodeContext(
   session: UnifiedSession,
   config?: VerbosityConfig,
 ): Promise<SessionContext> {
+  if (isKiloDbSession(session)) return extractKiloDbContext(session, config);
   return extractContextShared(session, config);
 }

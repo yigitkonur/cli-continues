@@ -10,11 +10,12 @@
  * when the fingerprint changes.
  */
 
-import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import type { SessionSource } from '../types/index.js';
 
 // Create the fake home eagerly so it's ready before any mock evaluates
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'continues-env-test-'));
@@ -39,14 +40,14 @@ const { adapters } = await import('../parsers/registry.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function indexFilePath(): string {
-  return path.join(fakeHome, '.continues', 'sessions.jsonl');
+function indexFilePath(source?: SessionSource): string {
+  return path.join(fakeHome, '.continues', source ? `sessions.${source}.jsonl` : 'sessions.jsonl');
 }
 
-function writeIndex(fingerprint: string, sessions: Record<string, unknown>[]): void {
+function writeIndex(fingerprint: string, sessions: Record<string, unknown>[], source?: SessionSource): void {
   ensureDirectories();
   const lines = sessions.map((s) => JSON.stringify(s));
-  fs.writeFileSync(indexFilePath(), fingerprint + '\n' + lines.join('\n') + '\n');
+  fs.writeFileSync(indexFilePath(source), `${fingerprint}\n${lines.join('\n')}\n`);
 }
 
 function makeSession(id: string, source = 'claude'): Record<string, unknown> {
@@ -64,16 +65,17 @@ function makeSession(id: string, source = 'claude'): Record<string, unknown> {
   };
 }
 
-function currentFingerprint(): string {
+function currentFingerprint(source?: SessionSource): string {
   const seen = new Set<string>();
   const parts: string[] = [];
+  const selectedAdapters = source ? [adapters[source]] : Object.values(adapters);
   const addEnvVar = (name: string): void => {
     if (seen.has(name)) return;
     seen.add(name);
     const val = process.env[name] || '';
     parts.push(`${name}=${val}`);
   };
-  for (const adapter of Object.values(adapters) as Array<{ envVar?: string; extraEnvVars?: string[] }>) {
+  for (const adapter of selectedAdapters) {
     if (adapter.envVar) addEnvVar(adapter.envVar);
     if (adapter.extraEnvVars) {
       for (const name of adapter.extraEnvVars) addEnvVar(name);
@@ -87,6 +89,11 @@ afterEach(() => {
   // Clean the index file between tests
   try {
     fs.unlinkSync(indexFilePath());
+  } catch (_) {
+    /* file may not exist */
+  }
+  try {
+    fs.unlinkSync(indexFilePath('kilo-code'));
   } catch (_) {
     /* file may not exist */
   }
@@ -125,6 +132,29 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     vi.stubEnv('COPILOT_HOME', '/home/user/.copilot-work');
 
     expect(indexNeedsRebuild()).toBe(true);
+  });
+
+  it('kilo-code adapter declares DB and storage env vars for cache fingerprints', () => {
+    expect(adapters['kilo-code'].envVar).toBe('KILO_DB');
+    expect(adapters['kilo-code'].extraEnvVars).toEqual(
+      expect.arrayContaining(['XDG_DATA_HOME', 'LOCALAPPDATA', 'APPDATA']),
+    );
+  });
+
+  it('source-scoped kilo-code cache rebuilds when KILO_DB changes', () => {
+    writeIndex(currentFingerprint('kilo-code'), [makeSession('sess-1', 'kilo-code')], 'kilo-code');
+
+    vi.stubEnv('KILO_DB', '/home/user/custom-kilo-store');
+
+    expect(indexNeedsRebuild('kilo-code')).toBe(true);
+  });
+
+  it('source-scoped kilo-code cache rebuilds when XDG_DATA_HOME changes', () => {
+    writeIndex(currentFingerprint('kilo-code'), [makeSession('sess-1', 'kilo-code')], 'kilo-code');
+
+    vi.stubEnv('XDG_DATA_HOME', '/home/user/.local-data-work');
+
+    expect(indexNeedsRebuild('kilo-code')).toBe(true);
   });
 
   it('loadIndex skips the fingerprint line and returns only sessions', () => {

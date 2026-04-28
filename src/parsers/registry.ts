@@ -816,6 +816,11 @@ register({
   color: chalk.hex('#E63946'),
   storagePath: '~/.crush/crush.db',
   binaryName: 'crush',
+  // The Crush parser resolves its database path from any of these env vars
+  // (see getCrushDbCandidates in src/parsers/crush.ts). Declaring them here
+  // ensures the unified session index cache fingerprint invalidates whenever
+  // any of them change.
+  extraEnvVars: ['CRUSH_DB', 'CRUSH_DB_PATH', 'CRUSH_DATA_DIR', 'CRUSH_GLOBAL_DATA', 'XDG_DATA_HOME'],
   parseSessions: parseCrushSessions,
   extractContext: extractCrushContext,
   nativeResumeArgs: (s) => ['--session', s.id],
@@ -857,7 +862,9 @@ register({
   name: 'kilo-code',
   label: 'Kilo Code',
   color: chalk.hex('#6C5CE7'),
-  storagePath: '~/Library/Application Support/Code/User/globalStorage/kilocode.kilo-code/tasks/',
+  storagePath: '~/.local/share/kilo/kilo.db (fallback: VS Code globalStorage/kilocode.kilo-code/tasks/)',
+  envVar: 'KILO_DB',
+  extraEnvVars: ['XDG_DATA_HOME', 'LOCALAPPDATA', 'APPDATA'],
   binaryName: 'code',
   parseSessions: parseKiloCodeSessions,
   extractContext: extractKiloCodeContext,
@@ -903,9 +910,15 @@ register({
 register({
   name: 'qwen-code',
   label: 'Qwen Code',
+  // Upstream Qwen Code (packages/core/src/config/storage.ts: Storage.getRuntimeBaseDir)
+  // resolves the runtime base via QWEN_RUNTIME_DIR before falling back to
+  // ~/.qwen, then writes chats under <runtime-base>/projects/<sanitized-cwd>/chats/.
+  // QWEN_HOME is a continues-side override kept for fixtures and sandboxed installs;
+  // both must invalidate the index cache when changed.
   color: chalk.hex('#6366F1'),
-  storagePath: '~/.qwen/projects/*/chats/',
-  envVar: 'QWEN_HOME',
+  storagePath: '$QWEN_RUNTIME_DIR/projects/*/chats/ (default: ~/.qwen/projects/*/chats/)',
+  envVar: 'QWEN_RUNTIME_DIR',
+  extraEnvVars: ['QWEN_HOME'],
   binaryName: 'qwen',
   parseSessions: parseQwenCodeSessions,
   extractContext: extractQwenCodeContext,
