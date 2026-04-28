@@ -10,11 +10,12 @@
  * when the fingerprint changes.
  */
 
-import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import type { SessionSource } from '../types/index.js';
 
 // Create the fake home eagerly so it's ready before any mock evaluates
 const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'continues-env-test-'));
@@ -39,14 +40,14 @@ const { adapters } = await import('../parsers/registry.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function indexFilePath(): string {
-  return path.join(fakeHome, '.continues', 'sessions.jsonl');
+function indexFilePath(source?: SessionSource): string {
+  return path.join(fakeHome, '.continues', source ? `sessions.${source}.jsonl` : 'sessions.jsonl');
 }
 
-function writeIndex(fingerprint: string, sessions: Record<string, unknown>[]): void {
+function writeIndex(fingerprint: string, sessions: Record<string, unknown>[], source?: SessionSource): void {
   ensureDirectories();
   const lines = sessions.map((s) => JSON.stringify(s));
-  fs.writeFileSync(indexFilePath(), fingerprint + '\n' + lines.join('\n') + '\n');
+  fs.writeFileSync(indexFilePath(source), `${fingerprint}\n${lines.join('\n')}\n`);
 }
 
 function makeSession(id: string, source = 'claude'): Record<string, unknown> {
@@ -64,16 +65,17 @@ function makeSession(id: string, source = 'claude'): Record<string, unknown> {
   };
 }
 
-function currentFingerprint(): string {
+function currentFingerprint(source?: SessionSource): string {
   const seen = new Set<string>();
   const parts: string[] = [];
+  const selectedAdapters = source ? [adapters[source]] : Object.values(adapters);
   const addEnvVar = (name: string): void => {
     if (seen.has(name)) return;
     seen.add(name);
     const val = process.env[name] || '';
     parts.push(`${name}=${val}`);
   };
-  for (const adapter of Object.values(adapters) as Array<{ envVar?: string; extraEnvVars?: string[] }>) {
+  for (const adapter of selectedAdapters) {
     if (adapter.envVar) addEnvVar(adapter.envVar);
     if (adapter.extraEnvVars) {
       for (const name of adapter.extraEnvVars) addEnvVar(name);
@@ -87,6 +89,11 @@ afterEach(() => {
   // Clean the index file between tests
   try {
     fs.unlinkSync(indexFilePath());
+  } catch (_) {
+    /* file may not exist */
+  }
+  try {
+    fs.unlinkSync(indexFilePath('kilo-code'));
   } catch (_) {
     /* file may not exist */
   }
@@ -127,49 +134,52 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
-  it('indexNeedsRebuild returns true when Roo Code storage env vars change', () => {
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'roo-code')]);
+  it('kilo-code adapter declares DB and storage env vars for cache fingerprints', () => {
+    expect(adapters['kilo-code'].envVar).toBe('KILO_DB');
+    expect(adapters['kilo-code'].extraEnvVars).toEqual(
+      expect.arrayContaining(['XDG_DATA_HOME', 'LOCALAPPDATA', 'APPDATA', 'KILO_CODE_STORAGE_PATH']),
+    );
+  });
+
+  it('Cline-family adapters declare custom storage env vars for cache fingerprints', () => {
+    expect(adapters.cline.envVar).toBe('CLINE_STORAGE_PATH');
+    expect(adapters.cline.extraEnvVars).toEqual(expect.arrayContaining(['CONTINUES_CLINE_STORAGE_PATH']));
+    expect(adapters['roo-code'].envVar).toBe('ROO_CODE_STORAGE_PATH');
+    expect(adapters['roo-code'].extraEnvVars).toEqual(
+      expect.arrayContaining(['ROO_CLINE_STORAGE_PATH', 'CONTINUES_ROO_CODE_STORAGE_PATH']),
+    );
+  });
+
+  it('source-scoped kilo-code cache rebuilds when KILO_DB changes', () => {
+    writeIndex(currentFingerprint('kilo-code'), [makeSession('sess-1', 'kilo-code')], 'kilo-code');
+
+    vi.stubEnv('KILO_DB', '/home/user/custom-kilo-store');
+
+    expect(indexNeedsRebuild('kilo-code')).toBe(true);
+  });
+
+  it('source-scoped kilo-code cache rebuilds when XDG_DATA_HOME changes', () => {
+    writeIndex(currentFingerprint('kilo-code'), [makeSession('sess-1', 'kilo-code')], 'kilo-code');
+
+    vi.stubEnv('XDG_DATA_HOME', '/home/user/.local-data-work');
+
+    expect(indexNeedsRebuild('kilo-code')).toBe(true);
+  });
+
+  it('source-scoped Roo Code cache rebuilds when custom storage env vars change', () => {
+    writeIndex(currentFingerprint('roo-code'), [makeSession('sess-1', 'roo-code')], 'roo-code');
 
     vi.stubEnv('ROO_CODE_STORAGE_PATH', '/home/user/.roo-code-work');
 
-    expect(indexNeedsRebuild()).toBe(true);
-
-    vi.unstubAllEnvs();
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'roo-code')]);
-
-    vi.stubEnv('ROO_CLINE_STORAGE_PATH', '/home/user/.roo-cline-work');
-
-    expect(indexNeedsRebuild()).toBe(true);
+    expect(indexNeedsRebuild('roo-code')).toBe(true);
   });
 
-  it('indexNeedsRebuild returns true when Cline custom storage env vars change', () => {
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'cline')]);
+  it('source-scoped Cline cache rebuilds when custom storage env vars change', () => {
+    writeIndex(currentFingerprint('cline'), [makeSession('sess-1', 'cline')], 'cline');
 
     vi.stubEnv('CLINE_STORAGE_PATH', '/home/user/.cline-work');
 
-    expect(indexNeedsRebuild()).toBe(true);
-
-    vi.unstubAllEnvs();
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'cline')]);
-
-    vi.stubEnv('CONTINUES_CLINE_STORAGE_PATH', '/home/user/.continues-cline-work');
-
-    expect(indexNeedsRebuild()).toBe(true);
-  });
-
-  it('indexNeedsRebuild returns true when Kilo Code custom storage env vars change', () => {
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kilo-code')]);
-
-    vi.stubEnv('KILO_CODE_STORAGE_PATH', '/home/user/.kilo-code-work');
-
-    expect(indexNeedsRebuild()).toBe(true);
-
-    vi.unstubAllEnvs();
-    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kilo-code')]);
-
-    vi.stubEnv('CONTINUES_KILO_CODE_STORAGE_PATH', '/home/user/.continues-kilo-work');
-
-    expect(indexNeedsRebuild()).toBe(true);
+    expect(indexNeedsRebuild('cline')).toBe(true);
   });
 
   it('loadIndex skips the fingerprint line and returns only sessions', () => {

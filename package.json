@@ -72,7 +72,7 @@
   },
   "homepage": "https://github.com/yigitkonur/cli-continues#readme",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.5.0"
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",

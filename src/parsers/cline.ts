@@ -1,4 +1,5 @@
 import * as fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
@@ -7,11 +8,12 @@ import type {
   ConversationMessage,
   SessionContext,
   SessionNotes,
-  StructuredToolSample,
+  ToolCall,
+  ToolUsageSummary,
   UnifiedSession,
 } from '../types/index.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
-import { cleanSummary, homeDir } from '../utils/parser-helpers.js';
+import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
 import {
   fileSummary,
   globSummary,
@@ -23,20 +25,14 @@ import {
   withResult,
 } from '../utils/tool-summarizer.js';
 
+const require = createRequire(import.meta.url);
+
 // ── Extension Configs ───────────────────────────────────────────────────────
 
 /**
  * All Cline-family extensions share the same ui_messages.json format.
  * Each entry maps a VS Code extension ID to the source label used in UnifiedSession.
  */
-const TASK_FILE_NAMES = {
-  apiConversationHistory: 'api_conversation_history.json',
-  uiMessages: 'ui_messages.json',
-  taskMetadata: 'task_metadata.json',
-  historyItem: 'history_item.json',
-  historyIndex: '_index.json',
-} as const;
-
 const CLINE_EXTENSIONS = [
   {
     id: 'saoudrizwan.claude-dev',
@@ -45,15 +41,12 @@ const CLINE_EXTENSIONS = [
     customStorageEnvKeys: ['CLINE_STORAGE_PATH', 'CONTINUES_CLINE_STORAGE_PATH'],
   },
   {
-    // Roo's current VS Code manifest is publisher RooVeterinaryInc + name roo-cline,
-    // which VS Code stores lowercased as rooveterinaryinc.roo-cline.
     id: 'rooveterinaryinc.roo-cline',
     source: 'roo-code',
     customStorageSettingKeys: ['roo-cline.customStoragePath'],
     customStorageEnvKeys: ['ROO_CODE_STORAGE_PATH', 'ROO_CLINE_STORAGE_PATH', 'CONTINUES_ROO_CODE_STORAGE_PATH'],
   },
   {
-    // Compatibility-only path kept for users who still have older local data.
     id: 'roo-code.roo-cline',
     source: 'roo-code',
     customStorageSettingKeys: [],
@@ -70,6 +63,19 @@ const CLINE_EXTENSIONS = [
 type ClineSource = (typeof CLINE_EXTENSIONS)[number]['source'];
 type ClineExtension = (typeof CLINE_EXTENSIONS)[number];
 
+const UI_MESSAGES_FILE = 'ui_messages.json';
+const API_CONVERSATION_HISTORY_FILE = 'api_conversation_history.json';
+const TASK_METADATA_FILE = 'task_metadata.json';
+const TASK_HISTORY_FILE = 'taskHistory.json';
+const HISTORY_ITEM_FILE = 'history_item.json';
+const HISTORY_INDEX_FILE = '_index.json';
+const TASK_SIGNAL_FILES = [
+  UI_MESSAGES_FILE,
+  API_CONVERSATION_HISTORY_FILE,
+  TASK_METADATA_FILE,
+  HISTORY_ITEM_FILE,
+] as const;
+
 // ── Raw Message Shape ───────────────────────────────────────────────────────
 
 /** Single entry in ui_messages.json */
@@ -81,45 +87,9 @@ interface ClineRawMessage {
   text?: string;
   reasoning?: string;
   images?: string[];
+  files?: string[];
   partial?: boolean;
-}
-
-interface ApiRawMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: unknown;
-  ts?: number;
-  isSummary?: boolean;
-  reasoning_content?: string;
-  text?: string;
-  summary?: unknown;
-}
-
-interface ToolInvocation {
-  id?: string;
-  name: string;
-  input: unknown;
-  result?: string;
-  isError?: boolean;
-}
-
-interface StorageProfile {
-  globalStorageBase: string;
-  settingsPath: string;
-}
-
-interface TaskEntry {
-  taskDir: string;
-  taskId: string;
-  source: ClineSource;
-  tasksRoot: string;
-}
-
-interface TaskSidecars {
-  uiMessages: ClineRawMessage[];
-  apiMessages: ApiRawMessage[];
-  taskMetadata?: Record<string, unknown>;
-  historyItem?: Record<string, unknown>;
-  warnings: string[];
+  modelInfo?: ClineModelInfo;
 }
 
 type ConversationRole = 'user' | 'assistant';
@@ -134,51 +104,191 @@ interface StreamState {
   kind: string;
 }
 
+interface ClineModelInfo {
+  modelId?: string;
+  providerId?: string;
+  mode?: string;
+}
+
+interface ClineApiContentBlock {
+  type: string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
+}
+
+interface ClineApiMessage {
+  id?: string;
+  role: ConversationRole;
+  content: string | ClineApiContentBlock[];
+  ts?: number;
+  modelInfo?: ClineModelInfo;
+  metrics?: Record<string, unknown>;
+}
+
+interface ClineTaskMetadata {
+  model_usage?: Array<Record<string, unknown>>;
+  files_in_context?: Array<Record<string, unknown>>;
+  environment_history?: Array<Record<string, unknown>>;
+}
+
+interface ClineTaskHistoryItem {
+  id: string;
+  ts?: number;
+  task?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  cacheWrites?: number;
+  cacheReads?: number;
+  cwdOnTaskInitialization?: string;
+  workspace?: string;
+  modelId?: string;
+  mode?: string;
+  status?: string;
+  apiConfigName?: string;
+}
+
+interface TaskRoot {
+  tasksRoot: string;
+  storageRoot: string;
+  source: ClineSource;
+}
+
+interface TaskEntry {
+  taskDir: string;
+  taskId: string;
+  storageRoot: string;
+  source: ClineSource;
+}
+
+type TaskHistoryMap = Map<string, ClineTaskHistoryItem>;
+
+interface TaskFiles {
+  taskDir: string;
+  storageRoot: string;
+  uiMessages: string;
+  apiConversationHistory: string;
+  taskMetadata: string;
+  historyItem: string;
+  taskHistoryCandidates: string[];
+}
+
+interface LoadedTaskData {
+  files: TaskFiles;
+  uiMessages: ClineRawMessage[];
+  apiMessages: ClineApiMessage[];
+  taskMetadata?: ClineTaskMetadata;
+  taskHistoryItem?: ClineTaskHistoryItem;
+  /**
+   * Companion-file fidelity warnings. Populated when a companion file exists
+   * on disk but cannot be parsed (invalid JSON, wrong shape) so the caller
+   * can surface the downgrade in `sessionNotes.fidelityWarnings`. Missing
+   * files are NOT warnings — only present-but-broken files are.
+   */
+  fidelityWarnings: string[];
+}
+
+interface ToolResultEntry {
+  text: string;
+  isError: boolean;
+}
+
+interface ToolData {
+  summaries: ToolUsageSummary[];
+  filesModified: string[];
+  fidelityWarnings: string[];
+}
+
+interface SqlitePreparedStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown | undefined;
+}
+
+interface SqliteDatabase {
+  prepare(sql: string): SqlitePreparedStatement;
+  close(): void;
+}
+
+interface KiloDbSchema {
+  session: Set<string>;
+  message: Set<string>;
+  part: Set<string>;
+  project: Set<string>;
+  supported: boolean;
+  warnings: string[];
+}
+
+interface KiloDbMessageRead {
+  messages: ConversationMessage[];
+  notes: SessionNotes;
+  rowCount: number;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
+}
+
 // ── Path Discovery ──────────────────────────────────────────────────────────
 
 /**
- * Build candidate globalStorage base directories for local and remote extension
- * hosts. Remote VS Code servers use ~/.vscode-server.../data/User/globalStorage;
- * Cursor follows the same server layout when its remote host data exists.
+ * Build candidate globalStorage base directories for the current platform.
+ * Covers VS Code, VS Code Insiders, and Cursor on macOS / Linux / Windows.
  */
-function getStorageProfiles(): StorageProfile[] {
+function getGlobalStorageBases(): string[] {
   const home = homeDir();
-  const profiles: StorageProfile[] = [];
-  const addProfile = (globalStorageBase: string) => {
-    profiles.push({
-      globalStorageBase,
-      settingsPath: path.join(path.dirname(globalStorageBase), 'settings.json'),
-    });
-  };
+  const bases: string[] = [];
 
   if (process.platform === 'darwin') {
     const appSupport = path.join(home, 'Library', 'Application Support');
-    addProfile(path.join(appSupport, 'Code', 'User', 'globalStorage'));
-    addProfile(path.join(appSupport, 'Code - Insiders', 'User', 'globalStorage'));
-    addProfile(path.join(appSupport, 'Cursor', 'User', 'globalStorage'));
-    addProfile(path.join(appSupport, 'Windsurf', 'User', 'globalStorage'));
+    bases.push(
+      path.join(appSupport, 'Code', 'User', 'globalStorage'),
+      path.join(appSupport, 'Code - Insiders', 'User', 'globalStorage'),
+      path.join(appSupport, 'Cursor', 'User', 'globalStorage'),
+      path.join(appSupport, 'Windsurf', 'User', 'globalStorage'),
+    );
   } else if (process.platform === 'linux') {
-    addProfile(path.join(home, '.config', 'Code', 'User', 'globalStorage'));
-    addProfile(path.join(home, '.config', 'Code - Insiders', 'User', 'globalStorage'));
-    addProfile(path.join(home, '.config', 'Cursor', 'User', 'globalStorage'));
-    addProfile(path.join(home, '.config', 'Windsurf', 'User', 'globalStorage'));
+    bases.push(
+      path.join(home, '.config', 'Code', 'User', 'globalStorage'),
+      path.join(home, '.config', 'Code - Insiders', 'User', 'globalStorage'),
+      path.join(home, '.config', 'Cursor', 'User', 'globalStorage'),
+      path.join(home, '.config', 'Windsurf', 'User', 'globalStorage'),
+    );
   } else if (process.platform === 'win32') {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-    addProfile(path.join(appData, 'Code', 'User', 'globalStorage'));
-    addProfile(path.join(appData, 'Code - Insiders', 'User', 'globalStorage'));
-    addProfile(path.join(appData, 'Cursor', 'User', 'globalStorage'));
-    addProfile(path.join(appData, 'Windsurf', 'User', 'globalStorage'));
+    bases.push(
+      path.join(appData, 'Code', 'User', 'globalStorage'),
+      path.join(appData, 'Code - Insiders', 'User', 'globalStorage'),
+      path.join(appData, 'Cursor', 'User', 'globalStorage'),
+      path.join(appData, 'Windsurf', 'User', 'globalStorage'),
+    );
   }
 
-  addProfile(path.join(home, '.vscode-server', 'data', 'User', 'globalStorage'));
-  addProfile(path.join(home, '.vscode-server-insiders', 'data', 'User', 'globalStorage'));
-  addProfile(path.join(home, '.cursor-server', 'data', 'User', 'globalStorage'));
-  addProfile(path.join(home, '.cursor-server-insiders', 'data', 'User', 'globalStorage'));
-
-  return profiles.filter(
-    (profile, index) =>
-      profiles.findIndex((candidate) => candidate.globalStorageBase === profile.globalStorageBase) === index,
+  bases.push(
+    path.join(home, '.vscode-server', 'data', 'User', 'globalStorage'),
+    path.join(home, '.vscode-server-insiders', 'data', 'User', 'globalStorage'),
+    path.join(home, '.cursor-server', 'data', 'User', 'globalStorage'),
+    path.join(home, '.cursor-server-insiders', 'data', 'User', 'globalStorage'),
   );
+
+  return uniquePaths(bases);
+}
+
+function getJetBrainsRoots(): string[] {
+  const home = homeDir();
+
+  if (process.platform === 'darwin') {
+    return [path.join(home, 'Library', 'Application Support', 'JetBrains')];
+  }
+
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    return [path.join(appData, 'JetBrains')];
+  }
+
+  return [path.join(home, '.config', 'JetBrains')];
 }
 
 async function pathExists(filePath: string): Promise<boolean> {
@@ -188,6 +298,25 @@ async function pathExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+  for (const filePath of paths) {
+    const resolved = path.resolve(filePath);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    // Push the resolved (canonical, absolute) path so downstream joins,
+    // existence checks, and de-dup keys stay reliable when `CLINE_DIR` or
+    // other inputs were relative.
+    results.push(resolved);
+  }
+  return results;
+}
+
+function settingsPathForGlobalStorage(base: string): string {
+  return path.join(path.dirname(base), 'settings.json');
 }
 
 function expandHomePath(value: string): string {
@@ -254,8 +383,7 @@ function stripJsonComments(content: string): string {
 
 async function readSettings(settingsPath: string): Promise<Record<string, unknown>> {
   try {
-    const content = await fs.readFile(settingsPath, 'utf8');
-    const parsed: unknown = JSON.parse(stripJsonComments(content));
+    const parsed: unknown = JSON.parse(stripJsonComments(await fs.readFile(settingsPath, 'utf8')));
     return isRecord(parsed) ? parsed : {};
   } catch (err) {
     logger.debug(`cline: cannot read settings ${settingsPath}`, err);
@@ -263,11 +391,11 @@ async function readSettings(settingsPath: string): Promise<Record<string, unknow
   }
 }
 
-async function discoverCustomStorageRoots(ext: ClineExtension, profiles: StorageProfile[]): Promise<string[]> {
-  const roots = new Set<string>();
-  const addRoot = (value: string) => {
+async function discoverCustomStorageRoots(ext: ClineExtension, globalStorageBases: string[]): Promise<string[]> {
+  const roots: string[] = [];
+  const addRoot = (value: string): void => {
     const expanded = expandHomePath(value);
-    if (path.isAbsolute(expanded)) roots.add(expanded);
+    if (path.isAbsolute(expanded)) roots.push(expanded);
   };
 
   for (const envKey of ext.customStorageEnvKeys) {
@@ -275,76 +403,278 @@ async function discoverCustomStorageRoots(ext: ClineExtension, profiles: Storage
     if (value) addRoot(value);
   }
 
-  for (const profile of profiles) {
-    const settings = await readSettings(profile.settingsPath);
+  for (const base of globalStorageBases) {
+    const settings = await readSettings(settingsPathForGlobalStorage(base));
     for (const settingKey of ext.customStorageSettingKeys) {
       const value = readString(settings, settingKey);
       if (value) addRoot(value);
     }
   }
 
-  return Array.from(roots);
+  return uniquePaths(roots);
 }
 
-async function discoverTaskDirsInRoot(
-  tasksRoot: string,
-  source: ClineSource,
-): Promise<Array<{ taskDir: string; taskId: string; source: ClineSource; tasksRoot: string }>> {
-  const results: Array<{ taskDir: string; taskId: string; source: ClineSource; tasksRoot: string }> = [];
-  if (!(await pathExists(tasksRoot))) return results;
+async function findDirsNamed(root: string, dirName: string, maxDepth: number): Promise<string[]> {
+  const found: string[] = [];
 
-  try {
-    const entries = await fs.readdir(tasksRoot, { withFileTypes: true });
+  async function walk(current: string, depth: number): Promise<void> {
+    if (depth > maxDepth) return;
+
+    let entries: Array<{ name: string; isDirectory: () => boolean }>;
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      logger.debug(`cline: cannot scan ${current}`, err);
+      return;
+    }
+
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const taskDir = path.join(tasksRoot, entry.name);
-      if (await hasRecognizedTaskFile(taskDir)) {
-        results.push({ taskDir, taskId: entry.name, source, tasksRoot });
+      const child = path.join(current, entry.name);
+      if (entry.name === dirName) {
+        found.push(child);
+        continue;
       }
+      await walk(child, depth + 1);
     }
-  } catch (err) {
-    logger.debug(`cline: cannot read tasks dir ${tasksRoot}`, err);
   }
 
-  return results;
+  if (await pathExists(root)) await walk(root, 0);
+  return found;
 }
 
-async function hasRecognizedTaskFile(taskDir: string): Promise<boolean> {
-  return (
-    (await pathExists(path.join(taskDir, TASK_FILE_NAMES.uiMessages))) ||
-    (await pathExists(path.join(taskDir, TASK_FILE_NAMES.apiConversationHistory))) ||
-    (await pathExists(path.join(taskDir, TASK_FILE_NAMES.historyItem)))
-  );
+async function getJetBrainsGlobalStorageBases(): Promise<string[]> {
+  const bases: string[] = [];
+  for (const root of getJetBrainsRoots()) {
+    bases.push(...(await findDirsNamed(root, 'globalStorage', 3)));
+  }
+  return uniquePaths(bases);
+}
+
+function getClineCliStorageRoots(): string[] {
+  const roots: string[] = [];
+  const clineDir = process.env.CLINE_DIR;
+  if (clineDir) roots.push(path.join(clineDir, 'data'));
+  roots.push(path.join(homeDir(), '.cline', 'data'));
+  return uniquePaths(roots);
+}
+
+async function getTaskRoots(filterSource?: ClineSource): Promise<TaskRoot[]> {
+  const roots: TaskRoot[] = [];
+
+  if (!filterSource || filterSource === 'cline') {
+    for (const storageRoot of getClineCliStorageRoots()) {
+      roots.push({
+        tasksRoot: path.join(storageRoot, 'tasks'),
+        storageRoot,
+        source: 'cline',
+      });
+    }
+  }
+
+  const globalStorageBases = uniquePaths([...getGlobalStorageBases(), ...(await getJetBrainsGlobalStorageBases())]);
+  for (const base of globalStorageBases) {
+    for (const ext of CLINE_EXTENSIONS) {
+      if (filterSource && ext.source !== filterSource) continue;
+      const storageRoot = path.join(base, ext.id);
+      roots.push({
+        tasksRoot: path.join(storageRoot, 'tasks'),
+        storageRoot,
+        source: ext.source,
+      });
+    }
+  }
+
+  for (const ext of CLINE_EXTENSIONS) {
+    if (filterSource && ext.source !== filterSource) continue;
+    for (const storageRoot of await discoverCustomStorageRoots(ext, globalStorageBases)) {
+      roots.push({
+        tasksRoot: path.join(storageRoot, 'tasks'),
+        storageRoot,
+        source: ext.source,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return roots.filter((root) => {
+    const key = `${root.source}:${path.resolve(root.tasksRoot)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function taskHasReadableData(taskDir: string): Promise<boolean> {
+  for (const fileName of TASK_SIGNAL_FILES) {
+    if (await pathExists(path.join(taskDir, fileName))) return true;
+  }
+  return false;
 }
 
 /**
  * Discover all task directories for a given extension across all IDE locations.
  * Returns tuples of (task-id directory path, extension source label).
  */
-async function discoverTaskDirs(): Promise<TaskEntry[]> {
-  const profiles = getStorageProfiles();
+async function discoverTaskDirs(filterSource?: ClineSource): Promise<TaskEntry[]> {
+  const taskRoots = await getTaskRoots(filterSource);
   const results: TaskEntry[] = [];
 
-  for (const profile of profiles) {
-    if (!(await pathExists(profile.globalStorageBase))) continue;
+  for (const { tasksRoot, storageRoot, source } of taskRoots) {
+    if (!(await pathExists(tasksRoot))) continue;
 
-    for (const ext of CLINE_EXTENSIONS) {
-      const tasksRoot = path.join(profile.globalStorageBase, ext.id, 'tasks');
-      results.push(...(await discoverTaskDirsInRoot(tasksRoot, ext.source)));
+    try {
+      const entries = await fs.readdir(tasksRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const taskDir = path.join(tasksRoot, entry.name);
+        if (await taskHasReadableData(taskDir)) {
+          results.push({ taskDir, taskId: entry.name, storageRoot, source });
+        }
+      }
+    } catch (err) {
+      logger.debug(`cline: cannot read tasks dir ${tasksRoot}`, err);
     }
   }
 
-  for (const ext of CLINE_EXTENSIONS) {
-    for (const customRoot of await discoverCustomStorageRoots(ext, profiles)) {
-      results.push(...(await discoverTaskDirsInRoot(path.join(customRoot, 'tasks'), ext.source)));
+  return results;
+}
+
+// ── Kilo Code SQLite Discovery ──────────────────────────────────────────────
+
+function cleanEnvPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Build the ordered list of candidate Kilo data roots. The default app
+ * directory upstream is the literal "kilo" name appended to xdg-basedir's
+ * data root (packages/opencode/src/global/index.ts: `const app = "kilo"`),
+ * so on every platform Kilo first writes under `$XDG_DATA_HOME/kilo` or
+ * `~/.local/share/kilo`. The macOS / Windows fallbacks below are defensive
+ * paths for non-default installs (sandboxed environments, custom XDG layouts
+ * that mirror native OS conventions). Upstream Kilo does NOT itself write to
+ * `~/Library/Application Support/kilo` or `%APPDATA%\kilo`; we probe them
+ * only so a non-canonical install does not silently disappear from discovery.
+ */
+function getKiloDataRoots(): string[] {
+  const home = homeDir();
+  const roots: string[] = [];
+  const xdgDataHome = cleanEnvPath(process.env.XDG_DATA_HOME);
+
+  if (xdgDataHome) roots.push(path.join(xdgDataHome, 'kilo'));
+
+  // Kilo's canonical default on every platform via xdg-basedir fallback.
+  roots.push(path.join(home, '.local', 'share', 'kilo'));
+
+  if (process.platform === 'darwin') {
+    roots.push(path.join(home, 'Library', 'Application Support', 'kilo'));
+  } else if (process.platform === 'win32') {
+    const localAppData = cleanEnvPath(process.env.LOCALAPPDATA);
+    const appData = cleanEnvPath(process.env.APPDATA);
+    if (localAppData) roots.push(path.join(localAppData, 'kilo'));
+    if (appData) roots.push(path.join(appData, 'kilo'));
+  }
+
+  return uniquePaths(roots);
+}
+
+function getKiloDbCandidatePaths(): string[] {
+  const kiloDb = cleanEnvPath(process.env.KILO_DB);
+  if (kiloDb) {
+    if (kiloDb === ':memory:') return [];
+    if (path.isAbsolute(kiloDb)) return [kiloDb];
+    return uniquePaths(getKiloDataRoots().map((root) => path.join(root, kiloDb)));
+  }
+
+  return uniquePaths(getKiloDataRoots().map((root) => path.join(root, 'kilo.db')));
+}
+
+async function discoverKiloDbPaths(): Promise<string[]> {
+  const dbPaths: string[] = [];
+  for (const dbPath of getKiloDbCandidatePaths()) {
+    if (await pathExists(dbPath)) dbPaths.push(dbPath);
+  }
+  return dbPaths;
+}
+
+/**
+ * Open Kilo's SQLite session store strictly read-only. Read-only is enforced
+ * via `node:sqlite`'s `readOnly: true` flag (Node.js v22+; verified at
+ * runtime by our integration test, which asserts that any write through this
+ * handle throws). Read-only is non-negotiable: this parser must never mutate
+ * a user's `kilo.db`.
+ */
+function openKiloDb(dbPath: string): { db: SqliteDatabase; close: () => void } | null {
+  try {
+    const sqliteModule = require('node:sqlite') as {
+      DatabaseSync: new (database: string, options?: { open?: boolean; readOnly?: boolean }) => SqliteDatabase;
+    };
+    const db = new sqliteModule.DatabaseSync(dbPath, { open: true, readOnly: true });
+    return { db, close: () => db.close() };
+  } catch (err) {
+    logger.debug('kilo-code: failed to open SQLite database', dbPath, err);
+    return null;
+  }
+}
+
+function tableColumns(db: SqliteDatabase, tableName: 'session' | 'message' | 'part' | 'project'): Set<string> {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+    const columns = new Set<string>();
+    for (const row of rows) {
+      if (isRecord(row) && typeof row.name === 'string') columns.add(row.name);
+    }
+    return columns;
+  } catch (err) {
+    logger.debug('kilo-code: failed to inspect SQLite table', tableName, err);
+    return new Set();
+  }
+}
+
+function missingColumns(columns: Set<string>, required: readonly string[]): string[] {
+  return required.filter((column) => !columns.has(column));
+}
+
+function inspectKiloDbSchema(db: SqliteDatabase): KiloDbSchema {
+  const schema: KiloDbSchema = {
+    session: tableColumns(db, 'session'),
+    message: tableColumns(db, 'message'),
+    part: tableColumns(db, 'part'),
+    project: tableColumns(db, 'project'),
+    supported: true,
+    warnings: [],
+  };
+
+  const required: Array<[keyof Pick<KiloDbSchema, 'session' | 'message' | 'part'>, readonly string[]]> = [
+    ['session', ['id']],
+    ['message', ['id', 'session_id', 'data']],
+    ['part', ['message_id', 'data']],
+  ];
+
+  for (const [tableName, requiredColumns] of required) {
+    const columns = schema[tableName];
+    if (columns.size === 0) {
+      schema.warnings.push(`Kilo SQLite schema unsupported: missing "${tableName}" table.`);
+      continue;
+    }
+
+    const missing = missingColumns(columns, requiredColumns);
+    if (missing.length > 0) {
+      schema.warnings.push(
+        `Kilo SQLite schema unsupported: "${tableName}" table is missing column(s): ${missing.join(', ')}.`,
+      );
     }
   }
 
-  return results.filter(
-    (entry, index) =>
-      results.findIndex((candidate) => candidate.source === entry.source && candidate.taskDir === entry.taskDir) ===
-      index,
-  );
+  schema.supported = schema.warnings.length === 0;
+  return schema;
+}
+
+function warnKiloDbFidelity(dbPath: string, warnings: string[]): void {
+  if (warnings.length === 0) return;
+  logger.warn('kilo-code: skipping SQLite database with unsupported schema', dbPath, warnings.join(' '));
 }
 
 // ── Message Parsing ─────────────────────────────────────────────────────────
@@ -375,6 +705,20 @@ function readStringArray(record: Record<string, unknown>, key: string): string[]
   return strings.length > 0 ? strings : undefined;
 }
 
+function readRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const value = record[key];
+  return isRecord(value) ? value : undefined;
+}
+
+function normalizeModelInfo(value: unknown): ClineModelInfo | undefined {
+  if (!isRecord(value)) return undefined;
+  const modelId = readString(value, 'modelId') ?? readString(value, 'model_id');
+  const providerId = readString(value, 'providerId') ?? readString(value, 'model_provider_id');
+  const mode = readString(value, 'mode');
+  if (!modelId && !providerId && !mode) return undefined;
+  return { modelId, providerId, mode };
+}
+
 function normalizeRawMessage(value: unknown): ClineRawMessage | null {
   if (!isRecord(value)) return null;
 
@@ -389,112 +733,755 @@ function normalizeRawMessage(value: unknown): ClineRawMessage | null {
     text: readString(value, 'text'),
     reasoning: readString(value, 'reasoning'),
     images: readStringArray(value, 'images'),
+    files: readStringArray(value, 'files'),
     partial: readBoolean(value, 'partial'),
+    modelInfo: normalizeModelInfo(value.modelInfo),
   };
 }
 
-function normalizeApiMessage(value: unknown): ApiRawMessage | null {
+function normalizeApiContentBlock(value: unknown): ClineApiContentBlock | null {
   if (!isRecord(value)) return null;
-  const role = readString(value, 'role');
-  if (role !== 'user' && role !== 'assistant' && role !== 'system') return null;
+  const type = readString(value, 'type');
+  if (!type) return null;
 
   return {
-    role,
-    content: value.content,
-    ts: readNumber(value, 'ts'),
-    isSummary: readBoolean(value, 'isSummary'),
-    reasoning_content: readString(value, 'reasoning_content'),
+    type,
     text: readString(value, 'text'),
-    summary: value.summary,
+    thinking: readString(value, 'thinking'),
+    id: readString(value, 'id'),
+    name: readString(value, 'name'),
+    input: readRecord(value, 'input'),
+    tool_use_id: readString(value, 'tool_use_id'),
+    content: value.content,
+    is_error: readBoolean(value, 'is_error'),
   };
 }
 
-async function readJsonValue(filePath: string, warnings?: string[], label?: string): Promise<unknown | undefined> {
+function normalizeApiMessage(value: unknown): ClineApiMessage | null {
+  if (!isRecord(value)) return null;
+  const rawRole = readString(value, 'role');
+  if (rawRole !== 'user' && rawRole !== 'assistant') return null;
+
+  const rawContent = value.content;
+  let content: ClineApiMessage['content'] | undefined;
+  if (typeof rawContent === 'string') {
+    content = rawContent;
+  } else if (Array.isArray(rawContent)) {
+    const blocks = rawContent
+      .map(normalizeApiContentBlock)
+      .filter((block): block is ClineApiContentBlock => block !== null);
+    content = blocks;
+  }
+
+  if (content === undefined) return null;
+
+  return {
+    id: readString(value, 'id'),
+    role: rawRole,
+    content,
+    ts: readNumber(value, 'ts'),
+    modelInfo: normalizeModelInfo(value.modelInfo),
+    metrics: readRecord(value, 'metrics'),
+  };
+}
+
+function normalizeTaskMetadata(value: unknown): ClineTaskMetadata | undefined {
+  if (!isRecord(value)) return undefined;
+
+  const readRecordArray = (key: string): Array<Record<string, unknown>> | undefined => {
+    const raw = value[key];
+    if (!Array.isArray(raw)) return undefined;
+    const records = raw.filter(isRecord);
+    return records.length > 0 ? records : undefined;
+  };
+
+  return {
+    model_usage: readRecordArray('model_usage'),
+    files_in_context: readRecordArray('files_in_context'),
+    environment_history: readRecordArray('environment_history'),
+  };
+}
+
+function normalizeTaskHistoryItem(value: unknown): ClineTaskHistoryItem | null {
+  if (!isRecord(value)) return null;
+  const id = readString(value, 'id');
+  if (!id) return null;
+
+  return {
+    id,
+    ts: readNumber(value, 'ts'),
+    task: readString(value, 'task'),
+    tokensIn: readNumber(value, 'tokensIn'),
+    tokensOut: readNumber(value, 'tokensOut'),
+    cacheWrites: readNumber(value, 'cacheWrites'),
+    cacheReads: readNumber(value, 'cacheReads'),
+    cwdOnTaskInitialization: readString(value, 'cwdOnTaskInitialization') ?? readString(value, 'workspace'),
+    workspace: readString(value, 'workspace'),
+    modelId: readString(value, 'modelId'),
+    mode: readString(value, 'mode'),
+    status: readString(value, 'status'),
+    apiConfigName: readString(value, 'apiConfigName'),
+  };
+}
+
+/**
+ * Companion-file read result. `warning` is set when the file existed but
+ * could not be parsed or had the wrong shape. Missing files produce no
+ * warning. The caller threads warnings into `sessionNotes.fidelityWarnings`.
+ */
+interface ReadResult<T> {
+  value: T;
+  warning?: string;
+}
+
+async function readJson(filePath: string, label: string): Promise<{ parsed?: unknown; warning?: string }> {
+  if (!(await pathExists(filePath))) return {};
   try {
-    const content = await fs.readFile(filePath, 'utf8');
-    if (!content.trim()) {
-      warnings?.push(`${label ?? path.basename(filePath)} was empty; the task may still be writing or locked.`);
-      return undefined;
-    }
-    return JSON.parse(content);
+    return { parsed: JSON.parse(await fs.readFile(filePath, 'utf8')) };
   } catch (err) {
-    if (warnings) {
-      warnings.push(
-        `${label ?? path.basename(filePath)} could not be read as complete JSON; Roo/Cline may still be writing or locking it.`,
-      );
-    }
-    logger.debug(`cline: failed to parse ${filePath}`, err);
-    return undefined;
+    logger.debug(`cline: failed to parse ${label}`, filePath, err);
+    return { warning: `${label} could not be parsed (invalid JSON)` };
   }
 }
 
-/** Read and parse ui_messages.json, returning an empty array on failure */
-async function readUiMessages(filePath: string, warnings?: string[]): Promise<ClineRawMessage[]> {
-  const parsed = await readJsonValue(filePath, warnings, TASK_FILE_NAMES.uiMessages);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.map(normalizeRawMessage).filter((msg): msg is ClineRawMessage => msg !== null);
+/** Read and parse ui_messages.json. Returns an empty array on failure. */
+async function readUiMessages(filePath: string): Promise<ReadResult<ClineRawMessage[]>> {
+  const { parsed, warning } = await readJson(filePath, UI_MESSAGES_FILE);
+  if (warning) return { value: [], warning };
+  if (parsed === undefined) return { value: [] };
+  if (!Array.isArray(parsed)) {
+    return {
+      value: [],
+      warning: `${UI_MESSAGES_FILE} had unexpected shape (expected JSON array)`,
+    };
+  }
+  return {
+    value: parsed.map(normalizeRawMessage).filter((msg): msg is ClineRawMessage => msg !== null),
+  };
 }
 
-async function readApiMessages(filePath: string, warnings?: string[]): Promise<ApiRawMessage[]> {
-  const parsed = await readJsonValue(filePath, warnings, TASK_FILE_NAMES.apiConversationHistory);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.map(normalizeApiMessage).filter((msg): msg is ApiRawMessage => msg !== null);
+async function readApiConversationHistory(filePath: string): Promise<ReadResult<ClineApiMessage[]>> {
+  const { parsed, warning } = await readJson(filePath, API_CONVERSATION_HISTORY_FILE);
+  if (warning) return { value: [], warning };
+  if (parsed === undefined) return { value: [] };
+  if (!Array.isArray(parsed)) {
+    return {
+      value: [],
+      warning: `${API_CONVERSATION_HISTORY_FILE} had unexpected shape (expected JSON array)`,
+    };
+  }
+  return {
+    value: parsed.map(normalizeApiMessage).filter((message): message is ClineApiMessage => message !== null),
+  };
 }
 
-async function readRecordFile(
+async function readTaskMetadata(filePath: string): Promise<ReadResult<ClineTaskMetadata | undefined>> {
+  const { parsed, warning } = await readJson(filePath, TASK_METADATA_FILE);
+  if (warning) return { value: undefined, warning };
+  return { value: normalizeTaskMetadata(parsed) };
+}
+
+function taskHistoryArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (isRecord(value)) {
+    const taskHistory = value.taskHistory ?? value.history ?? value.items ?? value.entries;
+    if (Array.isArray(taskHistory)) return taskHistory;
+  }
+  return [];
+}
+
+interface TaskHistoryReadResult {
+  map: TaskHistoryMap;
+  warnings: string[];
+}
+
+async function readTaskHistoryMap(paths: string[]): Promise<TaskHistoryReadResult> {
+  const itemsById: TaskHistoryMap = new Map();
+  const warnings: string[] = [];
+  for (const filePath of paths) {
+    const { parsed, warning } = await readJson(filePath, TASK_HISTORY_FILE);
+    if (warning) warnings.push(warning);
+    for (const item of taskHistoryArray(parsed).map(normalizeTaskHistoryItem)) {
+      if (item && !itemsById.has(item.id)) itemsById.set(item.id, item);
+    }
+  }
+  return { map: itemsById, warnings };
+}
+
+async function readTaskHistoryItemFile(
   filePath: string,
-  warnings?: string[],
-  label?: string,
-): Promise<Record<string, unknown> | undefined> {
-  const parsed = await readJsonValue(filePath, warnings, label);
-  return isRecord(parsed) ? parsed : undefined;
+  taskId: string,
+): Promise<{ item?: ClineTaskHistoryItem; warning?: string }> {
+  const { parsed, warning } = await readJson(filePath, HISTORY_ITEM_FILE);
+  if (warning) return { warning };
+  if (parsed === undefined) return {};
+
+  const item = normalizeTaskHistoryItem(parsed);
+  if (!item) {
+    return { warning: `${HISTORY_ITEM_FILE} had unexpected shape (expected JSON object)` };
+  }
+  return item.id === taskId ? { item } : {};
 }
 
-function taskDirFromOriginalPath(originalPath: string): string {
-  if (path.basename(originalPath).endsWith('.json')) return path.dirname(originalPath);
-  return originalPath;
+async function readTaskHistoryItem(
+  paths: string[],
+  taskId: string,
+): Promise<{ item?: ClineTaskHistoryItem; warnings: string[] }> {
+  const { map, warnings } = await readTaskHistoryMap(paths);
+  return { item: map.get(taskId), warnings };
 }
 
-async function readHistoryItem(taskDir: string, taskId: string, tasksRoot: string, warnings?: string[]) {
-  const perTaskPath = path.join(taskDir, TASK_FILE_NAMES.historyItem);
-  const perTask = (await pathExists(perTaskPath))
-    ? await readRecordFile(perTaskPath, warnings, TASK_FILE_NAMES.historyItem)
-    : undefined;
-  if (perTask) return perTask;
-
-  const indexPath = path.join(tasksRoot, TASK_FILE_NAMES.historyIndex);
-  const index = (await pathExists(indexPath))
-    ? await readRecordFile(indexPath, warnings, TASK_FILE_NAMES.historyIndex)
-    : undefined;
-  const entries = index?.entries;
-  if (!Array.isArray(entries)) return undefined;
-
-  const match = entries.find((entry) => isRecord(entry) && readString(entry, 'id') === taskId);
-  return isRecord(match) ? match : undefined;
+function taskHistoryCandidatesFromStorageRoot(storageRoot: string): string[] {
+  return [
+    path.join(storageRoot, 'state', TASK_HISTORY_FILE),
+    path.join(storageRoot, TASK_HISTORY_FILE),
+    path.join(storageRoot, 'tasks', HISTORY_INDEX_FILE),
+    path.join(storageRoot, HISTORY_INDEX_FILE),
+  ];
 }
 
-async function readTaskSidecars(taskDir: string, taskId: string, warnings: string[] = []): Promise<TaskSidecars> {
-  const tasksRoot = path.dirname(taskDir);
-  const uiPath = path.join(taskDir, TASK_FILE_NAMES.uiMessages);
-  const apiPath = path.join(taskDir, TASK_FILE_NAMES.apiConversationHistory);
-  const metadataPath = path.join(taskDir, TASK_FILE_NAMES.taskMetadata);
+function taskFilesFromDir(taskDir: string, storageRoot: string): TaskFiles {
+  return {
+    taskDir,
+    storageRoot,
+    uiMessages: path.join(taskDir, UI_MESSAGES_FILE),
+    apiConversationHistory: path.join(taskDir, API_CONVERSATION_HISTORY_FILE),
+    taskMetadata: path.join(taskDir, TASK_METADATA_FILE),
+    historyItem: path.join(taskDir, HISTORY_ITEM_FILE),
+    taskHistoryCandidates: taskHistoryCandidatesFromStorageRoot(storageRoot),
+  };
+}
 
-  const uiMessages = (await pathExists(uiPath)) ? await readUiMessages(uiPath, warnings) : [];
-  const apiMessages = (await pathExists(apiPath)) ? await readApiMessages(apiPath, warnings) : [];
-  const taskMetadata = (await pathExists(metadataPath))
-    ? await readRecordFile(metadataPath, warnings, TASK_FILE_NAMES.taskMetadata)
-    : undefined;
-  const historyItem = await readHistoryItem(taskDir, taskId, tasksRoot, warnings);
+function inferTaskDirFromOriginalPath(originalPath: string): string {
+  return path.extname(originalPath) === '.json' ? path.dirname(originalPath) : originalPath;
+}
 
-  return { uiMessages, apiMessages, taskMetadata, historyItem, warnings };
+function inferStorageRootFromTaskDir(taskDir: string): string {
+  const parent = path.dirname(taskDir);
+  return path.basename(parent) === 'tasks' ? path.dirname(parent) : parent;
+}
+
+async function loadTaskData(
+  taskDir: string,
+  storageRoot: string,
+  taskId: string,
+  cachedHistory?: TaskHistoryReadResult,
+): Promise<LoadedTaskData> {
+  const files = taskFilesFromDir(taskDir, storageRoot);
+  const [uiResult, apiResult, metadataResult, perTaskHistoryResult, historyResult] = await Promise.all([
+    readUiMessages(files.uiMessages),
+    readApiConversationHistory(files.apiConversationHistory),
+    readTaskMetadata(files.taskMetadata),
+    readTaskHistoryItemFile(files.historyItem, taskId),
+    cachedHistory
+      ? Promise.resolve({ item: cachedHistory.map.get(taskId), warnings: cachedHistory.warnings })
+      : readTaskHistoryItem(files.taskHistoryCandidates, taskId),
+  ]);
+
+  const fidelityWarnings: string[] = [];
+  if (uiResult.warning) fidelityWarnings.push(uiResult.warning);
+  if (apiResult.warning) fidelityWarnings.push(apiResult.warning);
+  if (metadataResult.warning) fidelityWarnings.push(metadataResult.warning);
+  if (perTaskHistoryResult.warning) fidelityWarnings.push(perTaskHistoryResult.warning);
+  // taskHistory warnings are de-duplicated because the cached result may be
+  // shared across sibling tasks under the same storage root.
+  for (const warning of historyResult.warnings) {
+    if (!fidelityWarnings.includes(warning)) fidelityWarnings.push(warning);
+  }
+
+  return {
+    files,
+    uiMessages: uiResult.value,
+    apiMessages: apiResult.value,
+    taskMetadata: metadataResult.value,
+    taskHistoryItem: perTaskHistoryResult.item ?? historyResult.item,
+    fidelityWarnings,
+  };
+}
+
+async function loadTaskDataFromOriginalPath(originalPath: string, taskId: string): Promise<LoadedTaskData> {
+  const taskDir = inferTaskDirFromOriginalPath(originalPath);
+  return loadTaskData(taskDir, inferStorageRootFromTaskDir(taskDir), taskId);
 }
 
 function messageText(msg: ClineRawMessage): string | undefined {
   return msg.say === 'reasoning' ? (msg.reasoning ?? msg.text) : msg.text;
 }
 
+function apiContentBlocks(content: ClineApiMessage['content']): ClineApiContentBlock[] {
+  return Array.isArray(content) ? content : [];
+}
+
+function apiMessageText(message: ClineApiMessage): string {
+  if (typeof message.content === 'string') return message.content.trim();
+
+  const parts: string[] = [];
+  for (const block of message.content) {
+    if (block.type === 'text' && block.text) parts.push(block.text);
+    if (block.type === 'thinking' && block.thinking) parts.push(block.thinking);
+  }
+  return parts.join('\n').trim();
+}
+
+function extractToolResultText(block: ClineApiContentBlock): string {
+  if (typeof block.content === 'string') return block.content;
+  if (!Array.isArray(block.content)) return '';
+
+  const parts: string[] = [];
+  for (const item of block.content) {
+    if (!isRecord(item)) continue;
+    const type = readString(item, 'type');
+    const text = readString(item, 'text');
+    if (type === 'text' && text) parts.push(text);
+  }
+  return parts.join('\n');
+}
+
+function getToolResultMap(messages: ClineApiMessage[]): Map<string, ToolResultEntry> {
+  const results = new Map<string, ToolResultEntry>();
+  for (const message of messages) {
+    for (const block of apiContentBlocks(message.content)) {
+      if (block.type !== 'tool_result' || !block.tool_use_id) continue;
+      results.set(block.tool_use_id, {
+        text: extractToolResultText(block),
+        isError: block.is_error === true,
+      });
+    }
+  }
+  return results;
+}
+
+function buildApiConversation(messages: ClineApiMessage[], config: VerbosityConfig): ConversationMessage[] {
+  const resultMap = getToolResultMap(messages);
+  const conversation: ConversationMessage[] = [];
+
+  for (const message of messages) {
+    const text = message.role === 'user' ? stripEnvironmentDetails(apiMessageText(message)) : apiMessageText(message);
+    const toolCalls: ToolCall[] = [];
+    const hasNonToolResultContent = typeof message.content === 'string' || text.length > 0;
+
+    for (const block of apiContentBlocks(message.content)) {
+      if (block.type !== 'tool_use' || !block.name) continue;
+      const resultEntry = block.id ? resultMap.get(block.id) : undefined;
+      toolCalls.push({
+        name: block.name,
+        id: block.id,
+        arguments: block.input ?? {},
+        ...(resultEntry?.text ? { result: truncate(resultEntry.text, config.mcp.resultChars) } : {}),
+        ...(resultEntry ? { success: !resultEntry.isError } : {}),
+      });
+    }
+
+    if (!hasNonToolResultContent && toolCalls.length === 0) continue;
+    if (!hasNonToolResultContent && apiContentBlocks(message.content).every((block) => block.type === 'tool_result'))
+      continue;
+
+    const content =
+      text || (toolCalls.length > 0 ? `[Used tools: ${toolCalls.map((toolCall) => toolCall.name).join(', ')}]` : '');
+    if (!content) continue;
+
+    conversation.push({
+      role: message.role,
+      content,
+      timestamp: message.ts ? new Date(message.ts) : undefined,
+      sourceId: message.id,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+    });
+  }
+
+  return conversation;
+}
+
 function isApiRequestMetadata(msg: ClineRawMessage): boolean {
   return msg.type === 'say' && (msg.say === 'api_req_started' || msg.say === 'api_req_finished');
+}
+
+function parseJsonRecord(value: unknown, context: string): Record<string, unknown> | null {
+  if (isRecord(value)) return value;
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch (err) {
+    logger.debug('kilo-code: failed to parse SQLite JSON', context, err);
+    return null;
+  }
+}
+
+function firstString(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = readString(record, key);
+    if (value?.trim()) return value;
+  }
+  return undefined;
+}
+
+function previewValue(value: unknown, maxLength = 160): string {
+  if (typeof value === 'string') return truncate(value.replace(/\s+/g, ' ').trim(), maxLength);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) return '';
+  try {
+    return truncate(JSON.stringify(value).replace(/\s+/g, ' ').trim(), maxLength);
+  } catch (err) {
+    logger.debug('kilo-code: failed to stringify SQLite part preview', err);
+    return '';
+  }
+}
+
+function timestampFromValue(value: unknown): Date | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  const millis = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function roleFromMessageData(data: Record<string, unknown>): ConversationMessage['role'] | null {
+  const role = readString(data, 'role');
+  if (role === 'user' || role === 'assistant' || role === 'system') return role;
+  return null;
+}
+
+/**
+ * Convert a Kilo part record into a single-line preview string for the
+ * cross-tool handoff conversation.
+ *
+ * Design decision (per PR open question on tool-part fidelity):
+ *   We summarize tool / patch / snapshot / agent / compaction / file / subtask
+ *   parts as `[type] preview` text rather than projecting them as structured
+ *   ConversationMessage.toolCall records. The rest of the Cline-family pipeline
+ *   feeds a markdown handoff (see `generateHandoffMarkdown`) — preview text
+ *   keeps the next-tool prompt compact, faithful to source ordering, and
+ *   consistent with how the legacy `ui_messages.json` path already flattens
+ *   tool activity into prose. Promoting these to structured tool calls would
+ *   require a parallel toolSummaries pipeline that the handoff renderer does
+ *   not currently consume.
+ *
+ * Part types covered (Kilo MessageV2 schema, packages/opencode/src/session/message-v2.ts):
+ *   text, reasoning, tool, file, snapshot, patch, agent, compaction, subtask, retry
+ *
+ * Part types intentionally elided (internal markers without user-meaningful prose):
+ *   step-start, step-finish — token totals are read at the message level via
+ *   `addKiloTokenUsage`; carrying them in conversation would dilute signal.
+ */
+function extractKiloPartContent(partData: Record<string, unknown>): string {
+  const type = readString(partData, 'type');
+
+  if (type === 'text') {
+    return firstString(partData, ['text', 'content', 'message']) ?? '';
+  }
+
+  if (type === 'reasoning') {
+    const text = firstString(partData, ['text', 'summary', 'content']);
+    return text ? `[reasoning] ${text}` : '';
+  }
+
+  if (type === 'tool') {
+    const toolName = readString(partData, 'tool') ?? readString(partData, 'name') ?? 'tool';
+    const state = readRecord(partData, 'state');
+    const status = state ? readString(state, 'status') : undefined;
+    const input = state ? previewValue(state.input, 90) : previewValue(partData.input, 90);
+    const output = state
+      ? previewValue(state.output ?? state.error, 120)
+      : previewValue(partData.output ?? partData.error, 120);
+    const label = status && status !== 'completed' ? `[tool:${toolName}:${status}]` : `[tool:${toolName}]`;
+    return [label, input, output].filter(Boolean).join(' ');
+  }
+
+  if (type === 'file') {
+    const filename = readString(partData, 'filename') ?? readString(partData, 'name') ?? '';
+    const mime = readString(partData, 'mime') ?? readString(partData, 'mediaType');
+    const url = readString(partData, 'url');
+    const descriptor = filename || url || mime || 'attachment';
+    return mime && filename ? `[file] ${descriptor} (${mime})` : `[file] ${descriptor}`;
+  }
+
+  if (type === 'subtask') {
+    const agent = readString(partData, 'agent') ?? 'subtask';
+    const description = firstString(partData, ['description', 'prompt', 'command']) ?? '';
+    return description ? `[subtask:${agent}] ${description}` : `[subtask:${agent}]`;
+  }
+
+  if (type === 'retry') {
+    const attempt = readNumber(partData, 'attempt');
+    const error = readRecord(partData, 'error');
+    const errorMessage =
+      (error && firstString(error, ['message', 'name', 'code'])) ?? readString(partData, 'error') ?? '';
+    const prefix = attempt !== undefined ? `[retry:${attempt}]` : '[retry]';
+    return errorMessage ? `${prefix} ${errorMessage}` : prefix;
+  }
+
+  if (type === 'patch' || type === 'snapshot' || type === 'agent' || type === 'compaction') {
+    const preview = firstString(partData, ['text', 'summary', 'content', 'diff', 'message']) ?? previewValue(partData);
+    return preview ? `[${type}] ${preview}` : '';
+  }
+
+  // step-start, step-finish: deliberately empty — tracked at message level only.
+  return '';
+}
+
+function addKiloTokenUsage(notes: SessionNotes, messageData: Record<string, unknown>): void {
+  const tokens = readRecord(messageData, 'tokens');
+  const usage = readRecord(messageData, 'usage');
+  if (!tokens && !usage) return;
+
+  const input =
+    (tokens && (readNumber(tokens, 'input') ?? readNumber(tokens, 'inputTokens'))) ??
+    (usage && (readNumber(usage, 'input_tokens') ?? readNumber(usage, 'inputTokens'))) ??
+    0;
+  const output =
+    (tokens && (readNumber(tokens, 'output') ?? readNumber(tokens, 'outputTokens'))) ??
+    (usage && (readNumber(usage, 'output_tokens') ?? readNumber(usage, 'outputTokens'))) ??
+    0;
+
+  if (input > 0 || output > 0) {
+    notes.tokenUsage = {
+      input: (notes.tokenUsage?.input ?? 0) + input,
+      output: (notes.tokenUsage?.output ?? 0) + output,
+    };
+  }
+
+  const reasoning =
+    (tokens && readNumber(tokens, 'reasoning')) ?? (usage && readNumber(usage, 'reasoning_tokens')) ?? 0;
+  if (reasoning > 0) notes.thinkingTokens = (notes.thinkingTokens ?? 0) + reasoning;
+
+  const cache = tokens && readRecord(tokens, 'cache');
+  const cacheRead =
+    (cache && readNumber(cache, 'read')) ??
+    (tokens && readNumber(tokens, 'cacheRead')) ??
+    (usage && readNumber(usage, 'cache_read_input_tokens')) ??
+    0;
+  const cacheCreation =
+    (cache && (readNumber(cache, 'write') ?? readNumber(cache, 'creation'))) ??
+    (tokens && readNumber(tokens, 'cacheWrite')) ??
+    (usage && readNumber(usage, 'cache_creation_input_tokens')) ??
+    0;
+
+  if (cacheRead > 0 || cacheCreation > 0) {
+    notes.cacheTokens = {
+      read: (notes.cacheTokens?.read ?? 0) + cacheRead,
+      creation: (notes.cacheTokens?.creation ?? 0) + cacheCreation,
+    };
+  }
+}
+
+function addKiloReasoning(partData: Record<string, unknown>, reasoning: string[], maxHighlights: number): void {
+  if (reasoning.length >= maxHighlights || readString(partData, 'type') !== 'reasoning') return;
+  const text = firstString(partData, ['text', 'summary', 'content']);
+  if (!text || text.length < 10) return;
+  reasoning.push(truncate(text.trim(), 200));
+}
+
+function selectColumns(columns: Set<string>, preferred: readonly string[]): string {
+  return preferred.filter((column) => columns.has(column)).join(', ');
+}
+
+function orderBy(columns: Set<string>, preferred: string, fallback: string): string {
+  if (columns.has(preferred) && columns.has(fallback)) return `${preferred} ASC, ${fallback} ASC`;
+  if (columns.has(preferred)) return `${preferred} ASC`;
+  if (columns.has(fallback)) return `${fallback} ASC`;
+  return 'rowid ASC';
+}
+
+interface KiloDbDiscoverySummary {
+  rowCount: number;
+  firstUserMessage: string;
+  model?: string;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
+}
+
+/**
+ * Lightweight summary used during session discovery.
+ *
+ * Issues a single message query (no parts) to determine row count and
+ * timestamps, then makes at most two follow-up part queries to recover
+ * the first-user content (for summary fallback) and model (for the
+ * unified session card). Avoids the N+1 message/part scan that the
+ * full extraction path requires, so listing remains fast on large DBs.
+ */
+function readKiloDbDiscoverySummary(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+): KiloDbDiscoverySummary {
+  const messageColumns = selectColumns(schema.message, ['id', 'time_created', 'data']);
+  let msgRows: unknown[];
+  try {
+    msgRows = db
+      .prepare(
+        `SELECT ${messageColumns} FROM message WHERE session_id = ? ORDER BY ${orderBy(schema.message, 'time_created', 'id')}`,
+      )
+      .all(sessionId);
+  } catch (err) {
+    logger.debug('kilo-code: failed to read message metadata for discovery', sessionId, err);
+    return { rowCount: 0, firstUserMessage: '' };
+  }
+
+  let firstTimestamp: Date | undefined;
+  let lastTimestamp: Date | undefined;
+  let firstUserMessageId: string | undefined;
+  let firstAssistantMessageId: string | undefined;
+  let model: string | undefined;
+
+  for (const msgRow of msgRows) {
+    if (!isRecord(msgRow)) continue;
+    const messageId = readString(msgRow, 'id');
+    if (!messageId) continue;
+
+    const messageData = parseJsonRecord(msgRow.data, `message:${messageId}`);
+    if (!messageData) continue;
+
+    const role = roleFromMessageData(messageData);
+    if (!role) continue;
+
+    const timestamp = timestampFromValue(msgRow.time_created);
+    if (timestamp) {
+      if (!firstTimestamp || timestamp.getTime() < firstTimestamp.getTime()) firstTimestamp = timestamp;
+      if (!lastTimestamp || timestamp.getTime() > lastTimestamp.getTime()) lastTimestamp = timestamp;
+    }
+
+    if (role === 'user' && !firstUserMessageId) firstUserMessageId = messageId;
+    if (role === 'assistant' && !firstAssistantMessageId) {
+      firstAssistantMessageId = messageId;
+      if (!model) {
+        model = firstString(messageData, ['modelID', 'modelId', 'model', 'providerID', 'providerId']);
+      }
+    }
+
+    if (firstUserMessageId && firstAssistantMessageId && model) break;
+  }
+
+  const firstUserMessage = firstUserMessageId ? readKiloDbPartsContent(db, schema, firstUserMessageId) : '';
+
+  return {
+    rowCount: msgRows.length,
+    firstUserMessage,
+    model,
+    firstTimestamp,
+    lastTimestamp,
+  };
+}
+
+/** Read and concatenate the text content of all parts for a single message. */
+function readKiloDbPartsContent(db: SqliteDatabase, schema: KiloDbSchema, messageId: string): string {
+  const partColumns = selectColumns(schema.part, ['id', 'message_id', 'time_created', 'data']);
+  let partRows: unknown[];
+  try {
+    partRows = db
+      .prepare(
+        `SELECT ${partColumns} FROM part WHERE message_id = ? ORDER BY ${orderBy(schema.part, 'time_created', 'id')}`,
+      )
+      .all(messageId);
+  } catch (err) {
+    logger.debug('kilo-code: failed to read part rows', messageId, err);
+    return '';
+  }
+
+  const contentParts: string[] = [];
+  for (const partRow of partRows) {
+    if (!isRecord(partRow)) continue;
+    const partData = parseJsonRecord(partRow.data, `part:${messageId}`);
+    if (!partData) continue;
+    const content = extractKiloPartContent(partData).trim();
+    if (content) contentParts.push(content);
+  }
+  return contentParts.join('\n').trim();
+}
+
+function readKiloDbMessagesFromHandle(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+  maxReasoningHighlights = 10,
+): KiloDbMessageRead {
+  const messageColumns = selectColumns(schema.message, ['id', 'session_id', 'time_created', 'data']);
+  const partColumns = selectColumns(schema.part, ['id', 'message_id', 'time_created', 'data']);
+  const msgRows = db
+    .prepare(
+      `SELECT ${messageColumns} FROM message WHERE session_id = ? ORDER BY ${orderBy(schema.message, 'time_created', 'id')}`,
+    )
+    .all(sessionId);
+
+  const messages: ConversationMessage[] = [];
+  const notes: SessionNotes = {};
+  const reasoning: string[] = [];
+  let firstTimestamp: Date | undefined;
+  let lastTimestamp: Date | undefined;
+
+  for (const msgRow of msgRows) {
+    if (!isRecord(msgRow)) continue;
+    const messageId = readString(msgRow, 'id');
+    if (!messageId) continue;
+
+    const messageData = parseJsonRecord(msgRow.data, `message:${messageId}`);
+    if (!messageData) continue;
+
+    const role = roleFromMessageData(messageData);
+    if (!role) continue;
+
+    const timestamp = timestampFromValue(msgRow.time_created);
+    if (timestamp) {
+      if (!firstTimestamp || timestamp.getTime() < firstTimestamp.getTime()) firstTimestamp = timestamp;
+      if (!lastTimestamp || timestamp.getTime() > lastTimestamp.getTime()) lastTimestamp = timestamp;
+    }
+
+    if (role === 'assistant' && !notes.model) {
+      notes.model = firstString(messageData, ['modelID', 'modelId', 'model', 'providerID', 'providerId']) ?? undefined;
+    }
+    addKiloTokenUsage(notes, messageData);
+
+    const partRows = db
+      .prepare(
+        `SELECT ${partColumns} FROM part WHERE message_id = ? ORDER BY ${orderBy(schema.part, 'time_created', 'id')}`,
+      )
+      .all(messageId);
+
+    const contentParts: string[] = [];
+    for (const partRow of partRows) {
+      if (!isRecord(partRow)) continue;
+      const partData = parseJsonRecord(partRow.data, `part:${messageId}`);
+      if (!partData) continue;
+
+      const content = extractKiloPartContent(partData).trim();
+      if (content) contentParts.push(content);
+      addKiloReasoning(partData, reasoning, maxReasoningHighlights);
+    }
+
+    const content = contentParts.join('\n').trim();
+    if (content) messages.push({ role, content, timestamp, sourceId: messageId });
+  }
+
+  if (reasoning.length > 0) notes.reasoning = reasoning;
+  if (firstTimestamp && lastTimestamp && lastTimestamp.getTime() >= firstTimestamp.getTime()) {
+    notes.activeTimeMs = lastTimestamp.getTime() - firstTimestamp.getTime();
+  }
+
+  return { messages, notes, rowCount: msgRows.length, firstTimestamp, lastTimestamp };
+}
+
+function getProjectWorktree(db: SqliteDatabase, schema: KiloDbSchema, projectId: string | undefined): string {
+  if (!projectId || !schema.project.has('id') || !schema.project.has('worktree')) return '';
+  try {
+    const row = db.prepare('SELECT worktree FROM project WHERE id = ?').get(projectId);
+    return isRecord(row) ? (readString(row, 'worktree') ?? '') : '';
+  } catch (err) {
+    logger.debug('kilo-code: failed to read SQLite project row', projectId, err);
+    return '';
+  }
+}
+
+function sessionSourceMetadata(row: Record<string, unknown>, dbPath: string): Record<string, unknown> {
+  return {
+    storage: 'sqlite',
+    dbPath,
+    ...(readString(row, 'slug') ? { slug: readString(row, 'slug') } : {}),
+    ...(readString(row, 'version') ? { version: readString(row, 'version') } : {}),
+    ...(readString(row, 'project_id') ? { projectId: readString(row, 'project_id') } : {}),
+  };
+}
+
+function isUnhelpfulDbTitle(title: string): boolean {
+  return title.trim().length === 0 || /^new session\b/iu.test(title.trim());
 }
 
 /**
@@ -549,13 +1536,21 @@ function classifyRole(msg: ClineRawMessage, state: ConversationState): Conversat
 
 /**
  * Extract the first real user message from a set of raw messages.
- * Used for session summary.
+ * Used for session summary during discovery, where we may scan thousands of
+ * messages but only need the first user hit. Iterates raw messages directly
+ * with the same role classification as `buildConversation`, avoiding the
+ * full conversation rebuild for large sessions.
  */
 function extractFirstUserMessage(messages: ClineRawMessage[]): string {
-  for (const msg of buildConversation(messages)) {
-    if (msg.role === 'user' && msg.content.length > 0) {
-      return msg.content;
-    }
+  const state: ConversationState = { hasSeenApiRequest: false };
+  for (const msg of messages) {
+    const role = classifyRole(msg, state);
+    if (isApiRequestMetadata(msg)) state.hasSeenApiRequest = true;
+    if (role !== 'user') continue;
+    const content = messageText(msg);
+    if (!content) continue;
+    const text = content.trim();
+    if (text) return text;
   }
   return '';
 }
@@ -608,381 +1603,80 @@ function buildConversation(messages: ClineRawMessage[]): ConversationMessage[] {
   return result;
 }
 
-function textFromContent(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-
-  return content
-    .map((block) => {
-      if (!isRecord(block)) return '';
-      const type = readString(block, 'type');
-      if (type === 'text') return readString(block, 'text') ?? '';
-      if (type === 'thinking' || type === 'reasoning')
-        return readString(block, 'thinking') ?? readString(block, 'text') ?? '';
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function buildApiConversation(messages: ApiRawMessage[]): ConversationMessage[] {
-  const result: ConversationMessage[] = [];
-
-  for (const msg of messages) {
-    if (msg.isSummary) continue;
-    // System turns are bootstrap/instruction prompts, not conversation —
-    // including them would surface raw system prompts in the handoff output.
-    if (msg.role === 'system') continue;
-    const content = textFromContent(msg.content).trim();
-    if (!content) continue;
-    result.push({ role: msg.role, content, timestamp: msg.ts ? new Date(msg.ts) : undefined });
-  }
-
-  return result;
-}
-
-function extractFirstApiUserMessage(messages: ApiRawMessage[]): string {
-  for (const msg of buildApiConversation(messages)) {
-    if (msg.role === 'user' && msg.content.length > 0) return msg.content;
-  }
-  return '';
-}
-
-function extractReasoningFromApi(messages: ApiRawMessage[], max: number): string[] {
-  const highlights: string[] = [];
-
-  for (const msg of messages) {
-    if (highlights.length >= max) break;
-    const candidates: string[] = [];
-    if (msg.reasoning_content) candidates.push(msg.reasoning_content);
-    if (msg.text && msg.role === 'assistant') candidates.push(msg.text);
-    if (Array.isArray(msg.summary)) {
-      for (const item of msg.summary) {
-        if (isRecord(item)) {
-          const text = readString(item, 'text');
-          if (text) candidates.push(text);
-        }
-      }
-    }
-
-    if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (!isRecord(block)) continue;
-        const type = readString(block, 'type');
-        if (type !== 'thinking' && type !== 'reasoning') continue;
-        const text = readString(block, 'thinking') ?? readString(block, 'text');
-        if (text) candidates.push(text);
-      }
-    }
-
-    for (const candidate of candidates) {
-      if (highlights.length >= max) break;
-      const trimmed = candidate.trim();
-      if (trimmed.length >= 10) highlights.push(truncate(trimmed, 200));
-    }
-  }
-
-  return highlights;
-}
-
-function contentPreview(content: unknown): string | undefined {
-  const text = textFromContent(content).trim();
-  return text ? truncate(text, 200) : undefined;
-}
-
-function inputRecord(input: unknown): Record<string, unknown> | undefined {
-  return isRecord(input) ? input : undefined;
-}
-
-function inputString(input: unknown, keys: string[]): string | undefined {
-  const record = inputRecord(input);
-  if (!record) return undefined;
-
-  for (const key of keys) {
-    const value = readString(record, key);
-    if (value) return value;
-  }
-
-  return undefined;
-}
-
-function stringifiedInput(input: unknown): string {
-  if (!isRecord(input)) return typeof input === 'string' ? truncate(input, 160) : '';
-
-  const entries = Object.entries(input)
-    .filter(([, value]) => value !== undefined && value !== null)
-    .slice(0, 4)
-    .map(([key, value]) => {
-      const rendered = typeof value === 'string' ? value : JSON.stringify(value);
-      return `${key}: ${truncate(rendered ?? '', 80)}`;
-    });
-
-  return entries.join(', ');
-}
-
-function toolFilePath(input: unknown): string | undefined {
-  return inputString(input, ['path', 'filePath', 'file_path', 'relativePath', 'relative_path']);
-}
-
-function isWriteToolName(toolName: string): boolean {
-  const normalized = toolName.toLowerCase();
-  return (
-    normalized.includes('write') ||
-    normalized.includes('replace') ||
-    normalized.includes('edit') ||
-    normalized.includes('diff') ||
-    normalized.includes('patch') ||
-    normalized.includes('insert')
-  );
-}
-
-function structuredResult(result?: string): string | undefined {
-  return result ? truncate(result, 200) : undefined;
-}
-
-function toolSampleForInvocation(invocation: ToolInvocation): {
-  category: string;
-  summary: string;
-  data?: StructuredToolSample;
-  filePath?: string;
-  isWrite?: boolean;
-  isError?: boolean;
-} {
-  const name = invocation.name;
-  const normalized = name.toLowerCase();
-  const result = structuredResult(invocation.result);
-  const filePath = toolFilePath(invocation.input);
-  const args = stringifiedInput(invocation.input);
-  const isError = invocation.isError === true;
-
-  if (normalized === 'execute_command' || normalized === 'run_command' || normalized === 'shell') {
-    const command = inputString(invocation.input, ['command', 'cmd']) ?? args;
-    return {
-      category: 'shell',
-      summary: shellSummary(command, result),
-      data: {
-        category: 'shell',
-        command,
-        ...(result ? { stdoutTail: result } : {}),
-        ...(isError ? { errored: true } : {}),
-      },
-      isError,
-    };
-  }
-
-  if (normalized === 'read_file' || normalized === 'read_file_tool') {
-    const target = filePath ?? args;
-    // Only attach `filePath` for tracking when a real path key was extracted —
-    // a stringified args fallback is for human-readable display only and must
-    // not leak into `filesModified` via the SummaryCollector.
-    return {
-      category: 'read',
-      summary: withResult(fileSummary('read', target), result),
-      data: { category: 'read', filePath: target },
-      ...(filePath ? { filePath } : {}),
-      isError,
-    };
-  }
-
-  if (isWriteToolName(normalized)) {
-    const target = filePath ?? args;
-    const op = normalized.includes('write') ? 'write' : 'edit';
-    return {
-      category: op,
-      summary: withResult(fileSummary(op, target), result),
-      data: { category: op, filePath: target },
-      // Same rationale: only mark as a write when we have an actual path —
-      // otherwise `args` strings would pollute `filesModified`.
-      ...(filePath ? { filePath, isWrite: true } : {}),
-      isError,
-    };
-  }
-
-  if (normalized === 'search_files' || normalized === 'grep_search') {
-    const pattern = inputString(invocation.input, ['regex', 'pattern', 'query']) ?? args;
-    const target = inputString(invocation.input, ['path', 'directory', 'targetPath']);
-    return {
-      category: 'grep',
-      summary: withResult(grepSummary(pattern, target), result),
-      data: { category: 'grep', pattern, ...(target ? { targetPath: target } : {}) },
-      isError,
-    };
-  }
-
-  if (normalized === 'list_files' || normalized === 'glob') {
-    const pattern = inputString(invocation.input, ['path', 'pattern']) ?? args;
-    return {
-      category: 'glob',
-      summary: withResult(globSummary(pattern), result),
-      data: { category: 'glob', pattern },
-      isError,
-    };
-  }
-
-  if (normalized === 'ask_followup_question') {
-    const question = inputString(invocation.input, ['question']) ?? args;
-    return {
-      category: 'AskUserQuestion',
-      summary: `ask "${truncate(question, 80)}"`,
-      data: { category: 'ask', question: truncate(question, 80) },
-      isError,
-    };
-  }
-
-  if (normalized === 'use_mcp_tool') {
-    const serverName = inputString(invocation.input, ['server_name', 'serverName']) ?? 'mcp';
-    const toolName = inputString(invocation.input, ['tool_name', 'toolName']) ?? name;
-    const fullName = `${serverName}.${toolName}`;
-    return {
-      category: 'mcp',
-      summary: mcpSummary(fullName, args, result),
-      data: { category: 'mcp', toolName: fullName, ...(args ? { params: args } : {}), ...(result ? { result } : {}) },
-      isError,
-    };
-  }
-
-  return {
-    category: name,
-    summary: withResult(`${name}(${args})`, result),
-    data: { category: 'mcp', toolName: name, ...(args ? { params: args } : {}), ...(result ? { result } : {}) },
-    filePath,
-    isWrite: filePath ? isWriteToolName(normalized) : false,
-    isError,
-  };
-}
-
-function collectToolInvocationsFromApi(messages: ApiRawMessage[]): ToolInvocation[] {
-  const invocations: ToolInvocation[] = [];
-  const byId = new Map<string, ToolInvocation>();
-
-  for (const msg of messages) {
-    if (!Array.isArray(msg.content)) continue;
-
-    for (const block of msg.content) {
-      if (!isRecord(block)) continue;
-      const type = readString(block, 'type');
-
-      if (type === 'tool_use') {
-        const name = readString(block, 'name');
-        if (!name) continue;
-        const id = readString(block, 'id');
-        const invocation: ToolInvocation = { id, name, input: block.input };
-        invocations.push(invocation);
-        if (id) byId.set(id, invocation);
-      } else if (type === 'tool_result') {
-        const id = readString(block, 'tool_use_id');
-        const invocation = id ? byId.get(id) : undefined;
-        if (!invocation) continue;
-        invocation.result = contentPreview(block.content);
-        invocation.isError = readBoolean(block, 'is_error') ?? false;
-      }
-    }
-  }
-
-  return invocations;
-}
-
-function addApiToolSummaries(messages: ApiRawMessage[], collector: SummaryCollector): void {
-  for (const invocation of collectToolInvocationsFromApi(messages)) {
-    const sample = toolSampleForInvocation(invocation);
-    collector.add(sample.category, sample.summary, {
-      data: sample.data,
-      filePath: sample.filePath,
-      isWrite: sample.isWrite,
-      isError: sample.isError,
-    });
-  }
-}
-
-function firstXmlTag(text: string, tag: string): string | undefined {
-  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'iu'));
-  return match?.[1]?.trim();
-}
-
-function parseJsonUiToolRecord(text: string): { toolName?: string; filePath?: string } | undefined {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{')) return undefined;
-
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!isRecord(parsed)) return undefined;
-
-    const toolName =
-      readString(parsed, 'tool') ??
-      readString(parsed, 'toolName') ??
-      readString(parsed, 'tool_name') ??
-      readString(parsed, 'name');
-    const filePath = toolFilePath(parsed);
-    if (!toolName && !filePath) return undefined;
-
-    return { toolName, filePath };
-  } catch (err) {
-    logger.debug('cline: skipping malformed UI tool JSON record', err);
-    return undefined;
-  }
-}
-
-function addUiToolSummaries(messages: ClineRawMessage[], collector: SummaryCollector): boolean {
-  let addedUiOnlyTool = false;
-
-  for (const msg of messages) {
-    if (!msg.text) continue;
-    const isToolRequest = (msg.type === 'ask' && msg.ask === 'tool') || (msg.type === 'say' && msg.say === 'tool');
-    if (!isToolRequest) continue;
-
-    const jsonRecord = parseJsonUiToolRecord(msg.text);
-    const toolName =
-      jsonRecord?.toolName ?? firstXmlTag(msg.text, 'tool_name') ?? msg.text.match(/<([a-z][\w-]*)>/iu)?.[1];
-    const filePath = jsonRecord?.filePath ?? firstXmlTag(msg.text, 'path') ?? firstXmlTag(msg.text, 'file_path');
-    if (!toolName && !filePath) continue;
-
-    const summary = `requested ${toolName ?? 'tool'}${filePath ? ` ${filePath}` : ''}`;
-    collector.add(toolName ? `ui:${toolName}` : 'ui:tool', summary, {
-      filePath,
-      isWrite: filePath ? isWriteToolName(toolName ?? msg.text) : false,
-    });
-    addedUiOnlyTool = true;
-  }
-
-  return addedUiOnlyTool;
-}
-
-function addMetadataFiles(taskMetadata: Record<string, unknown> | undefined, collector: SummaryCollector): void {
-  const files = taskMetadata?.files_in_context;
-  if (!Array.isArray(files)) return;
-
-  for (const item of files) {
-    if (!isRecord(item)) continue;
-    const filePath = readString(item, 'path');
-    if (!filePath) continue;
-    const source = readString(item, 'record_source');
-    const edited =
-      source === 'cline_edited' ||
-      source === 'user_edited' ||
-      readNumber(item, 'cline_edit_date') !== undefined ||
-      readNumber(item, 'user_edit_date') !== undefined;
-    if (edited) collector.trackFile(filePath);
-  }
-}
-
 // ── Token / Cost Extraction ─────────────────────────────────────────────────
 
 /**
- * Aggregate token usage and cost from api_req_* events.
+ * Cline-canonical usage events. Mirrors upstream `getApiMetrics`
+ * (src/shared/getApiMetrics.ts), which iterates these three event kinds and
+ * sums their per-request `tokensIn / tokensOut / cacheWrites / cacheReads`
+ * fields:
+ *   - `api_req_started` — current per-request usage (post-finalization)
+ *   - `deleted_api_reqs` — aggregated usage from history truncation
+ *   - `subagent_usage`  — aggregated usage from subagent batches
  *
- * Cline/Roo Code emit two distinct shapes:
- *   • `api_req_started` payloads carry per-request increments (`tokensIn`,
- *     `tokensOut`, `cacheWrites`, `cacheReads`). Summing these yields the
- *     session total.
- *   • `api_req_finished` payloads carry cumulative session totals
- *     (`totalTokensIn`, `totalTokensOut`, `totalCacheWrites`,
- *     `totalCacheReads`). The latest such event is authoritative.
- *
- * Mixing them would double-count, so prefer the cumulative totals when any
- * `total*` field is present, otherwise fall back to summing the per-request
- * increments.
+ * `api_req_finished` is intentionally excluded: upstream comments call it
+ * "legacy" and it's no longer emitted; including it would double-count old
+ * tasks where both events exist with the same per-request fields.
+ */
+const TOKEN_USAGE_SAYS = new Set(['api_req_started', 'deleted_api_reqs', 'subagent_usage']);
+
+/**
+ * Aggregate token usage from Cline UI events. Reads per-request deltas from
+ * `api_req_started`, plus aggregated deltas from `deleted_api_reqs` and
+ * `subagent_usage`, matching upstream `getApiMetrics` exactly.
  */
 function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
+  const notes: SessionNotes = {};
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalCacheWrites = 0;
+  let totalCacheReads = 0;
+  let found = false;
+
+  for (const msg of messages) {
+    if (msg.type !== 'say' || !msg.say || !TOKEN_USAGE_SAYS.has(msg.say)) continue;
+    if (!msg.text) continue;
+
+    try {
+      const parsed: unknown = JSON.parse(msg.text);
+      if (!isRecord(parsed)) continue;
+
+      const tokensIn = readNumber(parsed, 'tokensIn');
+      if (tokensIn !== undefined) {
+        totalIn += tokensIn;
+        found = true;
+      }
+      const tokensOut = readNumber(parsed, 'tokensOut');
+      if (tokensOut !== undefined) {
+        totalOut += tokensOut;
+        found = true;
+      }
+      const cacheWrites = readNumber(parsed, 'cacheWrites');
+      if (cacheWrites !== undefined) {
+        totalCacheWrites += cacheWrites;
+        found = true;
+      }
+      const cacheReads = readNumber(parsed, 'cacheReads');
+      if (cacheReads !== undefined) {
+        totalCacheReads += cacheReads;
+        found = true;
+      }
+    } catch (err) {
+      logger.debug('cline: skipping malformed API request metadata', err);
+    }
+  }
+
+  if (found) {
+    notes.tokenUsage = { input: totalIn, output: totalOut };
+  }
+  if (totalCacheWrites > 0 || totalCacheReads > 0) {
+    notes.cacheTokens = { creation: totalCacheWrites, read: totalCacheReads };
+  }
+
+  return notes;
+}
+
+function extractRooTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   const notes: SessionNotes = {};
   let incIn = 0;
   let incOut = 0;
@@ -1034,7 +1728,7 @@ function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
         foundIncremental = true;
       }
     } catch (err) {
-      logger.debug('cline: skipping malformed API request metadata', err);
+      logger.debug('cline: skipping malformed Roo API request metadata', err);
     }
   }
 
@@ -1054,63 +1748,89 @@ function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   return notes;
 }
 
-function applyHistoryItemNotes(notes: SessionNotes, historyItem: Record<string, unknown> | undefined): void {
-  if (!historyItem) return;
+function extractUsageFromTaskHistory(item?: ClineTaskHistoryItem): SessionNotes {
+  const notes: SessionNotes = {};
+  if (!item) return notes;
 
-  const tokensIn = readNumber(historyItem, 'tokensIn');
-  const tokensOut = readNumber(historyItem, 'tokensOut');
-  if (tokensIn !== undefined || tokensOut !== undefined) {
-    notes.tokenUsage = { input: tokensIn ?? 0, output: tokensOut ?? 0 };
-  }
-
-  const cacheWrites = readNumber(historyItem, 'cacheWrites');
-  const cacheReads = readNumber(historyItem, 'cacheReads');
-  if (cacheWrites !== undefined || cacheReads !== undefined) {
-    notes.cacheTokens = { creation: cacheWrites ?? 0, read: cacheReads ?? 0 };
-  }
-}
-
-function extractModelFromTaskMetadata(taskMetadata: Record<string, unknown> | undefined): string | undefined {
-  const modelUsage = taskMetadata?.model_usage;
-  if (!Array.isArray(modelUsage)) return undefined;
-
-  for (let i = modelUsage.length - 1; i >= 0; i--) {
-    const item = modelUsage[i];
-    if (!isRecord(item)) continue;
-    const model = readString(item, 'model_id');
-    if (model) return model;
-  }
-
-  return undefined;
-}
-
-function buildSourceMetadata(sidecars: TaskSidecars): Record<string, unknown> | undefined {
-  const metadata: Record<string, unknown> = {};
-
-  if (sidecars.apiMessages.length > 0) metadata.apiConversationMessages = sidecars.apiMessages.length;
-  if (sidecars.taskMetadata) {
-    const files = sidecars.taskMetadata.files_in_context;
-    const modelUsage = sidecars.taskMetadata.model_usage;
-    metadata.taskMetadata = {
-      ...(Array.isArray(files) ? { filesInContext: files.length } : {}),
-      ...(Array.isArray(modelUsage) ? { modelUsage: modelUsage.length } : {}),
+  if (item.tokensIn !== undefined || item.tokensOut !== undefined) {
+    notes.tokenUsage = {
+      input: item.tokensIn ?? 0,
+      output: item.tokensOut ?? 0,
     };
   }
-  if (sidecars.historyItem) {
-    metadata.historyItem = {
-      ...(readString(sidecars.historyItem, 'status') ? { status: readString(sidecars.historyItem, 'status') } : {}),
-      ...(readString(sidecars.historyItem, 'mode') ? { mode: readString(sidecars.historyItem, 'mode') } : {}),
-      ...(readString(sidecars.historyItem, 'apiConfigName')
-        ? { apiConfigName: readString(sidecars.historyItem, 'apiConfigName') }
-        : {}),
+  if (item.cacheWrites !== undefined || item.cacheReads !== undefined) {
+    notes.cacheTokens = {
+      creation: item.cacheWrites ?? 0,
+      read: item.cacheReads ?? 0,
     };
   }
-
-  return Object.keys(metadata).length > 0 ? metadata : undefined;
+  return notes;
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values));
+function extractUsageFromApiHistory(messages: ClineApiMessage[]): SessionNotes {
+  const notes: SessionNotes = {};
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let found = false;
+
+  for (const message of messages) {
+    const metrics = message.metrics;
+    if (!metrics) continue;
+    const tokens = readRecord(metrics, 'tokens');
+
+    const prompt = tokens ? readNumber(tokens, 'prompt') : readNumber(metrics, 'tokensIn');
+    const completion = tokens ? readNumber(tokens, 'completion') : readNumber(metrics, 'tokensOut');
+    const cached = tokens ? readNumber(tokens, 'cached') : readNumber(metrics, 'cacheReads');
+
+    if (prompt !== undefined) {
+      input += prompt;
+      found = true;
+    }
+    if (completion !== undefined) {
+      output += completion;
+      found = true;
+    }
+    if (cached !== undefined) {
+      cacheRead += cached;
+    }
+  }
+
+  if (found) notes.tokenUsage = { input, output };
+  if (cacheRead > 0) notes.cacheTokens = { creation: 0, read: cacheRead };
+  return notes;
+}
+
+/**
+ * Resolve token usage notes for a task.
+ *
+ * Precedence (highest first):
+ *   1. `taskHistory.json` `{tokensIn, tokensOut, cacheWrites, cacheReads}` —
+ *      Cline writes the canonical *post-finalization* totals here. Used
+ *      first because it's the same number Cline shows in its history UI.
+ *   2. `api_conversation_history.json` per-message `metrics.tokens` /
+ *      `metrics.tokensIn` — Cline records per-API-turn telemetry on each
+ *      assistant message. Summing these reproduces (1) for tasks where (1)
+ *      hasn't been written yet, and avoids the third source.
+ *   3. `ui_messages.json` per-event aggregation — sums per-request deltas
+ *      from `api_req_started` plus aggregated deltas from
+ *      `deleted_api_reqs` and `subagent_usage`, mirroring upstream
+ *      `getApiMetrics`. Used last because it requires reading the UI log,
+ *      which is the largest of the three companion files.
+ *
+ * The three sources are mutually consistent in current Cline; precedence
+ * picks the cheapest source available, not the "best" number. Because a
+ * single source is chosen, the totals are never double-counted across
+ * UI/API/history.
+ */
+function chooseUsageNotes(data: LoadedTaskData, source: ClineSource): SessionNotes {
+  const fromHistory = extractUsageFromTaskHistory(data.taskHistoryItem);
+  if (fromHistory.tokenUsage || fromHistory.cacheTokens) return fromHistory;
+
+  const fromApiHistory = extractUsageFromApiHistory(data.apiMessages);
+  if (fromApiHistory.tokenUsage || fromApiHistory.cacheTokens) return fromApiHistory;
+
+  return source === 'roo-code' ? extractRooTokenUsage(data.uiMessages) : extractTokenUsage(data.uiMessages);
 }
 
 /**
@@ -1124,6 +1844,22 @@ function extractReasoning(messages: ClineRawMessage[], max: number): string[] {
     const content = messageText(msg);
     if (!content || content.length < 10) continue;
     highlights.push(truncate(content.trim(), 200));
+  }
+  return highlights;
+}
+
+function extractApiReasoning(messages: ClineApiMessage[], max: number): string[] {
+  const highlights: string[] = [];
+  for (const message of messages) {
+    if (highlights.length >= max) break;
+    if (message.role !== 'assistant' || typeof message.content === 'string') continue;
+
+    for (const block of message.content) {
+      if (highlights.length >= max) break;
+      const text = block.type === 'thinking' ? block.thinking : undefined;
+      if (!text || text.length < 10) continue;
+      highlights.push(truncate(text.trim(), 200));
+    }
   }
   return highlights;
 }
@@ -1164,57 +1900,479 @@ function extractPendingTasks(messages: ClineRawMessage[], max: number): string[]
   return tasks;
 }
 
-function firstTimestamp(uiMessages: ClineRawMessage[], apiMessages: ApiRawMessage[]): number | undefined {
-  const timestamps = [
-    ...uiMessages.map((msg) => msg.ts).filter((ts): ts is number => ts !== undefined),
-    ...apiMessages.map((msg) => msg.ts).filter((ts): ts is number => ts !== undefined),
-  ];
-  return timestamps.length > 0 ? Math.min(...timestamps) : undefined;
-}
-
-function lastTimestamp(
-  uiMessages: ClineRawMessage[],
-  apiMessages: ApiRawMessage[],
-  historyItem: Record<string, unknown> | undefined,
-): number | undefined {
-  const historyTs = historyItem ? readNumber(historyItem, 'ts') : undefined;
-  const timestamps = [
-    ...uiMessages.map((msg) => msg.ts).filter((ts): ts is number => ts !== undefined),
-    ...apiMessages.map((msg) => msg.ts).filter((ts): ts is number => ts !== undefined),
-    ...(historyTs !== undefined ? [historyTs] : []),
-  ];
-  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
-}
-
-async function taskBytes(taskDir: string): Promise<number> {
-  let total = 0;
-  for (const fileName of [
-    TASK_FILE_NAMES.uiMessages,
-    TASK_FILE_NAMES.apiConversationHistory,
-    TASK_FILE_NAMES.taskMetadata,
-    TASK_FILE_NAMES.historyItem,
-  ]) {
-    const filePath = path.join(taskDir, fileName);
-    if (!(await pathExists(filePath))) continue;
-    try {
-      total += (await fs.stat(filePath)).size;
-    } catch (err) {
-      logger.debug(`cline: cannot stat ${filePath}`, err);
+function pendingLinesFromText(text: string, max: number): string[] {
+  const tasks: string[] = [];
+  for (const line of text.split('\n')) {
+    if (tasks.length >= max) break;
+    const trimmed = line.trim();
+    const lower = trimmed.toLowerCase();
+    if ((lower.startsWith('- [ ]') || lower.startsWith('todo:') || lower.includes('next step')) && trimmed.length > 5) {
+      tasks.push(truncate(trimmed, 200));
     }
   }
-  return total;
+  return tasks;
 }
 
-async function originalTaskPath(taskDir: string): Promise<string> {
-  for (const fileName of [
-    TASK_FILE_NAMES.uiMessages,
-    TASK_FILE_NAMES.historyItem,
-    TASK_FILE_NAMES.apiConversationHistory,
-  ]) {
-    const filePath = path.join(taskDir, fileName);
-    if (await pathExists(filePath)) return filePath;
+function extractPendingTasksFromConversation(messages: ConversationMessage[], max: number): string[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'assistant') continue;
+    const tasks = pendingLinesFromText(messages[i].content, max);
+    if (tasks.length > 0) return tasks;
   }
-  return taskDir;
+  return [];
+}
+
+function extractFirstApiUserMessage(messages: ClineApiMessage[]): string {
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const text = apiMessageText(message);
+    if (text) return stripEnvironmentDetails(text);
+  }
+  return '';
+}
+
+function stripEnvironmentDetails(text: string): string {
+  return text.replace(/<environment_details>[\s\S]*?<\/environment_details>/giu, '').trim();
+}
+
+function extractModelFromMetadata(metadata?: ClineTaskMetadata): string | undefined {
+  const lastModel = metadata?.model_usage?.at(-1);
+  return lastModel ? (readString(lastModel, 'model_id') ?? readString(lastModel, 'modelId')) : undefined;
+}
+
+function extractModelFromApiHistory(messages: ClineApiMessage[]): string | undefined {
+  let model: string | undefined;
+  for (const message of messages) {
+    if (message.modelInfo?.modelId) model = message.modelInfo.modelId;
+  }
+  return model;
+}
+
+function extractModelFromUiMessages(messages: ClineRawMessage[]): string | undefined {
+  let model: string | undefined;
+  for (const message of messages) {
+    if (message.modelInfo?.modelId) model = message.modelInfo.modelId;
+  }
+  return model;
+}
+
+/**
+ * Resolve the active model id for a task.
+ *
+ * Precedence (highest first):
+ *   1. `task_metadata.json` `model_usage` (last entry) — Cline writes a new
+ *      entry every time the user picks a model, so the tail is the latest
+ *      authoritative choice.
+ *   2. `taskHistory.json` `modelId` — Cline updates this index as the task
+ *      progresses; the value reflects the model at last activity.
+ *   3. `api_conversation_history.json` `modelInfo.modelId` — observed model
+ *      on the most recent API turn. Cline persists this on every assistant
+ *      message but it can drift if the user switches mid-task.
+ *   4. `ui_messages.json` `modelInfo.modelId` — same observation surface as
+ *      (3) but in UI form. Used last because it can include UI-only state
+ *      that wasn't actually committed to the API conversation.
+ *
+ * The first three sources are all equally trustworthy for steady-state
+ * tasks; the precedence matters only at the moment the user changes models
+ * mid-task before metadata is flushed. In that race, (2) and (3) may
+ * disagree with (1) and we trust the metadata file as the canonical source.
+ */
+function resolveModel(data: LoadedTaskData): string | undefined {
+  return (
+    extractModelFromMetadata(data.taskMetadata) ??
+    data.taskHistoryItem?.modelId ??
+    extractModelFromApiHistory(data.apiMessages) ??
+    extractModelFromUiMessages(data.uiMessages)
+  );
+}
+
+function buildSourceMetadata(data: LoadedTaskData): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {};
+
+  if (data.apiMessages.length > 0) metadata.apiConversationMessages = data.apiMessages.length;
+  if (data.taskMetadata) {
+    metadata.taskMetadata = {
+      ...(data.taskMetadata.files_in_context ? { filesInContext: data.taskMetadata.files_in_context.length } : {}),
+      ...(data.taskMetadata.model_usage ? { modelUsage: data.taskMetadata.model_usage.length } : {}),
+    };
+  }
+  if (data.taskHistoryItem) {
+    metadata.historyItem = {
+      ...(data.taskHistoryItem.status ? { status: data.taskHistoryItem.status } : {}),
+      ...(data.taskHistoryItem.mode ? { mode: data.taskHistoryItem.mode } : {}),
+      ...(data.taskHistoryItem.apiConfigName ? { apiConfigName: data.taskHistoryItem.apiConfigName } : {}),
+    };
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function looksLikePath(value: string): boolean {
+  return value.startsWith('/') || value.startsWith('~/') || /^[A-Za-z]:[\\/]/u.test(value);
+}
+
+const CWD_KEYS = [
+  'cwd',
+  'cwdOnTaskInitialization',
+  'currentWorkingDirectory',
+  'workingDirectory',
+  'workspacePath',
+  'rootPath',
+  'projectRoot',
+];
+
+/**
+ * Search a JSON value for a working-directory hint without false positives.
+ *
+ * To avoid mis-classifying arbitrary paths embedded in conversation text
+ * (e.g. `/usr/bin/node`) as the cwd, this only accepts path-like strings
+ * when they appear:
+ *   - directly under a known cwd-bearing key, or
+ *   - inside a string that contains an explicit `Current Working Directory ...`
+ *     / `cwd: ...` marker recognized by `extractCwdFromText`.
+ *
+ * Bare path-like strings (or strings nested in unrelated objects/arrays) are
+ * treated as untrusted and not returned.
+ */
+function findCwdInValue(value: unknown, depth = 0): string | undefined {
+  if (depth > 4) return undefined;
+
+  if (typeof value === 'string') {
+    // Only trust strings that carry an explicit "cwd: ..." / "Current Working
+    // Directory ..." marker. A bare path-like string is not enough.
+    return extractCwdFromText(value);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const cwd = findCwdInValue(item, depth + 1);
+      if (cwd) return cwd;
+    }
+    return undefined;
+  }
+
+  if (!isRecord(value)) return undefined;
+
+  // Strongest signal: a known cwd key with a path-like string value.
+  for (const key of CWD_KEYS) {
+    const raw = readString(value, key);
+    if (raw && looksLikePath(raw)) return raw;
+  }
+
+  // Fall back to scanning nested values for marker-bearing strings or nested
+  // cwd keys. Any path-like leaf strings are still rejected by the typeof
+  // 'string' branch above unless they include an explicit marker.
+  for (const nested of Object.values(value)) {
+    const cwd = findCwdInValue(nested, depth + 1);
+    if (cwd) return cwd;
+  }
+
+  return undefined;
+}
+
+function extractCwdFromUiApiEvents(messages: ClineRawMessage[]): string | undefined {
+  for (const message of messages) {
+    if (!isApiRequestMetadata(message) || !message.text) continue;
+    try {
+      const parsed: unknown = JSON.parse(message.text);
+      const cwd = findCwdInValue(parsed);
+      if (cwd) return cwd;
+    } catch (err) {
+      logger.debug('cline: skipping malformed API request metadata while extracting cwd', err);
+    }
+  }
+  return undefined;
+}
+
+function extractCwdFromText(text: string): string | undefined {
+  const patterns = [
+    /Current Working Directory\s*\(([^)]+)\)/iu,
+    /Current Working Directory\s*:\s*([^\n\r]+)/iu,
+    // Stop at whitespace so `cwd: /path some-other-text` does not capture
+    // the trailing words. cwd values written in Cline metadata are
+    // single tokens.
+    /\bcwd\s*[:=]\s*(\S+)/iu,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const cwd = match?.[1]?.trim();
+    if (cwd && looksLikePath(cwd)) return cwd;
+  }
+  return undefined;
+}
+
+function extractCwdFromApiHistory(messages: ClineApiMessage[]): string | undefined {
+  for (const message of messages) {
+    const cwd = extractCwdFromText(apiMessageText(message));
+    if (cwd) return cwd;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize a working directory to POSIX separators so downstream helpers
+ * like `extractRepoFromCwd` (which splits on `/`) handle Windows paths
+ * (`C:\Users\me\repo`) correctly.
+ */
+function normalizeCwd(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function resolveCwd(data: LoadedTaskData): string {
+  const raw =
+    data.taskHistoryItem?.cwdOnTaskInitialization ??
+    extractCwdFromUiApiEvents(data.uiMessages) ??
+    extractCwdFromApiHistory(data.apiMessages) ??
+    '';
+  return raw ? normalizeCwd(raw) : '';
+}
+
+function getInputString(input: Record<string, unknown>, key: string): string {
+  const value = input[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function stringifyArgs(input: Record<string, unknown>, maxChars: number): string {
+  try {
+    return truncate(JSON.stringify(input), maxChars);
+  } catch (err) {
+    logger.debug('cline: failed to stringify tool arguments', err);
+    return '';
+  }
+}
+
+function getToolFilePath(input: Record<string, unknown>): string {
+  return getInputString(input, 'path') || getInputString(input, 'file_path') || getInputString(input, 'filePath');
+}
+
+function isWriteToolName(toolName: string): boolean {
+  const normalized = toolName.toLowerCase();
+  return (
+    normalized.includes('write') ||
+    normalized.includes('edit') ||
+    normalized.includes('replace') ||
+    normalized.includes('apply') ||
+    normalized.includes('diff') ||
+    normalized.includes('patch')
+  );
+}
+
+function addClineToolSummary(
+  collector: SummaryCollector,
+  name: string,
+  input: Record<string, unknown>,
+  result: ToolResultEntry | undefined,
+  config: VerbosityConfig,
+): void {
+  const resultText = result?.text;
+  const isError = result?.isError ?? false;
+  const filePath = getToolFilePath(input);
+
+  switch (name) {
+    case 'execute_command': {
+      const command = getInputString(input, 'command') || getInputString(input, 'cmd');
+      collector.add(name, shellSummary(command, resultText), {
+        data: {
+          category: 'shell',
+          command,
+          ...(resultText ? { stdoutTail: truncate(resultText, config.shell.maxChars) } : {}),
+          ...(isError ? { errored: true, errorMessage: truncate(resultText ?? '', config.shell.maxChars) } : {}),
+        },
+        isError,
+      });
+      return;
+    }
+
+    case 'read_file': {
+      collector.add(name, withResult(fileSummary('read', filePath), resultText?.slice(0, 80)), {
+        data: { category: 'read', filePath },
+        filePath,
+        isError,
+      });
+      return;
+    }
+
+    case 'write_to_file': {
+      collector.add(name, withResult(fileSummary('write', filePath, undefined, true), resultText?.slice(0, 80)), {
+        data: { category: 'write', filePath, isNewFile: true },
+        filePath,
+        isWrite: true,
+        isError,
+      });
+      return;
+    }
+
+    case 'replace_in_file':
+    case 'apply_diff': {
+      collector.add(name, withResult(fileSummary('edit', filePath), resultText?.slice(0, 80)), {
+        data: { category: 'edit', filePath },
+        filePath,
+        isWrite: true,
+        isError,
+      });
+      return;
+    }
+
+    case 'search_files': {
+      const pattern =
+        getInputString(input, 'regex') || getInputString(input, 'pattern') || getInputString(input, 'query');
+      collector.add(name, withResult(grepSummary(pattern, filePath), resultText?.slice(0, 80)), {
+        data: { category: 'grep', pattern, ...(filePath ? { targetPath: filePath } : {}) },
+        isError,
+      });
+      return;
+    }
+
+    case 'list_files':
+    case 'list_code_definition_names': {
+      const target = filePath || getInputString(input, 'recursive') || '.';
+      collector.add(name, withResult(globSummary(target), resultText?.slice(0, 80)), {
+        data: { category: 'glob', pattern: target },
+        isError,
+      });
+      return;
+    }
+
+    default: {
+      const args = stringifyArgs(input, config.mcp.paramChars);
+      collector.add(name, mcpSummary(name, args, resultText?.slice(0, 80)), {
+        data: {
+          category: 'mcp',
+          toolName: name,
+          ...(args ? { params: args } : {}),
+          ...(resultText ? { result: resultText.slice(0, config.mcp.resultChars) } : {}),
+        },
+        isError,
+      });
+    }
+  }
+}
+
+function firstXmlTag(text: string, tag: string): string | undefined {
+  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'iu'));
+  return match?.[1]?.trim();
+}
+
+function parseJsonUiToolRecord(text: string): { toolName?: string; filePath?: string } | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isRecord(parsed)) return undefined;
+
+    const toolName =
+      readString(parsed, 'tool') ??
+      readString(parsed, 'toolName') ??
+      readString(parsed, 'tool_name') ??
+      readString(parsed, 'name');
+    const filePath = getToolFilePath(parsed);
+    if (!toolName && !filePath) return undefined;
+    return { toolName, filePath };
+  } catch (err) {
+    logger.debug('cline: skipping malformed UI tool JSON record', err);
+    return undefined;
+  }
+}
+
+function addUiToolSummaries(messages: ClineRawMessage[], collector: SummaryCollector): boolean {
+  let addedUiOnlyTool = false;
+
+  for (const msg of messages) {
+    if (!msg.text) continue;
+    const isToolRequest = (msg.type === 'ask' && msg.ask === 'tool') || (msg.type === 'say' && msg.say === 'tool');
+    if (!isToolRequest) continue;
+
+    const jsonRecord = parseJsonUiToolRecord(msg.text);
+    const toolName =
+      jsonRecord?.toolName ?? firstXmlTag(msg.text, 'tool_name') ?? msg.text.match(/<([a-z][\w-]*)>/iu)?.[1];
+    const filePath = jsonRecord?.filePath ?? firstXmlTag(msg.text, 'path') ?? firstXmlTag(msg.text, 'file_path');
+    if (!toolName && !filePath) continue;
+
+    const summary = `requested ${toolName ?? 'tool'}${filePath ? ` ${filePath}` : ''}`;
+    collector.add(toolName ? `ui:${toolName}` : 'ui:tool', summary, {
+      filePath,
+      isWrite: filePath ? isWriteToolName(toolName ?? msg.text) : false,
+    });
+    addedUiOnlyTool = true;
+  }
+
+  return addedUiOnlyTool;
+}
+
+function addMetadataFiles(taskMetadata: ClineTaskMetadata | undefined, collector: SummaryCollector): void {
+  const files = taskMetadata?.files_in_context;
+  if (!files) return;
+
+  for (const item of files) {
+    const filePath = readString(item, 'path');
+    if (!filePath) continue;
+    const source = readString(item, 'record_source');
+    const edited =
+      source === 'cline_edited' ||
+      source === 'user_edited' ||
+      readNumber(item, 'cline_edit_date') !== undefined ||
+      readNumber(item, 'user_edit_date') !== undefined;
+    if (edited) collector.trackFile(filePath);
+  }
+}
+
+function extractToolData(data: LoadedTaskData, config: VerbosityConfig): ToolData {
+  const collector = new SummaryCollector(config);
+  const resultMap = getToolResultMap(data.apiMessages);
+
+  for (const message of data.apiMessages) {
+    for (const block of apiContentBlocks(message.content)) {
+      if (block.type !== 'tool_use' || !block.name) continue;
+      const result = block.id ? resultMap.get(block.id) : undefined;
+      addClineToolSummary(collector, block.name, block.input ?? {}, result, config);
+    }
+  }
+
+  const hasUiOnlyToolSummaries = addUiToolSummaries(data.uiMessages, collector);
+  addMetadataFiles(data.taskMetadata, collector);
+
+  return {
+    summaries: collector.getSummaries(),
+    filesModified: collector.getFilesModified(),
+    fidelityWarnings:
+      hasUiOnlyToolSummaries && data.apiMessages.length === 0
+        ? ['UI-only tool records are approval/status records; tool results may be incomplete.']
+        : [],
+  };
+}
+
+async function existingCompanionStats(
+  files: TaskFiles,
+): Promise<Array<{ filePath: string; size: number; birthtime: Date; mtime: Date }>> {
+  const stats: Array<{ filePath: string; size: number; birthtime: Date; mtime: Date }> = [];
+  for (const filePath of [files.uiMessages, files.apiConversationHistory, files.taskMetadata, files.historyItem]) {
+    if (!(await pathExists(filePath))) continue;
+    try {
+      const fileStats = await fs.stat(filePath);
+      stats.push({ filePath, size: fileStats.size, birthtime: fileStats.birthtime, mtime: fileStats.mtime });
+    } catch (err) {
+      logger.debug(`cline: cannot stat companion file ${filePath}`, err);
+    }
+  }
+  return stats;
+}
+
+function messageTimestamps(data: LoadedTaskData): number[] {
+  const values: number[] = [];
+  for (const message of data.uiMessages) {
+    if (message.ts !== undefined) values.push(message.ts);
+  }
+  for (const message of data.apiMessages) {
+    if (message.ts !== undefined) values.push(message.ts);
+  }
+  if (data.taskHistoryItem?.ts !== undefined) values.push(data.taskHistoryItem.ts);
+  return values;
 }
 
 // ── Session Parsing (shared) ────────────────────────────────────────────────
@@ -1224,41 +2382,61 @@ async function originalTaskPath(taskDir: string): Promise<string> {
  * filtering to a single source variant.
  */
 async function parseSessionsForSource(filterSource?: ClineSource): Promise<UnifiedSession[]> {
-  const taskEntries = await discoverTaskDirs();
+  const taskEntries = await discoverTaskDirs(filterSource);
+  // Per-call cache. Shared across sessions under the same `storageRoot` so
+  // `taskHistory.json` is read once per discovery pass; new calls always
+  // re-read so live edits to taskHistory.json take effect immediately.
+  const taskHistoryCache = new Map<string, Promise<TaskHistoryReadResult>>();
   const sessions: UnifiedSession[] = [];
 
-  for (const { taskDir, taskId, source } of taskEntries) {
-    if (filterSource && source !== filterSource) continue;
-
+  for (const { taskDir, taskId, storageRoot, source } of taskEntries) {
     try {
-      const sidecars = await readTaskSidecars(taskDir, taskId);
-      const summary = cleanSummary(
-        readString(sidecars.historyItem ?? {}, 'task') ||
-          readString(sidecars.taskMetadata ?? {}, 'task') ||
-          extractFirstUserMessage(sidecars.uiMessages) ||
-          extractFirstApiUserMessage(sidecars.apiMessages),
-      );
+      const storageRootKey = path.resolve(storageRoot);
+      let cachedHistory = taskHistoryCache.get(storageRootKey);
+      if (!cachedHistory) {
+        cachedHistory = readTaskHistoryMap(taskHistoryCandidatesFromStorageRoot(storageRoot));
+        taskHistoryCache.set(storageRootKey, cachedHistory);
+      }
+
+      const data = await loadTaskData(taskDir, storageRoot, taskId, await cachedHistory);
+      if (data.uiMessages.length === 0 && data.apiMessages.length === 0 && !data.taskHistoryItem) continue;
+
+      const firstUserMsg =
+        extractFirstUserMessage(data.uiMessages) ||
+        extractFirstApiUserMessage(data.apiMessages) ||
+        data.taskHistoryItem?.task ||
+        '';
+      const summary = cleanSummary(firstUserMsg);
       if (!summary) continue; // Skip sessions with no real user message
 
-      // Derive timestamps: prefer message timestamps, fall back to file stats
-      const chosenPath = await originalTaskPath(taskDir);
-      const fileStats = await fs.stat(chosenPath);
-      const firstTs = firstTimestamp(sidecars.uiMessages, sidecars.apiMessages);
-      const lastTs = lastTimestamp(sidecars.uiMessages, sidecars.apiMessages, sidecars.historyItem);
-      const model = extractModelFromTaskMetadata(sidecars.taskMetadata);
-      const cwd = sidecars.historyItem ? readString(sidecars.historyItem, 'workspace') : undefined;
+      const stats = await existingCompanionStats(data.files);
+      if (stats.length === 0) continue;
+
+      // Derive timestamps: prefer message/history timestamps, fall back to file stats.
+      const timestamps = messageTimestamps(data);
+      const createdAt =
+        timestamps.length > 0
+          ? new Date(Math.min(...timestamps))
+          : new Date(Math.min(...stats.map((stat) => stat.birthtime.getTime())));
+      const updatedAt =
+        timestamps.length > 0
+          ? new Date(Math.max(...timestamps))
+          : new Date(Math.max(...stats.map((stat) => stat.mtime.getTime())));
+      const cwd = resolveCwd(data);
+      const model = resolveModel(data);
 
       sessions.push({
         id: taskId,
         source,
-        cwd: cwd ?? '',
-        lines: sidecars.uiMessages.length + sidecars.apiMessages.length,
-        bytes: (await taskBytes(taskDir)) || fileStats.size,
-        createdAt: firstTs ? new Date(firstTs) : fileStats.birthtime,
-        updatedAt: lastTs ? new Date(lastTs) : fileStats.mtime,
-        originalPath: chosenPath,
-        summary,
+        cwd,
+        ...(cwd ? { repo: extractRepoFromCwd(cwd) } : {}),
         ...(model ? { model } : {}),
+        lines: data.uiMessages.length || data.apiMessages.length,
+        bytes: stats.reduce((total, stat) => total + stat.size, 0),
+        createdAt,
+        updatedAt,
+        originalPath: stats[0].filePath,
+        summary,
       });
     } catch (err) {
       logger.debug(`cline: skipping unparseable task ${taskId}`, err);
@@ -1266,6 +2444,100 @@ async function parseSessionsForSource(filterSource?: ClineSource): Promise<Unifi
   }
 
   return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+async function parseKiloDbSessions(): Promise<UnifiedSession[]> {
+  const sessionsById = new Map<string, UnifiedSession>();
+
+  for (const dbPath of await discoverKiloDbPaths()) {
+    const handle = openKiloDb(dbPath);
+    if (!handle) continue;
+
+    const { db, close } = handle;
+    try {
+      const schema = inspectKiloDbSchema(db);
+      if (!schema.supported) {
+        warnKiloDbFidelity(dbPath, schema.warnings);
+        continue;
+      }
+
+      const dbStats = await fs.stat(dbPath);
+      const sessionColumns = selectColumns(schema.session, [
+        'id',
+        'project_id',
+        'slug',
+        'directory',
+        'title',
+        'version',
+        'time_created',
+        'time_updated',
+      ]);
+      const sortColumn = schema.session.has('time_updated') ? 'time_updated' : 'id';
+      const rows = db.prepare(`SELECT ${sessionColumns} FROM session ORDER BY ${sortColumn} DESC`).all();
+
+      for (const row of rows) {
+        if (!isRecord(row)) continue;
+        const id = readString(row, 'id');
+        if (!id) continue;
+
+        // Discovery uses a lightweight summary (one message-table query + at
+        // most one part query for the first user message) instead of walking
+        // every message and part for every session.
+        const summaryRead = readKiloDbDiscoverySummary(db, schema, id);
+        if (summaryRead.rowCount === 0) continue;
+
+        const title = readString(row, 'title') ?? '';
+        const slug = readString(row, 'slug') ?? '';
+        const summarySource = isUnhelpfulDbTitle(title) ? summaryRead.firstUserMessage || slug : title;
+        const summary = cleanSummary(summarySource || slug || summaryRead.firstUserMessage);
+        if (!summary) continue;
+
+        const projectId = readString(row, 'project_id');
+        const cwd = readString(row, 'directory') || getProjectWorktree(db, schema, projectId);
+        const createdAt = timestampFromValue(row.time_created) ?? summaryRead.firstTimestamp ?? dbStats.birthtime;
+        const updatedAt = timestampFromValue(row.time_updated) ?? summaryRead.lastTimestamp ?? dbStats.mtime;
+
+        const session: UnifiedSession = {
+          id,
+          source: 'kilo-code',
+          cwd,
+          repo: extractRepoFromCwd(cwd),
+          lines: summaryRead.rowCount,
+          bytes: dbStats.size,
+          createdAt,
+          updatedAt,
+          originalPath: dbPath,
+          summary,
+          model: summaryRead.model,
+        };
+
+        const existing = sessionsById.get(id);
+        if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+          sessionsById.set(id, session);
+        }
+      }
+    } catch (err) {
+      logger.debug('kilo-code: failed to parse SQLite sessions', dbPath, err);
+    } finally {
+      close();
+    }
+  }
+
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+async function parseKiloSessionsAll(): Promise<UnifiedSession[]> {
+  const sessionsById = new Map<string, UnifiedSession>();
+  for (const session of await parseKiloDbSessions()) {
+    sessionsById.set(session.id, session);
+  }
+  for (const session of await parseSessionsForSource('kilo-code')) {
+    const existing = sessionsById.get(session.id);
+    if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+      sessionsById.set(session.id, session);
+    }
+  }
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 // ── Context Extraction (shared) ─────────────────────────────────────────────
@@ -1276,75 +2548,174 @@ async function parseSessionsForSource(filterSource?: ClineSource): Promise<Unifi
  */
 async function extractContextShared(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
   const cfg = config ?? getPreset('standard');
-  const taskDir = taskDirFromOriginalPath(session.originalPath);
-  const warnings: string[] = [];
-  const sidecars = await readTaskSidecars(taskDir, session.id, warnings);
-  const messages = sidecars.uiMessages;
+  const data = await loadTaskDataFromOriginalPath(session.originalPath, session.id);
 
   // Build conversation messages
-  const uiConversation = buildConversation(messages);
-  const apiConversation = buildApiConversation(sidecars.apiMessages);
+  const uiConversation = buildConversation(data.uiMessages);
+  const apiConversation = buildApiConversation(data.apiMessages, cfg);
   const allConversation = uiConversation.length > 0 ? uiConversation : apiConversation;
   const recentMessages = allConversation.slice(-cfg.recentMessages);
 
   // Extract token usage and session notes
-  const sessionNotes: SessionNotes = extractTokenUsage(messages);
-  applyHistoryItemNotes(sessionNotes, sidecars.historyItem);
-
-  const model = extractModelFromTaskMetadata(sidecars.taskMetadata);
+  const sessionNotes: SessionNotes = chooseUsageNotes(data, session.source as ClineSource);
+  const model = resolveModel(data);
   if (model) sessionNotes.model = model;
 
   // Extract reasoning highlights
-  const reasoning = [
-    ...extractReasoning(messages, cfg.thinking?.maxHighlights ?? 5),
-    ...extractReasoningFromApi(sidecars.apiMessages, cfg.thinking?.maxHighlights ?? 5),
-  ].slice(0, cfg.thinking?.maxHighlights ?? 5);
+  const uiReasoning = extractReasoning(data.uiMessages, cfg.thinking?.maxHighlights ?? 5);
+  const reasoning =
+    uiReasoning.length > 0 ? uiReasoning : extractApiReasoning(data.apiMessages, cfg.thinking?.maxHighlights ?? 5);
   if (reasoning.length > 0) sessionNotes.reasoning = reasoning;
 
-  // Extract pending tasks
-  const pendingTasks = extractPendingTasks(messages, cfg.pendingTasks?.maxTasks ?? 5);
+  // Extract pending tasks. Three layers in order:
+  //   1. UI events (`completion_result` / `text`) — preserves the exact
+  //      assistant statement Cline rendered to the user.
+  //   2. UI-conversation tail — covers tasks where the assistant text is
+  //      structured but not on a `completion_result` event.
+  //   3. API-conversation tail — covers tasks where ui_messages.json is
+  //      thin or malformed but api_conversation_history.json is intact.
+  // Each layer is tried only when the previous one returned no hits.
+  const maxPendingTasks = cfg.pendingTasks?.maxTasks ?? 5;
+  const pendingTasksFromUi = extractPendingTasks(data.uiMessages, maxPendingTasks);
+  const pendingTasksFromAllConversation =
+    pendingTasksFromUi.length > 0
+      ? pendingTasksFromUi
+      : extractPendingTasksFromConversation(allConversation, maxPendingTasks);
+  const pendingTasks =
+    pendingTasksFromAllConversation.length > 0 || allConversation === apiConversation
+      ? pendingTasksFromAllConversation
+      : extractPendingTasksFromConversation(apiConversation, maxPendingTasks);
 
-  const collector = new SummaryCollector(cfg);
-  addApiToolSummaries(sidecars.apiMessages, collector);
-  const hasUiOnlyToolSummaries = addUiToolSummaries(messages, collector);
-  addMetadataFiles(sidecars.taskMetadata, collector);
-  if (hasUiOnlyToolSummaries && sidecars.apiMessages.length === 0) {
-    warnings.push('UI-only tool records are approval/status records; tool results may be incomplete.');
-  }
-
-  const sourceMetadata = buildSourceMetadata(sidecars);
+  const toolData = extractToolData(data, cfg);
+  const sourceMetadata = buildSourceMetadata(data);
   if (sourceMetadata) sessionNotes.sourceMetadata = sourceMetadata;
-  if (warnings.length > 0) sessionNotes.fidelityWarnings = uniqueStrings(warnings);
-
-  const toolSummaries = collector.getSummaries();
-  const filesModified = collector.getFilesModified();
-  const enrichedSession = {
+  const fidelityWarnings = uniqueStrings([...data.fidelityWarnings, ...toolData.fidelityWarnings]);
+  if (fidelityWarnings.length > 0) {
+    sessionNotes.fidelityWarnings = fidelityWarnings;
+  }
+  const cwd = resolveCwd(data) || session.cwd;
+  const sessionWithMetadata: UnifiedSession = {
     ...session,
-    ...(sidecars.historyItem && readString(sidecars.historyItem, 'workspace')
-      ? { cwd: readString(sidecars.historyItem, 'workspace') ?? session.cwd }
-      : {}),
-    ...(sessionNotes.model ? { model: sessionNotes.model } : {}),
+    ...(cwd ? { cwd, repo: session.repo || extractRepoFromCwd(cwd) } : {}),
+    ...(model ? { model } : {}),
   };
 
   const markdown = generateHandoffMarkdown(
-    enrichedSession,
+    sessionWithMetadata,
     recentMessages,
-    filesModified,
+    toolData.filesModified,
     pendingTasks,
-    toolSummaries,
+    toolData.summaries,
     sessionNotes,
     cfg,
   );
 
   return {
-    session: enrichedSession,
+    session: sessionWithMetadata,
     recentMessages,
-    filesModified,
+    filesModified: toolData.filesModified,
     pendingTasks,
-    toolSummaries,
+    toolSummaries: toolData.summaries,
     sessionNotes,
     markdown,
   };
+}
+
+function isTaskCompanionPath(filePath: string): boolean {
+  return path.basename(path.dirname(path.dirname(filePath))) === 'tasks';
+}
+
+function isKiloDbSession(session: UnifiedSession): boolean {
+  return session.source === 'kilo-code' && !isTaskCompanionPath(session.originalPath);
+}
+
+function emptyKiloDbContext(session: UnifiedSession, cfg: VerbosityConfig, fidelityWarnings: string[]): SessionContext {
+  const sessionNotes: SessionNotes = {
+    rawAccess: { kind: 'sqlite', path: session.originalPath },
+    sourceMetadata: { storage: 'sqlite', dbPath: session.originalPath },
+    fidelityWarnings,
+  };
+  const markdown = generateHandoffMarkdown(session, [], [], [], [], sessionNotes, cfg);
+
+  return {
+    session,
+    recentMessages: [],
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    sessionNotes,
+    markdown,
+  };
+}
+
+function readKiloSessionRow(
+  db: SqliteDatabase,
+  schema: KiloDbSchema,
+  sessionId: string,
+): Record<string, unknown> | null {
+  const sessionColumns = selectColumns(schema.session, ['id', 'project_id', 'slug', 'directory', 'title', 'version']);
+  try {
+    const row = db.prepare(`SELECT ${sessionColumns} FROM session WHERE id = ?`).get(sessionId);
+    return isRecord(row) ? row : null;
+  } catch (err) {
+    logger.debug('kilo-code: failed to read SQLite session metadata', sessionId, err);
+    return null;
+  }
+}
+
+async function extractKiloDbContext(session: UnifiedSession, config?: VerbosityConfig): Promise<SessionContext> {
+  const cfg = config ?? getPreset('standard');
+  const handle = openKiloDb(session.originalPath);
+  if (!handle) {
+    return emptyKiloDbContext(session, cfg, [`Kilo SQLite database could not be opened: ${session.originalPath}`]);
+  }
+
+  const { db, close } = handle;
+  try {
+    const schema = inspectKiloDbSchema(db);
+    if (!schema.supported) {
+      warnKiloDbFidelity(session.originalPath, schema.warnings);
+      return emptyKiloDbContext(session, cfg, schema.warnings);
+    }
+
+    const messageRead = readKiloDbMessagesFromHandle(db, schema, session.id, cfg.thinking?.maxHighlights ?? 5);
+    const sessionRow = readKiloSessionRow(db, schema, session.id);
+    const warnings =
+      messageRead.rowCount === 0 ? [`Kilo SQLite session "${session.id}" has no readable message rows.`] : [];
+
+    const sessionNotes: SessionNotes = {
+      ...messageRead.notes,
+      rawAccess: { kind: 'sqlite', path: session.originalPath },
+      sourceMetadata: {
+        ...(messageRead.notes.sourceMetadata ?? {}),
+        ...(sessionRow ? sessionSourceMetadata(sessionRow, session.originalPath) : {}),
+        storage: 'sqlite',
+        dbPath: session.originalPath,
+      },
+      ...(warnings.length > 0 ? { fidelityWarnings: warnings } : {}),
+    };
+
+    const recentMessages = messageRead.messages.slice(-cfg.recentMessages);
+    const enrichedSession = sessionNotes.model ? { ...session, model: sessionNotes.model } : session;
+    const markdown = generateHandoffMarkdown(enrichedSession, recentMessages, [], [], [], sessionNotes, cfg);
+
+    return {
+      session: enrichedSession,
+      recentMessages,
+      filesModified: [],
+      pendingTasks: [],
+      toolSummaries: [],
+      sessionNotes,
+      markdown,
+    };
+  } catch (err) {
+    logger.debug('kilo-code: failed to extract SQLite context', session.originalPath, session.id, err);
+    return emptyKiloDbContext(session, cfg, [
+      `Kilo SQLite session "${session.id}" could not be extracted without losing fidelity.`,
+    ]);
+  } finally {
+    close();
+  }
 }
 
 // ── Public API: Cline ───────────────────────────────────────────────────────
@@ -1378,7 +2749,7 @@ export async function extractRooCodeContext(
 
 /** Discover sessions for Kilo Code only */
 export async function parseKiloCodeSessions(): Promise<UnifiedSession[]> {
-  return parseSessionsForSource('kilo-code');
+  return parseKiloSessionsAll();
 }
 
 /** Extract context from a Kilo Code session (delegates to shared implementation) */
@@ -1386,5 +2757,6 @@ export async function extractKiloCodeContext(
   session: UnifiedSession,
   config?: VerbosityConfig,
 ): Promise<SessionContext> {
+  if (isKiloDbSession(session)) return extractKiloDbContext(session, config);
   return extractContextShared(session, config);
 }
