@@ -72,6 +72,14 @@ const AMP_BASE_DIR = process.env.XDG_DATA_HOME
   ? path.join(process.env.XDG_DATA_HOME, 'amp', 'threads')
   : path.join(homeDir(), '.local', 'share', 'amp', 'threads');
 
+function safeFileURLToPath(uri: string): string {
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Find all Amp thread JSON files
  */
@@ -139,7 +147,7 @@ function extractModel(thread: AmpThread): string | undefined {
 
 function extractAmpMetadata(thread: AmpThread): Pick<UnifiedSession, 'cwd' | 'repo' | 'branch' | 'gitSha'> {
   const firstTree = thread.env?.initial?.trees?.[0];
-  const cwd = firstTree?.uri?.startsWith('file://') ? fileURLToPath(firstTree.uri) : '';
+  const cwd = firstTree?.uri?.startsWith('file://') ? safeFileURLToPath(firstTree.uri) : '';
   const repo = extractRepo({ gitUrl: firstTree?.repository?.url, cwd });
   const ref = firstTree?.repository?.ref;
   const branch = ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
