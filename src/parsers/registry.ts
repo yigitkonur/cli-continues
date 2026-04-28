@@ -844,6 +844,8 @@ register({
   label: 'Roo Code',
   color: chalk.hex('#FF8C42'),
   storagePath: '~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks/',
+  envVar: 'ROO_CODE_STORAGE_PATH',
+  extraEnvVars: ['ROO_CLINE_STORAGE_PATH', 'CONTINUES_ROO_CODE_STORAGE_PATH'],
   binaryName: 'code',
   parseSessions: parseRooCodeSessions,
   extractContext: extractRooCodeContext,

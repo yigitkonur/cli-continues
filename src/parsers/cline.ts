@@ -892,6 +892,29 @@ function firstXmlTag(text: string, tag: string): string | undefined {
   return match?.[1]?.trim();
 }
 
+function parseJsonUiToolRecord(text: string): { toolName?: string; filePath?: string } | undefined {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!isRecord(parsed)) return undefined;
+
+    const toolName =
+      readString(parsed, 'tool') ??
+      readString(parsed, 'toolName') ??
+      readString(parsed, 'tool_name') ??
+      readString(parsed, 'name');
+    const filePath = toolFilePath(parsed);
+    if (!toolName && !filePath) return undefined;
+
+    return { toolName, filePath };
+  } catch (err) {
+    logger.debug('cline: skipping malformed UI tool JSON record', err);
+    return undefined;
+  }
+}
+
 function addUiToolSummaries(messages: ClineRawMessage[], collector: SummaryCollector): boolean {
   let addedUiOnlyTool = false;
 
@@ -900,8 +923,10 @@ function addUiToolSummaries(messages: ClineRawMessage[], collector: SummaryColle
     const isToolRequest = (msg.type === 'ask' && msg.ask === 'tool') || (msg.type === 'say' && msg.say === 'tool');
     if (!isToolRequest) continue;
 
-    const toolName = firstXmlTag(msg.text, 'tool_name') ?? msg.text.match(/<([a-z][\w-]*)>/iu)?.[1];
-    const filePath = firstXmlTag(msg.text, 'path') ?? firstXmlTag(msg.text, 'file_path');
+    const jsonRecord = parseJsonUiToolRecord(msg.text);
+    const toolName =
+      jsonRecord?.toolName ?? firstXmlTag(msg.text, 'tool_name') ?? msg.text.match(/<([a-z][\w-]*)>/iu)?.[1];
+    const filePath = jsonRecord?.filePath ?? firstXmlTag(msg.text, 'path') ?? firstXmlTag(msg.text, 'file_path');
     if (!toolName && !filePath) continue;
 
     const summary = `requested ${toolName ?? 'tool'}${filePath ? ` ${filePath}` : ''}`;

@@ -127,6 +127,21 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
+  it('indexNeedsRebuild returns true when Roo Code storage env vars change', () => {
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'roo-code')]);
+
+    vi.stubEnv('ROO_CODE_STORAGE_PATH', '/home/user/.roo-code-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+
+    vi.unstubAllEnvs();
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'roo-code')]);
+
+    vi.stubEnv('ROO_CLINE_STORAGE_PATH', '/home/user/.roo-cline-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
   it('loadIndex skips the fingerprint line and returns only sessions', () => {
     writeIndex('#env:CLAUDE_CONFIG_DIR=', [makeSession('sess-1', 'claude'), makeSession('sess-2', 'codex')]);
 

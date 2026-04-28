@@ -429,6 +429,40 @@ describe('Cline-family parser hardening', () => {
     });
   });
 
+  it('extracts JSON UI tool records before XML fallback', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'rooveterinaryinc.roo-cline', 'json-ui-tool-roo-task', [
+      { ts: 1770000350000, type: 'say', say: 'task', text: 'Summarize JSON UI tools' },
+      {
+        ts: 1770000351000,
+        type: 'ask',
+        ask: 'tool',
+        text: JSON.stringify({
+          tool: 'editedExistingFile',
+          path: 'src/a.ts',
+          content: '<read_file><path>wrong.ts</path></read_file>',
+        }),
+      },
+      {
+        ts: 1770000352000,
+        type: 'say',
+        say: 'tool',
+        text: JSON.stringify({ tool: 'appliedDiff', path: 'src/b.ts' }),
+      },
+    ]);
+
+    const { extractRooCodeContext } = await loadClineParser(home);
+    const context = await extractRooCodeContext(sessionFor('roo-code', originalPath));
+
+    const summary = context.toolSummaries.find((item) => item.name === 'ui:editedExistingFile');
+    expect(summary?.samples[0]?.summary).toBe('requested editedExistingFile src/a.ts');
+    expect(context.toolSummaries.find((item) => item.name === 'ui:appliedDiff')?.samples[0]?.summary).toBe(
+      'requested appliedDiff src/b.ts',
+    );
+    expect(context.toolSummaries.find((item) => item.name === 'ui:read_file')).toBeUndefined();
+    expect(context.filesModified).toEqual(['src/a.ts', 'src/b.ts']);
+  });
+
   it('adds a fidelity warning when richer Roo sidecar files look partial or locked', async () => {
     const home = makeHome();
     const originalPath = writeTask(home, 'rooveterinaryinc.roo-cline', 'partial-roo-task', [
