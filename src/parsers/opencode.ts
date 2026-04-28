@@ -196,7 +196,9 @@ function renderToolPart(partData: Record<string, unknown>): {
   const state = isRecord(partData.state) ? partData.state : {};
   const metadata = getRecordValue(state, 'metadata');
   const status = typeof state.status === 'string' ? state.status : undefined;
-  const fullResult = stringifyToolValue(state.output) ?? stringifyToolValue(state.error);
+  const outputString = stringifyToolValue(state.output);
+  const errorString = stringifyToolValue(state.error);
+  const fullResult = outputString && outputString.length > 0 ? outputString : errorString;
   const resultPreview = fullResult ? previewUnknown(fullResult) : '';
   const argPreview = previewUnknown(state.input, 120);
   const exitCode = firstNumber(metadata, ['exit', 'exitCode']);
