@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import type {
   ConversationMessage,
   SessionContext,
+  SessionEvent,
   SessionNotes,
   SessionParseOptions,
   ToolUsageSummary,
@@ -14,7 +15,7 @@ import type {
 import type { CodexMessage, CodexSessionMeta } from '../types/schemas.js';
 import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
-import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
+import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepo, homeDir } from '../utils/parser-helpers.js';
 import { matchesCwd } from '../utils/slug.js';
@@ -121,12 +122,18 @@ export async function parseCodexSessions(options: SessionParseOptions = {}): Pro
           ? { lines: 0, bytes: fileStats.size }
           : await getFileStats(filePath);
 
+      const payloadRecord = meta?.payload as Record<string, unknown> | undefined;
       const cwd = meta?.payload?.cwd || '';
       if (options.cwd && cwd && !matchesCwd(cwd, options.cwd)) return null;
 
       const gitUrl = meta?.payload?.git?.repository_url;
       const branch = meta?.payload?.git?.branch;
+      const gitSha = meta?.payload?.git?.commit_hash || meta?.payload?.git?.sha;
       const repo = extractRepo({ gitUrl, cwd });
+      const lastTranscriptTimestamp =
+        !options.lightweight && fileStats.size <= MAX_METADATA_SCAN_BYTES
+          ? await extractLastCodexTimestamp(filePath)
+          : undefined;
 
       const summary = cleanSummary(firstUserMessage);
 
@@ -136,10 +143,14 @@ export async function parseCodexSessions(options: SessionParseOptions = {}): Pro
         cwd,
         repo,
         branch,
+        gitSha,
         lines: stats.lines,
         bytes: stats.bytes,
-        createdAt: parsed.timestamp,
-        updatedAt: fileStats.mtime,
+        createdAt:
+          parseValidDate(typeof payloadRecord?.timestamp === 'string' ? payloadRecord.timestamp : undefined) ??
+          parseValidDate(meta?.timestamp) ??
+          parsed.timestamp,
+        updatedAt: lastTranscriptTimestamp ?? fileStats.mtime,
         originalPath: filePath,
         summary: summary || undefined,
       };
@@ -380,20 +391,6 @@ function extractToolData(
           data: { category: 'search', query },
         });
       }
-    } else if (msg.type === 'event_msg') {
-      // Task lifecycle events
-      const payload = msg.payload;
-      if (!payload) continue;
-      if (payload.type === 'task_started') {
-        const desc = truncate(payload.message || '', 60);
-        collector.add('task', `task: started "${desc}"`, {
-          data: { category: 'task', description: desc },
-        });
-      } else if (payload.type === 'task_complete') {
-        collector.add('task', 'task: completed', {
-          data: { category: 'task', description: 'completed' },
-        });
-      }
     }
   }
 
@@ -427,6 +424,23 @@ function extractSessionNotes(messages: CodexMessage[]): SessionNotes {
   };
 
   for (const msg of messages) {
+    if (msg.type === 'session_meta') {
+      const payload = msg.payload as Record<string, unknown> | undefined;
+      const git = payload?.git && typeof payload.git === 'object' ? (payload.git as Record<string, unknown>) : {};
+      notes.sourceMetadata = {
+        ...(notes.sourceMetadata ?? {}),
+        ...(typeof payload?.id === 'string' ? { sessionId: payload.id } : {}),
+        ...(typeof payload?.timestamp === 'string' ? { sessionTimestamp: payload.timestamp } : {}),
+        ...(typeof msg.timestamp === 'string' ? { rolloutTimestamp: msg.timestamp } : {}),
+        ...(typeof payload?.source === 'string' ? { source: payload.source } : {}),
+        ...(typeof payload?.originator === 'string' ? { originator: payload.originator } : {}),
+        ...(typeof payload?.cli_version === 'string' ? { cliVersion: payload.cli_version } : {}),
+        ...(typeof payload?.model_provider === 'string' ? { modelProvider: payload.model_provider } : {}),
+        ...(typeof git.commit_hash === 'string' ? { gitSha: git.commit_hash } : {}),
+      };
+      continue;
+    }
+
     // Model from turn_context
     if (msg.type === 'turn_context') {
       if (msg.payload?.model && !notes.model) notes.model = msg.payload.model;
@@ -441,6 +455,22 @@ function extractSessionNotes(messages: CodexMessage[]): SessionNotes {
     if (msg.type !== 'event_msg') continue;
     const payload = msg.payload;
     if (!payload) continue;
+
+    if (
+      payload.type === 'task_started' ||
+      payload.type === 'task_complete' ||
+      payload.type === 'turn_aborted' ||
+      payload.type === 'turn_completed'
+    ) {
+      if (!notes.lifecycle) notes.lifecycle = [];
+      notes.lifecycle.push({
+        type: payload.type,
+        timestamp: msg.timestamp,
+        message: payload.message,
+        metadata: extractCodexLifecycleMetadata(payload),
+      });
+      continue;
+    }
 
     if (payload.type === 'agent_reasoning' && reasoning.length < 5) {
       const text = payload.message || '';
@@ -488,8 +518,29 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
   // Collect from both sources separately to avoid duplicates, then merge preferring response_item.
   const eventMsgEntries: ConversationMessage[] = [];
   const responseItemEntries: ConversationMessage[] = [];
+  const lifecycleEvents: SessionEvent[] = [];
+  let lifecycleSequence = 0;
 
   for (const msg of messages) {
+    if (msg.type === 'event_msg' && msg.payload) {
+      const payload = msg.payload;
+      if (
+        payload.type === 'task_started' ||
+        payload.type === 'task_complete' ||
+        payload.type === 'turn_aborted' ||
+        payload.type === 'turn_completed'
+      ) {
+        lifecycleEvents.push({
+          kind: 'lifecycle',
+          sequence: lifecycleSequence++,
+          timestamp: parseValidDate(msg.timestamp),
+          status: payload.type,
+          content: payload.message,
+          metadata: extractCodexLifecycleMetadata(payload),
+        });
+      }
+    }
+
     if (msg.type === 'event_msg') {
       const payload = msg.payload;
       if (payload?.type === 'user_message') {
@@ -539,6 +590,7 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
   const hasResponseItems =
     responseItemEntries.some((m) => m.role === 'user') || responseItemEntries.some((m) => m.role === 'assistant');
   const allMessages = hasResponseItems ? responseItemEntries : eventMsgEntries;
+  const timeline = buildCodexTimeline(allMessages, lifecycleEvents);
 
   // Build a balanced tail: keep the last N messages but ensure user messages aren't lost.
   // Codex sessions can have many consecutive assistant messages (status updates, subagent reports).
@@ -572,6 +624,8 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
     toolSummaries,
     sessionNotes,
     resolvedConfig,
+    'inline',
+    timeline,
   );
 
   return {
@@ -581,8 +635,69 @@ export async function extractCodexContext(session: UnifiedSession, config?: Verb
     pendingTasks,
     toolSummaries,
     sessionNotes,
+    timeline,
     markdown,
   };
 }
 
 // generateHandoffMarkdown is imported from ../utils/markdown.js
+
+function parseValidDate(value: string | undefined): Date | undefined {
+  if (!value) return undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+async function extractLastCodexTimestamp(filePath: string): Promise<Date | undefined> {
+  let lastTimestamp: Date | undefined;
+  await scanJsonlFile(
+    filePath,
+    (parsed) => {
+      const timestamp = parseValidDate((parsed as { timestamp?: string }).timestamp);
+      if (timestamp) lastTimestamp = timestamp;
+      return 'continue';
+    },
+    { maxBytes: MAX_METADATA_SCAN_BYTES },
+  );
+  return lastTimestamp;
+}
+
+function extractCodexLifecycleMetadata(payload: Record<string, unknown>): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const key of [
+    'turn_id',
+    'model_context_window',
+    'reason',
+    'collaboration_mode_kind',
+    'started_at',
+    'completed_at',
+    'duration_ms',
+  ]) {
+    const value = payload[key];
+    if (value !== undefined) metadata[key] = value;
+  }
+  return metadata;
+}
+
+function buildCodexTimeline(messages: ConversationMessage[], lifecycleEvents: SessionEvent[]): SessionEvent[] {
+  let sequence = 0;
+  const messageEvents = messages.map(
+    (message): SessionEvent => ({
+      kind: 'message',
+      sequence: sequence++,
+      role: message.role,
+      content: message.content,
+      timestamp: message.timestamp,
+    }),
+  );
+
+  for (const event of lifecycleEvents) {
+    event.sequence = sequence++;
+  }
+
+  return [...messageEvents, ...lifecycleEvents].sort((left, right) => {
+    const leftTime = left.timestamp?.getTime() ?? 0;
+    const rightTime = right.timestamp?.getTime() ?? 0;
+    return leftTime - rightTime || left.sequence - right.sequence;
+  });
+}
