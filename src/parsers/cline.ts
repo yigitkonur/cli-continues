@@ -148,6 +148,13 @@ interface LoadedTaskData {
   apiMessages: ClineApiMessage[];
   taskMetadata?: ClineTaskMetadata;
   taskHistoryItem?: ClineTaskHistoryItem;
+  /**
+   * Companion-file fidelity warnings. Populated when a companion file exists
+   * on disk but cannot be parsed (invalid JSON, wrong shape) so the caller
+   * can surface the downgrade in `sessionNotes.fidelityWarnings`. Missing
+   * files are NOT warnings — only present-but-broken files are.
+   */
+  fidelityWarnings: string[];
 }
 
 interface ToolResultEntry {
@@ -495,38 +502,61 @@ function normalizeTaskHistoryItem(value: unknown): ClineTaskHistoryItem | null {
   };
 }
 
-async function readJson(filePath: string, label: string): Promise<unknown | undefined> {
-  if (!(await pathExists(filePath))) return undefined;
+/**
+ * Companion-file read result. `warning` is set when the file existed but
+ * could not be parsed or had the wrong shape. Missing files produce no
+ * warning. The caller threads warnings into `sessionNotes.fidelityWarnings`.
+ */
+interface ReadResult<T> {
+  value: T;
+  warning?: string;
+}
+
+async function readJson(filePath: string, label: string): Promise<{ parsed?: unknown; warning?: string }> {
+  if (!(await pathExists(filePath))) return {};
   try {
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+    return { parsed: JSON.parse(await fs.readFile(filePath, 'utf8')) };
   } catch (err) {
     logger.debug(`cline: failed to parse ${label}`, filePath, err);
-    return undefined;
+    return { warning: `${label} could not be parsed (invalid JSON)` };
   }
 }
 
-/** Read and parse ui_messages.json, returning an empty array on failure */
-async function readUiMessages(filePath: string): Promise<ClineRawMessage[]> {
-  if (!(await pathExists(filePath))) return [];
-  try {
-    const content = await fs.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(content);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map(normalizeRawMessage).filter((msg): msg is ClineRawMessage => msg !== null);
-  } catch (err) {
-    logger.debug('cline: failed to parse ui_messages.json', filePath, err);
-    return [];
+/** Read and parse ui_messages.json. Returns an empty array on failure. */
+async function readUiMessages(filePath: string): Promise<ReadResult<ClineRawMessage[]>> {
+  const { parsed, warning } = await readJson(filePath, UI_MESSAGES_FILE);
+  if (warning) return { value: [], warning };
+  if (parsed === undefined) return { value: [] };
+  if (!Array.isArray(parsed)) {
+    return {
+      value: [],
+      warning: `${UI_MESSAGES_FILE} had unexpected shape (expected JSON array)`,
+    };
   }
+  return {
+    value: parsed.map(normalizeRawMessage).filter((msg): msg is ClineRawMessage => msg !== null),
+  };
 }
 
-async function readApiConversationHistory(filePath: string): Promise<ClineApiMessage[]> {
-  const parsed = await readJson(filePath, API_CONVERSATION_HISTORY_FILE);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.map(normalizeApiMessage).filter((message): message is ClineApiMessage => message !== null);
+async function readApiConversationHistory(filePath: string): Promise<ReadResult<ClineApiMessage[]>> {
+  const { parsed, warning } = await readJson(filePath, API_CONVERSATION_HISTORY_FILE);
+  if (warning) return { value: [], warning };
+  if (parsed === undefined) return { value: [] };
+  if (!Array.isArray(parsed)) {
+    return {
+      value: [],
+      warning: `${API_CONVERSATION_HISTORY_FILE} had unexpected shape (expected JSON array)`,
+    };
+  }
+  return {
+    value: parsed.map(normalizeApiMessage).filter((message): message is ClineApiMessage => message !== null),
+  };
 }
 
-async function readTaskMetadata(filePath: string): Promise<ClineTaskMetadata | undefined> {
-  return normalizeTaskMetadata(await readJson(filePath, TASK_METADATA_FILE));
+async function readTaskMetadata(filePath: string): Promise<ReadResult<ClineTaskMetadata | undefined>> {
+  const { parsed, warning } = await readJson(filePath, TASK_METADATA_FILE);
+  if (warning) return { value: undefined, warning };
+  return { value: normalizeTaskMetadata(parsed) };
 }
 
 function taskHistoryArray(value: unknown): unknown[] {
@@ -538,19 +568,30 @@ function taskHistoryArray(value: unknown): unknown[] {
   return [];
 }
 
-async function readTaskHistoryMap(paths: string[]): Promise<TaskHistoryMap> {
+interface TaskHistoryReadResult {
+  map: TaskHistoryMap;
+  warnings: string[];
+}
+
+async function readTaskHistoryMap(paths: string[]): Promise<TaskHistoryReadResult> {
   const itemsById: TaskHistoryMap = new Map();
+  const warnings: string[] = [];
   for (const filePath of paths) {
-    const parsed = await readJson(filePath, TASK_HISTORY_FILE);
+    const { parsed, warning } = await readJson(filePath, TASK_HISTORY_FILE);
+    if (warning) warnings.push(warning);
     for (const item of taskHistoryArray(parsed).map(normalizeTaskHistoryItem)) {
       if (item && !itemsById.has(item.id)) itemsById.set(item.id, item);
     }
   }
-  return itemsById;
+  return { map: itemsById, warnings };
 }
 
-async function readTaskHistoryItem(paths: string[], taskId: string): Promise<ClineTaskHistoryItem | undefined> {
-  return (await readTaskHistoryMap(paths)).get(taskId);
+async function readTaskHistoryItem(
+  paths: string[],
+  taskId: string,
+): Promise<{ item?: ClineTaskHistoryItem; warnings: string[] }> {
+  const { map, warnings } = await readTaskHistoryMap(paths);
+  return { item: map.get(taskId), warnings };
 }
 
 function taskHistoryCandidatesFromStorageRoot(storageRoot: string): string[] {
@@ -581,19 +622,36 @@ async function loadTaskData(
   taskDir: string,
   storageRoot: string,
   taskId: string,
-  taskHistoryById?: TaskHistoryMap,
+  cachedHistory?: TaskHistoryReadResult,
 ): Promise<LoadedTaskData> {
   const files = taskFilesFromDir(taskDir, storageRoot);
-  const [uiMessages, apiMessages, taskMetadata, taskHistoryItem] = await Promise.all([
+  const [uiResult, apiResult, metadataResult, historyResult] = await Promise.all([
     readUiMessages(files.uiMessages),
     readApiConversationHistory(files.apiConversationHistory),
     readTaskMetadata(files.taskMetadata),
-    taskHistoryById
-      ? Promise.resolve(taskHistoryById.get(taskId))
+    cachedHistory
+      ? Promise.resolve({ item: cachedHistory.map.get(taskId), warnings: cachedHistory.warnings })
       : readTaskHistoryItem(files.taskHistoryCandidates, taskId),
   ]);
 
-  return { files, uiMessages, apiMessages, taskMetadata, taskHistoryItem };
+  const fidelityWarnings: string[] = [];
+  if (uiResult.warning) fidelityWarnings.push(uiResult.warning);
+  if (apiResult.warning) fidelityWarnings.push(apiResult.warning);
+  if (metadataResult.warning) fidelityWarnings.push(metadataResult.warning);
+  // taskHistory warnings are de-duplicated because the cached result may be
+  // shared across sibling tasks under the same storage root.
+  for (const warning of historyResult.warnings) {
+    if (!fidelityWarnings.includes(warning)) fidelityWarnings.push(warning);
+  }
+
+  return {
+    files,
+    uiMessages: uiResult.value,
+    apiMessages: apiResult.value,
+    taskMetadata: metadataResult.value,
+    taskHistoryItem: historyResult.item,
+    fidelityWarnings,
+  };
 }
 
 async function loadTaskDataFromOriginalPath(originalPath: string, taskId: string): Promise<LoadedTaskData> {
@@ -815,8 +873,24 @@ function buildConversation(messages: ClineRawMessage[]): ConversationMessage[] {
 // ── Token / Cost Extraction ─────────────────────────────────────────────────
 
 /**
- * Aggregate token usage and cost from api_req_started events.
- * Each event's text field contains a JSON object with token counts.
+ * Cline-canonical usage events. Mirrors upstream `getApiMetrics`
+ * (src/shared/getApiMetrics.ts), which iterates these three event kinds and
+ * sums their per-request `tokensIn / tokensOut / cacheWrites / cacheReads`
+ * fields:
+ *   - `api_req_started` — current per-request usage (post-finalization)
+ *   - `deleted_api_reqs` — aggregated usage from history truncation
+ *   - `subagent_usage`  — aggregated usage from subagent batches
+ *
+ * `api_req_finished` is intentionally excluded: upstream comments call it
+ * "legacy" and it's no longer emitted; including it would double-count old
+ * tasks where both events exist with the same per-request fields.
+ */
+const TOKEN_USAGE_SAYS = new Set(['api_req_started', 'deleted_api_reqs', 'subagent_usage']);
+
+/**
+ * Aggregate token usage from Cline UI events. Reads per-request deltas from
+ * `api_req_started`, plus aggregated deltas from `deleted_api_reqs` and
+ * `subagent_usage`, matching upstream `getApiMetrics` exactly.
  */
 function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   const notes: SessionNotes = {};
@@ -826,11 +900,8 @@ function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   let totalCacheReads = 0;
   let found = false;
 
-  // Only sum per-request `api_req_started` events. `api_req_finished` carries
-  // running cumulative totals (`totalTokensIn` etc.), so summing both produces
-  // O(n^2)-style inflated counts — see PR #57 review thread on token usage.
   for (const msg of messages) {
-    if (msg.type !== 'say' || msg.say !== 'api_req_started') continue;
+    if (msg.type !== 'say' || !msg.say || !TOKEN_USAGE_SAYS.has(msg.say)) continue;
     if (!msg.text) continue;
 
     try {
@@ -925,6 +996,28 @@ function extractUsageFromApiHistory(messages: ClineApiMessage[]): SessionNotes {
   return notes;
 }
 
+/**
+ * Resolve token usage notes for a task.
+ *
+ * Precedence (highest first):
+ *   1. `taskHistory.json` `{tokensIn, tokensOut, cacheWrites, cacheReads}` —
+ *      Cline writes the canonical *post-finalization* totals here. Used
+ *      first because it's the same number Cline shows in its history UI.
+ *   2. `api_conversation_history.json` per-message `metrics.tokens` /
+ *      `metrics.tokensIn` — Cline records per-API-turn telemetry on each
+ *      assistant message. Summing these reproduces (1) for tasks where (1)
+ *      hasn't been written yet, and avoids the third source.
+ *   3. `ui_messages.json` per-event aggregation — sums per-request deltas
+ *      from `api_req_started` plus aggregated deltas from
+ *      `deleted_api_reqs` and `subagent_usage`, mirroring upstream
+ *      `getApiMetrics`. Used last because it requires reading the UI log,
+ *      which is the largest of the three companion files.
+ *
+ * The three sources are mutually consistent in current Cline; precedence
+ * picks the cheapest source available, not the "best" number. Because a
+ * single source is chosen, the totals are never double-counted across
+ * UI/API/history.
+ */
 function chooseUsageNotes(data: LoadedTaskData): SessionNotes {
   const fromHistory = extractUsageFromTaskHistory(data.taskHistoryItem);
   if (fromHistory.tokenUsage || fromHistory.cacheTokens) return fromHistory;
@@ -1058,6 +1151,27 @@ function extractModelFromUiMessages(messages: ClineRawMessage[]): string | undef
   return model;
 }
 
+/**
+ * Resolve the active model id for a task.
+ *
+ * Precedence (highest first):
+ *   1. `task_metadata.json` `model_usage` (last entry) — Cline writes a new
+ *      entry every time the user picks a model, so the tail is the latest
+ *      authoritative choice.
+ *   2. `taskHistory.json` `modelId` — Cline updates this index as the task
+ *      progresses; the value reflects the model at last activity.
+ *   3. `api_conversation_history.json` `modelInfo.modelId` — observed model
+ *      on the most recent API turn. Cline persists this on every assistant
+ *      message but it can drift if the user switches mid-task.
+ *   4. `ui_messages.json` `modelInfo.modelId` — same observation surface as
+ *      (3) but in UI form. Used last because it can include UI-only state
+ *      that wasn't actually committed to the API conversation.
+ *
+ * The first three sources are all equally trustworthy for steady-state
+ * tasks; the precedence matters only at the moment the user changes models
+ * mid-task before metadata is flushed. In that race, (2) and (3) may
+ * disagree with (1) and we trust the metadata file as the canonical source.
+ */
 function resolveModel(data: LoadedTaskData): string | undefined {
   return (
     extractModelFromMetadata(data.taskMetadata) ??
@@ -1351,19 +1465,22 @@ function messageTimestamps(data: LoadedTaskData): number[] {
  */
 async function parseSessionsForSource(filterSource?: ClineSource): Promise<UnifiedSession[]> {
   const taskEntries = await discoverTaskDirs(filterSource);
-  const taskHistoryCache = new Map<string, Promise<TaskHistoryMap>>();
+  // Per-call cache. Shared across sessions under the same `storageRoot` so
+  // `taskHistory.json` is read once per discovery pass; new calls always
+  // re-read so live edits to taskHistory.json take effect immediately.
+  const taskHistoryCache = new Map<string, Promise<TaskHistoryReadResult>>();
   const sessions: UnifiedSession[] = [];
 
   for (const { taskDir, taskId, storageRoot, source } of taskEntries) {
     try {
       const storageRootKey = path.resolve(storageRoot);
-      let taskHistoryById = taskHistoryCache.get(storageRootKey);
-      if (!taskHistoryById) {
-        taskHistoryById = readTaskHistoryMap(taskHistoryCandidatesFromStorageRoot(storageRoot));
-        taskHistoryCache.set(storageRootKey, taskHistoryById);
+      let cachedHistory = taskHistoryCache.get(storageRootKey);
+      if (!cachedHistory) {
+        cachedHistory = readTaskHistoryMap(taskHistoryCandidatesFromStorageRoot(storageRoot));
+        taskHistoryCache.set(storageRootKey, cachedHistory);
       }
 
-      const data = await loadTaskData(taskDir, storageRoot, taskId, await taskHistoryById);
+      const data = await loadTaskData(taskDir, storageRoot, taskId, await cachedHistory);
       if (data.uiMessages.length === 0 && data.apiMessages.length === 0 && !data.taskHistoryItem) continue;
 
       const firstUserMsg =
@@ -1432,18 +1549,34 @@ async function extractContextShared(session: UnifiedSession, config?: VerbosityC
   const model = resolveModel(data);
   if (model) sessionNotes.model = model;
 
+  if (data.fidelityWarnings.length > 0) {
+    sessionNotes.fidelityWarnings = [...data.fidelityWarnings];
+  }
+
   // Extract reasoning highlights
   const uiReasoning = extractReasoning(data.uiMessages, cfg.thinking?.maxHighlights ?? 5);
   const reasoning =
     uiReasoning.length > 0 ? uiReasoning : extractApiReasoning(data.apiMessages, cfg.thinking?.maxHighlights ?? 5);
   if (reasoning.length > 0) sessionNotes.reasoning = reasoning;
 
-  // Extract pending tasks
-  const pendingTasksFromUi = extractPendingTasks(data.uiMessages, cfg.pendingTasks?.maxTasks ?? 5);
-  const pendingTasks =
+  // Extract pending tasks. Three layers in order:
+  //   1. UI events (`completion_result` / `text`) — preserves the exact
+  //      assistant statement Cline rendered to the user.
+  //   2. UI-conversation tail — covers tasks where the assistant text is
+  //      structured but not on a `completion_result` event.
+  //   3. API-conversation tail — covers tasks where ui_messages.json is
+  //      thin or malformed but api_conversation_history.json is intact.
+  // Each layer is tried only when the previous one returned no hits.
+  const maxPendingTasks = cfg.pendingTasks?.maxTasks ?? 5;
+  const pendingTasksFromUi = extractPendingTasks(data.uiMessages, maxPendingTasks);
+  const pendingTasksFromAllConversation =
     pendingTasksFromUi.length > 0
       ? pendingTasksFromUi
-      : extractPendingTasksFromConversation(allConversation, cfg.pendingTasks?.maxTasks ?? 5);
+      : extractPendingTasksFromConversation(allConversation, maxPendingTasks);
+  const pendingTasks =
+    pendingTasksFromAllConversation.length > 0 || allConversation === apiConversation
+      ? pendingTasksFromAllConversation
+      : extractPendingTasksFromConversation(apiConversation, maxPendingTasks);
 
   const toolData =
     data.apiMessages.length > 0 ? extractApiToolData(data.apiMessages, cfg) : { summaries: [], filesModified: [] };

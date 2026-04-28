@@ -43,6 +43,24 @@ function jetBrainsRoot(home: string): string {
   return path.join(home, '.config', 'JetBrains');
 }
 
+/**
+ * VS Code-fork globalStorage base. Cursor and Windsurf both ship a VS Code
+ * fork that reuses the same per-platform layout. The Cline extension can be
+ * installed inside any of them and stores tasks under its own publisher dir.
+ */
+function ideGlobalStorageBase(home: string, ide: 'Code' | 'Cursor' | 'Windsurf' | 'Code - Insiders'): string {
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', ide, 'User', 'globalStorage');
+  }
+  if (process.platform === 'linux') {
+    return path.join(home, '.config', ide, 'User', 'globalStorage');
+  }
+  if (process.platform === 'win32') {
+    return path.join(home, 'AppData', 'Roaming', ide, 'User', 'globalStorage');
+  }
+  return path.join(home, '.config', ide, 'User', 'globalStorage');
+}
+
 async function loadClineParser(
   home: string,
   options: LoadClineParserOptions = {},
@@ -576,7 +594,7 @@ describe('Cline-family parser hardening', () => {
     expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 0, read: 3 });
   });
 
-  it('returns empty context instead of throwing for invalid or non-array ui_messages.json files', async () => {
+  it('returns empty context with a fidelity warning for invalid or non-array ui_messages.json files', async () => {
     const home = makeHome();
     const invalidPath = writeRawTask(home, 'saoudrizwan.claude-dev', 'invalid-context', '{not valid json');
     const nonArrayPath = writeRawTask(
@@ -588,15 +606,23 @@ describe('Cline-family parser hardening', () => {
 
     const { extractClineContext } = await loadClineParser(home);
 
-    for (const originalPath of [invalidPath, nonArrayPath]) {
-      const context = await extractClineContext(sessionFor('cline', originalPath));
+    const invalidContext = await extractClineContext(sessionFor('cline', invalidPath));
+    expect(invalidContext.recentMessages).toEqual([]);
+    expect(invalidContext.pendingTasks).toEqual([]);
+    expect(invalidContext.filesModified).toEqual([]);
+    expect(invalidContext.toolSummaries).toEqual([]);
+    expect(invalidContext.sessionNotes?.fidelityWarnings).toEqual([
+      'ui_messages.json could not be parsed (invalid JSON)',
+    ]);
 
-      expect(context.recentMessages).toEqual([]);
-      expect(context.pendingTasks).toEqual([]);
-      expect(context.filesModified).toEqual([]);
-      expect(context.toolSummaries).toEqual([]);
-      expect(context.sessionNotes).toEqual({});
-    }
+    const nonArrayContext = await extractClineContext(sessionFor('cline', nonArrayPath));
+    expect(nonArrayContext.recentMessages).toEqual([]);
+    expect(nonArrayContext.pendingTasks).toEqual([]);
+    expect(nonArrayContext.filesModified).toEqual([]);
+    expect(nonArrayContext.toolSummaries).toEqual([]);
+    expect(nonArrayContext.sessionNotes?.fidelityWarnings).toEqual([
+      'ui_messages.json had unexpected shape (expected JSON array)',
+    ]);
   });
 
   it('discovers Cline tasks from JetBrains globalStorage directories', async () => {
@@ -669,5 +695,390 @@ describe('Cline-family parser hardening', () => {
       cwd: 'C:/Users/dev/projects/cli-continues',
       repo: 'projects/cli-continues',
     });
+  });
+
+  // ── IDE-fork storage discovery ──────────────────────────────────────────
+
+  it('discovers Cline tasks installed inside Cursor and Windsurf VS Code forks', async () => {
+    const home = makeHome();
+    // Cursor fork
+    writeTaskAtRoot(path.join(ideGlobalStorageBase(home, 'Cursor'), 'saoudrizwan.claude-dev', 'tasks'), 'cursor-task', [
+      { ts: 1770001000000, type: 'say', say: 'task', text: 'Discover from Cursor fork storage' },
+    ]);
+    // Windsurf fork
+    writeTaskAtRoot(
+      path.join(ideGlobalStorageBase(home, 'Windsurf'), 'saoudrizwan.claude-dev', 'tasks'),
+      'windsurf-task',
+      [{ ts: 1770001001000, type: 'say', say: 'task', text: 'Discover from Windsurf fork storage' }],
+    );
+    // Code Insiders fork (covers the third VS Code variant the parser scans)
+    writeTaskAtRoot(
+      path.join(ideGlobalStorageBase(home, 'Code - Insiders'), 'saoudrizwan.claude-dev', 'tasks'),
+      'insiders-task',
+      [{ ts: 1770001002000, type: 'say', say: 'task', text: 'Discover from VS Code Insiders' }],
+    );
+
+    const { parseClineSessions } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+
+    const ids = sessions.map((session) => session.id).sort();
+    expect(ids).toEqual(['cursor-task', 'insiders-task', 'windsurf-task']);
+    expect(sessions.every((session) => session.source === 'cline')).toBe(true);
+
+    const cursor = sessions.find((session) => session.id === 'cursor-task');
+    const windsurf = sessions.find((session) => session.id === 'windsurf-task');
+    const insiders = sessions.find((session) => session.id === 'insiders-task');
+    expect(cursor?.originalPath).toContain(path.join('Cursor'));
+    expect(windsurf?.originalPath).toContain(path.join('Windsurf'));
+    expect(insiders?.originalPath).toContain(path.join('Code - Insiders'));
+  });
+
+  it('does not duplicate tasks when the same task id exists across multiple IDE forks', async () => {
+    const home = makeHome();
+    // Same task id present in three forks with different summaries — each
+    // fork has its own globalStorage so the parser must surface all three
+    // distinct (storage-root, task-id) pairs, NOT collapse them. This is
+    // the ONLY surface where Cline tasks "appear" twice on disk; users who
+    // copied their saoudrizwan.claude-dev folder between IDE forks would
+    // legitimately see the same id in each fork.
+    writeTaskAtRoot(path.join(ideGlobalStorageBase(home, 'Code'), 'saoudrizwan.claude-dev', 'tasks'), 'shared-id', [
+      { ts: 1770001100000, type: 'say', say: 'task', text: 'task in VS Code' },
+    ]);
+    writeTaskAtRoot(path.join(ideGlobalStorageBase(home, 'Cursor'), 'saoudrizwan.claude-dev', 'tasks'), 'shared-id', [
+      { ts: 1770001101000, type: 'say', say: 'task', text: 'task in Cursor' },
+    ]);
+    writeTaskAtRoot(path.join(ideGlobalStorageBase(home, 'Windsurf'), 'saoudrizwan.claude-dev', 'tasks'), 'shared-id', [
+      { ts: 1770001102000, type: 'say', say: 'task', text: 'task in Windsurf' },
+    ]);
+
+    const { parseClineSessions } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+    const sharedSessions = sessions.filter((session) => session.id === 'shared-id');
+
+    expect(sharedSessions).toHaveLength(3);
+    const summaries = sharedSessions.map((session) => session.summary).sort();
+    expect(summaries).toEqual(['task in Cursor', 'task in VS Code', 'task in Windsurf']);
+    // originalPath includes the IDE folder name so resume can reach the
+    // right disk task even when ids collide.
+    const ides = sharedSessions
+      .map((session) => {
+        if (session.originalPath.includes(path.join('Cursor'))) return 'Cursor';
+        if (session.originalPath.includes(path.join('Windsurf'))) return 'Windsurf';
+        return 'Code';
+      })
+      .sort();
+    expect(ides).toEqual(['Code', 'Cursor', 'Windsurf']);
+  });
+
+  it('returns an empty list silently when no JetBrains plugin storage exists', async () => {
+    // Even with the JetBrains config root absent (no IDE installed), the
+    // parser must not throw or log an error path during discovery — it
+    // should just return zero sessions across all sources.
+    const home = makeHome();
+    expect(fs.existsSync(jetBrainsRoot(home))).toBe(false);
+
+    const { parseClineSessions, parseRooCodeSessions, parseKiloCodeSessions } = await loadClineParser(home);
+    expect(await parseClineSessions()).toEqual([]);
+    expect(await parseRooCodeSessions()).toEqual([]);
+    expect(await parseKiloCodeSessions()).toEqual([]);
+  });
+
+  // ── Per-tool summary categorization ─────────────────────────────────────
+
+  it('categorizes Cline read/write/search/list/MCP tool calls into structured summaries', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'tool-categories', [
+      { ts: 1770001200000, type: 'say', say: 'task', text: 'Exercise every tool category' },
+    ]);
+    writeCompanion(originalPath, 'api_conversation_history.json', [
+      {
+        role: 'user',
+        ts: 1770001200000,
+        content: [{ type: 'text', text: 'run all tools' }],
+      },
+      {
+        role: 'assistant',
+        ts: 1770001201000,
+        content: [
+          { type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'src/index.ts' } },
+          { type: 'tool_use', id: 't2', name: 'write_to_file', input: { path: 'src/new.ts', content: 'hi' } },
+          { type: 'tool_use', id: 't3', name: 'search_files', input: { regex: 'TODO', path: 'src' } },
+          { type: 'tool_use', id: 't4', name: 'list_files', input: { path: 'src', recursive: true } },
+          { type: 'tool_use', id: 't5', name: 'list_code_definition_names', input: { path: 'src/parsers' } },
+          {
+            type: 'tool_use',
+            id: 't6',
+            name: 'use_mcp_tool',
+            input: { server_name: 'github', tool_name: 'list_issues', arguments: { repo: 'cline/cline' } },
+          },
+          { type: 'tool_use', id: 't7', name: 'apply_diff', input: { path: 'src/edit.ts', diff: 'patch' } },
+        ],
+      },
+      {
+        role: 'user',
+        ts: 1770001202000,
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'file contents' },
+          { type: 'tool_result', tool_use_id: 't2', content: 'wrote 1 file' },
+          { type: 'tool_result', tool_use_id: 't3', content: 'no TODOs' },
+          { type: 'tool_result', tool_use_id: 't4', content: '12 files' },
+          { type: 'tool_result', tool_use_id: 't5', content: 'parsers/* defs' },
+          { type: 'tool_result', tool_use_id: 't6', content: '0 issues' },
+          { type: 'tool_result', tool_use_id: 't7', content: '+1 -0 lines' },
+        ],
+      },
+    ]);
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'tool-categories'));
+    const summariesByName = new Map(context.toolSummaries.map((summary) => [summary.name, summary]));
+
+    expect(summariesByName.get('read_file')?.samples[0].data?.category).toBe('read');
+    expect(summariesByName.get('read_file')?.samples[0].summary).toContain('src/index.ts');
+
+    expect(summariesByName.get('write_to_file')?.samples[0].data?.category).toBe('write');
+    expect(summariesByName.get('write_to_file')?.samples[0].summary).toContain('src/new.ts');
+
+    expect(summariesByName.get('search_files')?.samples[0].data?.category).toBe('grep');
+    expect(summariesByName.get('search_files')?.samples[0].summary).toContain('TODO');
+
+    expect(summariesByName.get('list_files')?.samples[0].data?.category).toBe('glob');
+    expect(summariesByName.get('list_code_definition_names')?.samples[0].data?.category).toBe('glob');
+
+    // apply_diff is a known edit verb in the parser — same category as replace_in_file.
+    expect(summariesByName.get('apply_diff')?.samples[0].data?.category).toBe('edit');
+    expect(summariesByName.get('apply_diff')?.samples[0].summary).toContain('src/edit.ts');
+
+    // Unknown / MCP-style tools fall through to the mcp category so handoff
+    // markdown can still describe them generically.
+    expect(summariesByName.get('use_mcp_tool')?.samples[0].data?.category).toBe('mcp');
+
+    // write_to_file and apply_diff both report file modifications.
+    expect([...context.filesModified].sort()).toEqual(['src/edit.ts', 'src/new.ts']);
+  });
+
+  // ── Token aggregation across canonical UI events ────────────────────────
+
+  it('sums per-event token usage across api_req_started, deleted_api_reqs, and subagent_usage', async () => {
+    // Mirrors upstream `getApiMetrics` (src/shared/getApiMetrics.ts): three
+    // canonical event kinds carry per-request token deltas. Earlier
+    // versions of the parser skipped `deleted_api_reqs` and
+    // `subagent_usage`, undercounting tasks that condensed history or
+    // used subagents.
+    const home = makeHome();
+    const originalPath = writeRawTask(home, 'saoudrizwan.claude-dev', 'usage-events', '');
+    fs.writeFileSync(
+      originalPath,
+      JSON.stringify([
+        { ts: 1770001300000, type: 'say', say: 'task', text: 'Aggregate every usage event' },
+        {
+          ts: 1770001301000,
+          type: 'say',
+          say: 'api_req_started',
+          text: JSON.stringify({ tokensIn: 100, tokensOut: 50, cacheWrites: 5, cacheReads: 10 }),
+        },
+        {
+          ts: 1770001302000,
+          type: 'say',
+          say: 'deleted_api_reqs',
+          text: JSON.stringify({ tokensIn: 200, tokensOut: 80, cacheWrites: 0, cacheReads: 20 }),
+        },
+        {
+          ts: 1770001303000,
+          type: 'say',
+          say: 'subagent_usage',
+          text: JSON.stringify({ tokensIn: 300, tokensOut: 120, cacheWrites: 10, cacheReads: 30 }),
+        },
+        // Unrelated event kinds carrying token-shaped JSON must NOT be summed.
+        {
+          ts: 1770001304000,
+          type: 'say',
+          say: 'api_req_finished',
+          text: JSON.stringify({ tokensIn: 999, tokensOut: 999, cacheWrites: 999, cacheReads: 999 }),
+        },
+      ]),
+      'utf8',
+    );
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'usage-events'));
+
+    expect(context.sessionNotes?.tokenUsage).toEqual({ input: 600, output: 250 });
+    expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 15, read: 60 });
+  });
+
+  // ── Pending tasks from API history ──────────────────────────────────────
+
+  it('extracts pending tasks from the last assistant message in api_conversation_history.json', async () => {
+    // ui_messages.json has nothing pending; the parser must fall back to
+    // walking the API conversation backwards to find the last assistant
+    // message and pull TODO/Next-step lines.
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'api-pending', [
+      { ts: 1770001400000, type: 'say', say: 'task', text: 'Recover pending from API history' },
+    ]);
+    writeCompanion(originalPath, 'api_conversation_history.json', [
+      { role: 'user', ts: 1770001400000, content: [{ type: 'text', text: 'do work' }] },
+      {
+        role: 'assistant',
+        ts: 1770001401000,
+        content: [{ type: 'text', text: 'Almost done.\n- [ ] Review the diff\nNext step: open the PR' }],
+      },
+    ]);
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'api-pending'));
+
+    expect(context.pendingTasks).toEqual(['- [ ] Review the diff', 'Next step: open the PR']);
+  });
+
+  // ── <environment_details> handling ──────────────────────────────────────
+
+  it('strips well-formed environment_details and tolerates missing close tags', async () => {
+    // Drive the test through API history (where the stripper actually runs
+    // on user messages) by leaving ui_messages.json malformed so
+    // `allConversation` falls back to apiConversation in extractContextShared.
+    const home = makeHome();
+    const originalPath = writeRawTask(home, 'saoudrizwan.claude-dev', 'env-details', '{not json');
+    writeCompanion(originalPath, 'api_conversation_history.json', [
+      {
+        role: 'user',
+        ts: 1770001500000,
+        content: [
+          {
+            type: 'text',
+            text: 'work please<environment_details>\n# Current Working Directory (/tmp/closed) Files\n</environment_details>',
+          },
+        ],
+      },
+      {
+        role: 'assistant',
+        ts: 1770001501000,
+        content: [{ type: 'text', text: 'on it' }],
+      },
+      {
+        role: 'user',
+        ts: 1770001502000,
+        // Malformed: the closing tag is missing. Stripper must NOT swallow
+        // the message — the regex is non-greedy and anchored on a real
+        // closing tag, so the content is kept verbatim.
+        content: [{ type: 'text', text: 'follow up<environment_details>\nnever closed' }],
+      },
+    ]);
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'env-details'));
+    const userTexts = context.recentMessages.filter((m) => m.role === 'user').map((m) => m.content);
+
+    // First user turn: the well-formed env-details block is removed
+    // (leaving only "work please"). Second user turn keeps the malformed
+    // tag verbatim because there's nothing for the stripper to match.
+    expect(userTexts).toContain('work please');
+    expect(userTexts.some((text) => text.includes('never closed'))).toBe(true);
+    expect(userTexts.every((text) => !text.includes('Current Working Directory'))).toBe(true);
+  });
+
+  // ── Companion-file fidelity warnings ────────────────────────────────────
+
+  it('flags an unparseable api_conversation_history.json as a fidelity warning', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'api-broken', [
+      { ts: 1770001600000, type: 'say', say: 'task', text: 'API history is broken' },
+    ]);
+    fs.writeFileSync(path.join(taskDirFor(originalPath), 'api_conversation_history.json'), '{not json', 'utf8');
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'api-broken'));
+
+    expect(context.sessionNotes?.fidelityWarnings).toEqual([
+      'api_conversation_history.json could not be parsed (invalid JSON)',
+    ]);
+  });
+
+  it('flags an unparseable task_metadata.json as a fidelity warning', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'metadata-broken', [
+      { ts: 1770001700000, type: 'say', say: 'task', text: 'Metadata is broken' },
+    ]);
+    fs.writeFileSync(path.join(taskDirFor(originalPath), 'task_metadata.json'), '{nope', 'utf8');
+
+    const { extractClineContext } = await loadClineParser(home);
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'metadata-broken'));
+
+    expect(context.sessionNotes?.fidelityWarnings).toContain('task_metadata.json could not be parsed (invalid JSON)');
+  });
+
+  it('flags an unparseable taskHistory.json as a fidelity warning while still parsing the task', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'history-broken', [
+      { ts: 1770001800000, type: 'say', say: 'task', text: 'History index is broken' },
+    ]);
+    const storageRoot = path.dirname(path.dirname(taskDirFor(originalPath)));
+    fs.mkdirSync(path.join(storageRoot, 'state'), { recursive: true });
+    fs.writeFileSync(path.join(storageRoot, 'state', 'taskHistory.json'), '{not history', 'utf8');
+
+    const { extractClineContext, parseClineSessions } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+
+    expect(sessions.find((session) => session.id === 'history-broken')).toBeDefined();
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'history-broken'));
+    expect(context.sessionNotes?.fidelityWarnings).toContain('taskHistory.json could not be parsed (invalid JSON)');
+  });
+
+  // ── taskHistory.json edge cases ─────────────────────────────────────────
+
+  it('gracefully handles taskHistory.json entries that do not match the current task id', async () => {
+    // The shared taskHistory.json index can carry stale entries, but a
+    // task-dir parse must only attach metadata for the matching id.
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'no-history-match', [
+      { ts: 1770001900000, type: 'say', say: 'task', text: 'No matching history entry' },
+    ]);
+    writeTaskHistory(originalPath, [
+      {
+        id: 'some-other-task',
+        ts: 1770001901000,
+        cwdOnTaskInitialization: '/tmp/wrong-cwd',
+        modelId: 'wrong-model',
+        tokensIn: 9999,
+        tokensOut: 9999,
+      },
+    ]);
+
+    const { parseClineSessions, extractClineContext } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+    const session = sessions.find((item) => item.id === 'no-history-match');
+
+    expect(session).toBeDefined();
+    expect(session?.cwd).toBe('');
+    expect(session?.model).toBeUndefined();
+
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'no-history-match'));
+    expect(context.sessionNotes?.tokenUsage).toBeUndefined();
+    expect(context.sessionNotes?.cacheTokens).toBeUndefined();
+  });
+
+  it('honors the latest model_usage entry in task_metadata.json over earlier ones', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'model-progression', [
+      { ts: 1770002000000, type: 'say', say: 'task', text: 'Model progressed mid-task' },
+    ]);
+    writeCompanion(originalPath, 'task_metadata.json', {
+      files_in_context: [],
+      environment_history: [],
+      model_usage: [
+        { ts: 1770002001000, model_id: 'claude-3-7-sonnet', model_provider_id: 'anthropic', mode: 'plan' },
+        { ts: 1770002002000, model_id: 'claude-4-opus', model_provider_id: 'anthropic', mode: 'act' },
+        { ts: 1770002003000, model_id: 'claude-4-7-opus-final', model_provider_id: 'anthropic', mode: 'act' },
+      ],
+    });
+
+    const { parseClineSessions, extractClineContext } = await loadClineParser(home);
+    const session = (await parseClineSessions()).find((item) => item.id === 'model-progression');
+
+    expect(session?.model).toBe('claude-4-7-opus-final');
+    const context = await extractClineContext(session!);
+    expect(context.session.model).toBe('claude-4-7-opus-final');
+    expect(context.sessionNotes?.model).toBe('claude-4-7-opus-final');
   });
 });
