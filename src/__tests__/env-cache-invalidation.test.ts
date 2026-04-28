@@ -127,6 +127,25 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
+  it('tracks Qwen Code runtime and legacy storage env vars in the cache fingerprint', () => {
+    const adapter = adapters['qwen-code'];
+    expect(adapter.envVar).toBe('QWEN_RUNTIME_DIR');
+    expect(adapter.extraEnvVars).toContain('QWEN_HOME');
+
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'qwen-code')]);
+
+    vi.stubEnv('QWEN_HOME', '/home/user/.qwen-legacy');
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
+  it('describes Crush project storage and global projects index metadata', () => {
+    const adapter = adapters.crush;
+    expect(adapter.storagePath).toContain('project .crush/crush.db');
+    expect(adapter.storagePath).toContain('projects index');
+    expect(adapter.storagePath).toContain('legacy ~/.crush/crush.db');
+    expect(adapter.extraEnvVars).toEqual(expect.arrayContaining(['CRUSH_GLOBAL_DATA', 'XDG_DATA_HOME']));
+  });
+
   it('loadIndex skips the fingerprint line and returns only sessions', () => {
     writeIndex('#env:CLAUDE_CONFIG_DIR=', [makeSession('sess-1', 'claude'), makeSession('sess-2', 'codex')]);
 

@@ -134,6 +134,33 @@ function getCategoryOrder(name: string): number {
   return CATEGORY_ORDER[name] ?? 10; // MCP/unknown go last
 }
 
+function renderSourceFidelity(
+  notes: SessionNotes | undefined,
+  cwd: string | undefined,
+  config: VerbosityConfig,
+): string[] {
+  const warnings =
+    notes?.fidelityWarnings?.map((warning) => warning.replace(/\s+/gu, ' ').trim()).filter(Boolean) ?? [];
+  const rawAccess = notes?.rawAccess;
+  if (!rawAccess && warnings.length === 0) return [];
+
+  const lines: string[] = ['## Source Fidelity', ''];
+
+  if (rawAccess) {
+    const kind = rawAccess.kind === 'sqlite' ? 'SQLite database' : rawAccess.kind;
+    const location = rawAccess.redacted ? 'path redacted by parser' : `\`${displayPath(rawAccess.path, cwd, config)}\``;
+    lines.push(`- **Raw source**: ${kind} at ${location}`);
+  }
+
+  if (warnings.length > 0) {
+    for (const warning of warnings) lines.push(`- **Fidelity warning**: ${warning}`);
+  }
+
+  lines.push('');
+  lines.push('');
+  return lines;
+}
+
 /**
  * Generate a markdown handoff document from any session source.
  * Shared by all parsers to avoid duplicated logic.
@@ -278,6 +305,8 @@ export function generateHandoffMarkdown(
     lines.push('');
     lines.push('');
   }
+
+  lines.push(...renderSourceFidelity(sessionNotes, session.cwd, config));
 
   if (session.originalPath) {
     lines.push('## Session Origin');

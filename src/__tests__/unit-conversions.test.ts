@@ -1109,6 +1109,51 @@ describe('Shared generateHandoffMarkdown', () => {
     expect(md).toContain('- [ ] Fix lint errors');
   });
 
+  it('renders parser source fidelity notes outside reasoning', () => {
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'crush',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/.crush/crush.db',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      rawAccess: { kind: 'sqlite', path: '/tmp/project/.crush/crush.db' },
+      fidelityWarnings: ['SQLite history omits file edits and command output.\nConfidence is partial.'],
+    });
+
+    expect(md).toContain('## Source Fidelity');
+    expect(md).toContain('- **Raw source**: SQLite database at `./.crush/crush.db`');
+    expect(md).toContain(
+      '- **Fidelity warning**: SQLite history omits file edits and command output. Confidence is partial.',
+    );
+    expect(md).not.toContain('## Key Decisions');
+  });
+
+  it('does not render redacted raw source paths', () => {
+    const session: UnifiedSession = {
+      id: 'test',
+      source: 'claude',
+      cwd: '/tmp/project',
+      lines: 1,
+      bytes: 100,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: '/tmp/project/session.jsonl',
+    };
+
+    const md = generateHandoffMarkdown(session, [], [], [], [], {
+      rawAccess: { kind: 'file', path: '/Users/alice/private/session.jsonl', redacted: true },
+    });
+
+    expect(md).toContain('- **Raw source**: file at path redacted by parser');
+    expect(md).not.toContain('/Users/alice/private/session.jsonl');
+  });
+
   it('always ends with continuation prompt', () => {
     for (const source of ALL_SOURCES) {
       const ctx = contexts[source];

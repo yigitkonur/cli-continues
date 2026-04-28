@@ -14,11 +14,11 @@ https://github.com/user-attachments/assets/6945f3a5-bd19-45ab-9702-6df8e165a734
 
 ## Supported tools
 
-14 AI coding agents, any-to-any handoff:
+16 AI coding agents, any-to-any handoff:
 
-**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity**
+**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code**
 
-That's 182 cross-tool handoff paths. Pick any source, pick any destination — it works.
+That's 240 cross-tool handoff paths. Pick any source, pick any destination — it works.
 
 ## Install
 
@@ -30,7 +30,7 @@ npm install -g continues    # gives you `continues` and `cont`
 
 ## How it works
 
-1. **Discovery** — scans session directories for all 14 tools
+1. **Discovery** — scans session directories for all 16 tools
 2. **Parsing** — reads each tool's native format (JSONL, JSON, SQLite, YAML — they're all different)
 3. **Extraction** — pulls recent messages, file changes, tool activity, AI reasoning
 4. **Handoff** — generates a structured context doc and injects it into the target tool
@@ -46,7 +46,7 @@ Just run `continues`. It finds all your sessions, lets you pick one, and asks wh
 ```
 ┌  continues — pick up where you left off
 │
-│  Found 1842 sessions across 14 CLI tools
+│  Found 1842 sessions across 16 CLI tools
 │    claude: 723  codex: 72  cursor: 68  copilot: 39  ...
 │
 ◆  Select a session
@@ -74,9 +74,11 @@ continues amp           # latest Amp
 continues cline         # latest Cline
 continues kiro          # latest Kiro
 continues crush         # latest Crush
+continues kimi          # latest Kimi
+continues qwen-code     # latest Qwen Code
 ```
 
-Works for all 14 tools. This uses **native resume** — same tool, full history, no context injection.
+Works for all 16 tools. This uses **native resume** — same tool, full history, no context injection.
 
 ### Cross-tool handoff
 
@@ -185,11 +187,13 @@ Every tool stores sessions differently — different formats, different schemas,
 | Cursor | JSONL | `~/.cursor/projects/*/agent-transcripts/` |
 | Amp | JSON | `~/.local/share/amp/threads/` |
 | Kiro | JSON | `~/Library/Application Support/Kiro/workspace-sessions/` |
-| Crush | SQLite | `~/.crush/crush.db` |
+| Crush | SQLite | Project `.crush/crush.db` via Crush's global projects index (`~/.local/share/crush/projects.json`, `$XDG_DATA_HOME`, or `$CRUSH_GLOBAL_DATA`); legacy `~/.crush/crush.db` |
 | Cline | JSON | VS Code `globalStorage/saoudrizwan.claude-dev/tasks/` |
 | Roo Code | JSON | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/` |
 | Kilo Code | JSON | VS Code `globalStorage/kilocode.kilo-code/tasks/` |
 | Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
+| Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
+| Qwen Code | JSONL | `$QWEN_RUNTIME_DIR/projects/*/chats/` (default `~/.qwen/projects/*/chats/`) |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 
@@ -209,7 +213,7 @@ The handoff document includes a **Tool Activity** section so the target agent kn
 - 💭 Need to handle the edge case where token refresh races with logout
 ```
 
-This works for all 14 tools — bash commands, file reads/writes/edits, grep/glob, MCP tool calls, thinking blocks, subagent dispatches, token usage, model info. The shared `SummaryCollector` keeps the format consistent regardless of source.
+This works for all 16 tools — bash commands, file reads/writes/edits, grep/glob, MCP tool calls, thinking blocks, subagent dispatches, token usage, model info. The shared `SummaryCollector` keeps the format consistent regardless of source.
 
 Every handoff also includes the **full file path** of the original session, so the receiving tool can trace back to the raw data if needed.
 
@@ -224,7 +228,7 @@ Every handoff also includes the **full file path** of the original session, so t
 | `continues dump <source\|all> <dir>` | Bulk export sessions (`--json`, `--preset`, `--limit`) |
 | `continues scan` | Discovery stats (`--rebuild`) |
 | `continues rebuild` | Force-rebuild session index |
-| `continues <tool> [n]` | Quick-resume Nth session from any of the 14 tools |
+| `continues <tool> [n]` | Quick-resume Nth session from any of the 16 tools |
 
 Global flags: `--config <path>`, `--preset <name>`, `--verbose`, `--debug`
 
@@ -235,9 +239,9 @@ This started as a 7-tool project and grew fast thanks to contributors:
 - **Factory Droid support** — [#1](https://github.com/yigitkonur/cli-continues/pull/1), first community parser
 - **Cursor AI support** — [#4](https://github.com/yigitkonur/cli-continues/pull/4) by [@Evrim267](https://github.com/Evrim267), with smart slug-to-path resolution
 - **Single-tool error handling** — [#3](https://github.com/yigitkonur/cli-continues/pull/3) by [@barisgirismen](https://github.com/barisgirismen), clear error when only one CLI is installed
-- **Env var overrides** — [#14](https://github.com/yigitkonur/cli-continues/pull/14) by [@yutakobayashidev](https://github.com/yutakobayashidev), respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`
+- **Env var overrides** — [#14](https://github.com/yigitkonur/cli-continues/pull/14) by [@yutakobayashidev](https://github.com/yutakobayashidev), respects `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XDG_DATA_HOME`, `QWEN_RUNTIME_DIR`
 
-The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, and Antigravity** — was added by reverse-engineering [mnemo](https://github.com/Pilan-AI/mnemo)'s Go adapters and adapting the schemas for TypeScript. Along the way we also improved token/cache/model extraction for the existing Claude, Codex, Cursor, and Gemini parsers.
+The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, Antigravity, Kimi CLI, and Qwen Code** — was added by reverse-engineering [mnemo](https://github.com/Pilan-AI/mnemo)'s Go adapters and adapting the schemas for TypeScript. Along the way we also improved token/cache/model extraction for the existing Claude, Codex, Cursor, and Gemini parsers.
 
 **Bugs fixed in this round:**
 - Symlink traversal — `fs.Dirent.isDirectory()` returns `false` for symlinks; fixed with `isSymbolicLink() && statSync()` fallback
@@ -247,8 +251,7 @@ The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, and Antigra
 ## Requirements
 
 - **Node.js 22+** (uses built-in `node:sqlite` for OpenCode and Crush)
-- At least one of the 14 supported tools installed
-- `sqlite3` CLI binary (only needed for Crush — ships with macOS)
+- At least one of the 16 supported tools installed
 
 ## Development
 
