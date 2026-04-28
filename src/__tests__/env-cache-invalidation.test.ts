@@ -142,6 +142,36 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
+  it('indexNeedsRebuild returns true when Cline custom storage env vars change', () => {
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'cline')]);
+
+    vi.stubEnv('CLINE_STORAGE_PATH', '/home/user/.cline-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+
+    vi.unstubAllEnvs();
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'cline')]);
+
+    vi.stubEnv('CONTINUES_CLINE_STORAGE_PATH', '/home/user/.continues-cline-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
+  it('indexNeedsRebuild returns true when Kilo Code custom storage env vars change', () => {
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kilo-code')]);
+
+    vi.stubEnv('KILO_CODE_STORAGE_PATH', '/home/user/.kilo-code-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+
+    vi.unstubAllEnvs();
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kilo-code')]);
+
+    vi.stubEnv('CONTINUES_KILO_CODE_STORAGE_PATH', '/home/user/.continues-kilo-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
   it('loadIndex skips the fingerprint line and returns only sessions', () => {
     writeIndex('#env:CLAUDE_CONFIG_DIR=', [makeSession('sess-1', 'claude'), makeSession('sess-2', 'codex')]);
 

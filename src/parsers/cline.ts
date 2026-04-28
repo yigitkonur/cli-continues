@@ -479,7 +479,7 @@ async function readTaskSidecars(taskDir: string, taskId: string, warnings: strin
   const apiPath = path.join(taskDir, TASK_FILE_NAMES.apiConversationHistory);
   const metadataPath = path.join(taskDir, TASK_FILE_NAMES.taskMetadata);
 
-  const uiMessages = (await pathExists(uiPath)) ? await readUiMessages(uiPath) : [];
+  const uiMessages = (await pathExists(uiPath)) ? await readUiMessages(uiPath, warnings) : [];
   const apiMessages = (await pathExists(apiPath)) ? await readApiMessages(apiPath, warnings) : [];
   const taskMetadata = (await pathExists(metadataPath))
     ? await readRecordFile(metadataPath, warnings, TASK_FILE_NAMES.taskMetadata)
@@ -630,6 +630,9 @@ function buildApiConversation(messages: ApiRawMessage[]): ConversationMessage[] 
 
   for (const msg of messages) {
     if (msg.isSummary) continue;
+    // System turns are bootstrap/instruction prompts, not conversation —
+    // including them would surface raw system prompts in the handoff output.
+    if (msg.role === 'system') continue;
     const content = textFromContent(msg.content).trim();
     if (!content) continue;
     result.push({ role: msg.role, content, timestamp: msg.ts ? new Date(msg.ts) : undefined });
@@ -769,11 +772,14 @@ function toolSampleForInvocation(invocation: ToolInvocation): {
 
   if (normalized === 'read_file' || normalized === 'read_file_tool') {
     const target = filePath ?? args;
+    // Only attach `filePath` for tracking when a real path key was extracted —
+    // a stringified args fallback is for human-readable display only and must
+    // not leak into `filesModified` via the SummaryCollector.
     return {
       category: 'read',
       summary: withResult(fileSummary('read', target), result),
       data: { category: 'read', filePath: target },
-      filePath: target,
+      ...(filePath ? { filePath } : {}),
       isError,
     };
   }
@@ -785,8 +791,9 @@ function toolSampleForInvocation(invocation: ToolInvocation): {
       category: op,
       summary: withResult(fileSummary(op, target), result),
       data: { category: op, filePath: target },
-      filePath: target,
-      isWrite: !!target,
+      // Same rationale: only mark as a write when we have an actual path —
+      // otherwise `args` strings would pollute `filesModified`.
+      ...(filePath ? { filePath, isWrite: true } : {}),
       isError,
     };
   }
@@ -961,16 +968,33 @@ function addMetadataFiles(taskMetadata: Record<string, unknown> | undefined, col
 // ── Token / Cost Extraction ─────────────────────────────────────────────────
 
 /**
- * Aggregate token usage and cost from api_req_started events.
- * Each event's text field contains a JSON object with token counts.
+ * Aggregate token usage and cost from api_req_* events.
+ *
+ * Cline/Roo Code emit two distinct shapes:
+ *   • `api_req_started` payloads carry per-request increments (`tokensIn`,
+ *     `tokensOut`, `cacheWrites`, `cacheReads`). Summing these yields the
+ *     session total.
+ *   • `api_req_finished` payloads carry cumulative session totals
+ *     (`totalTokensIn`, `totalTokensOut`, `totalCacheWrites`,
+ *     `totalCacheReads`). The latest such event is authoritative.
+ *
+ * Mixing them would double-count, so prefer the cumulative totals when any
+ * `total*` field is present, otherwise fall back to summing the per-request
+ * increments.
  */
 function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
   const notes: SessionNotes = {};
-  let totalIn = 0;
-  let totalOut = 0;
-  let totalCacheWrites = 0;
-  let totalCacheReads = 0;
-  let found = false;
+  let incIn = 0;
+  let incOut = 0;
+  let incCacheWrites = 0;
+  let incCacheReads = 0;
+  let cumIn: number | undefined;
+  let cumOut: number | undefined;
+  let cumCacheWrites: number | undefined;
+  let cumCacheReads: number | undefined;
+  let foundIncremental = false;
+  const trackMax = (current: number | undefined, next: number): number =>
+    current === undefined ? next : Math.max(current, next);
 
   for (const msg of messages) {
     if (msg.type !== 'say' || (msg.say !== 'api_req_started' && msg.say !== 'api_req_finished')) continue;
@@ -980,36 +1004,51 @@ function extractTokenUsage(messages: ClineRawMessage[]): SessionNotes {
       const parsed: unknown = JSON.parse(msg.text);
       if (!isRecord(parsed)) continue;
 
-      const tokensIn = readNumber(parsed, 'tokensIn') ?? readNumber(parsed, 'totalTokensIn');
+      const totalTokensIn = readNumber(parsed, 'totalTokensIn');
+      const totalTokensOut = readNumber(parsed, 'totalTokensOut');
+      const totalCacheWrites = readNumber(parsed, 'totalCacheWrites');
+      const totalCacheReads = readNumber(parsed, 'totalCacheReads');
+      if (totalTokensIn !== undefined) cumIn = trackMax(cumIn, totalTokensIn);
+      if (totalTokensOut !== undefined) cumOut = trackMax(cumOut, totalTokensOut);
+      if (totalCacheWrites !== undefined) cumCacheWrites = trackMax(cumCacheWrites, totalCacheWrites);
+      if (totalCacheReads !== undefined) cumCacheReads = trackMax(cumCacheReads, totalCacheReads);
+
+      const tokensIn = readNumber(parsed, 'tokensIn');
+      const tokensOut = readNumber(parsed, 'tokensOut');
+      const cacheWrites = readNumber(parsed, 'cacheWrites');
+      const cacheReads = readNumber(parsed, 'cacheReads');
       if (tokensIn !== undefined) {
-        totalIn += tokensIn;
-        found = true;
+        incIn += tokensIn;
+        foundIncremental = true;
       }
-      const tokensOut = readNumber(parsed, 'tokensOut') ?? readNumber(parsed, 'totalTokensOut');
       if (tokensOut !== undefined) {
-        totalOut += tokensOut;
-        found = true;
+        incOut += tokensOut;
+        foundIncremental = true;
       }
-      const cacheWrites = readNumber(parsed, 'cacheWrites') ?? readNumber(parsed, 'totalCacheWrites');
       if (cacheWrites !== undefined) {
-        totalCacheWrites += cacheWrites;
-        found = true;
+        incCacheWrites += cacheWrites;
+        foundIncremental = true;
       }
-      const cacheReads = readNumber(parsed, 'cacheReads') ?? readNumber(parsed, 'totalCacheReads');
       if (cacheReads !== undefined) {
-        totalCacheReads += cacheReads;
-        found = true;
+        incCacheReads += cacheReads;
+        foundIncremental = true;
       }
     } catch (err) {
       logger.debug('cline: skipping malformed API request metadata', err);
     }
   }
 
-  if (found) {
-    notes.tokenUsage = { input: totalIn, output: totalOut };
+  const hasCumulative = cumIn !== undefined || cumOut !== undefined;
+  if (hasCumulative) {
+    notes.tokenUsage = { input: cumIn ?? 0, output: cumOut ?? 0 };
+  } else if (foundIncremental) {
+    notes.tokenUsage = { input: incIn, output: incOut };
   }
-  if (totalCacheWrites > 0 || totalCacheReads > 0) {
-    notes.cacheTokens = { creation: totalCacheWrites, read: totalCacheReads };
+
+  const cacheCreation = cumCacheWrites ?? incCacheWrites;
+  const cacheRead = cumCacheReads ?? incCacheReads;
+  if (cacheCreation > 0 || cacheRead > 0) {
+    notes.cacheTokens = { creation: cacheCreation, read: cacheRead };
   }
 
   return notes;

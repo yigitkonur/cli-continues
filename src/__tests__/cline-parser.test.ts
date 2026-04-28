@@ -259,7 +259,7 @@ describe('Cline-family parser hardening', () => {
         ts: 1770000202000,
         type: 'say',
         say: 'api_req_started',
-        text: '{"tokensIn":10,"tokensOut":0,"cacheWrites":2,"cacheReads":3,"cost":0.01}',
+        text: '{"tokensIn":10,"tokensOut":4,"cacheWrites":2,"cacheReads":3,"cost":0.01}',
       },
       { ts: 1770000203000, type: 'say', say: 'text', text: 'Draft assistant answer', partial: true },
       { ts: 1770000204000, type: 'say', say: 'text', text: 'Final assistant answer', partial: false },
@@ -275,7 +275,7 @@ describe('Cline-family parser hardening', () => {
         ts: 1770000208000,
         type: 'say',
         say: 'api_req_finished',
-        text: '{"totalTokensIn":7,"totalTokensOut":8,"totalCacheWrites":1,"totalCacheReads":4,"totalCost":0.02}',
+        text: '{"totalTokensIn":17,"totalTokensOut":12,"totalCacheWrites":3,"totalCacheReads":7,"totalCost":0.02}',
       },
       {
         ts: 1770000209000,
@@ -319,7 +319,9 @@ describe('Cline-family parser hardening', () => {
       expect(contents).not.toContain('Draft assistant answer');
       expect(contents).not.toContain('metadata noise');
       expect(contents).not.toContain('npm test');
-      expect(context.sessionNotes?.tokenUsage).toEqual({ input: 17, output: 8 });
+      // Cumulative session totals from `api_req_finished` win over the
+      // per-request increments in `api_req_started` to avoid double counting.
+      expect(context.sessionNotes?.tokenUsage).toEqual({ input: 17, output: 12 });
       expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 3, read: 7 });
       expect(context.sessionNotes?.reasoning).toEqual([
         'Need to cover malformed messages, streaming finalization, and all source variants.',
@@ -429,6 +431,49 @@ describe('Cline-family parser hardening', () => {
     });
   });
 
+  it('omits API system messages and treats non-path tool args as display-only', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'rooveterinaryinc.roo-cline', 'api-system-roo-task', []);
+    writeTaskSidecar(originalPath, 'api_conversation_history.json', [
+      { role: 'system', content: 'You are Roo, an autonomous coding assistant.', ts: 1770000310000 },
+      { role: 'user', content: 'Investigate the failing test', ts: 1770000311000 },
+      {
+        role: 'assistant',
+        ts: 1770000312000,
+        content: [
+          { type: 'text', text: 'Let me check the docs.' },
+          {
+            type: 'tool_use',
+            id: 'toolu_edit_no_path_1',
+            name: 'apply_diff',
+            // Intentionally no path/filePath/relativePath key — the parser must
+            // not stringify these args into `filesModified`.
+            input: { description: 'rewrite helper', payload: 'diff content here' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        ts: 1770000313000,
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_edit_no_path_1', content: 'ok' }],
+      },
+    ]);
+
+    const { extractRooCodeContext } = await loadClineParser(home);
+    const context = await extractRooCodeContext(sessionFor('roo-code', originalPath));
+
+    // System messages must not appear as conversation turns.
+    expect(context.recentMessages.some((message) => message.role === 'system')).toBe(false);
+    expect(context.recentMessages.map((message) => message.content)).not.toContain(
+      'You are Roo, an autonomous coding assistant.',
+    );
+
+    // No path key was provided in the tool input, so filesModified must stay empty.
+    expect(context.filesModified).toEqual([]);
+    const editSummary = context.toolSummaries.find((summary) => summary.name === 'edit');
+    expect(editSummary?.samples[0]?.summary).toBeDefined();
+  });
+
   it('extracts JSON UI tool records before XML fallback', async () => {
     const home = makeHome();
     const originalPath = writeTask(home, 'rooveterinaryinc.roo-cline', 'json-ui-tool-roo-task', [
@@ -492,14 +537,22 @@ describe('Cline-family parser hardening', () => {
 
     const { extractClineContext } = await loadClineParser(home);
 
-    for (const originalPath of [invalidPath, nonArrayPath]) {
-      const context = await extractClineContext(sessionFor('cline', originalPath));
+    // Invalid JSON: the read fails outright, so a fidelity warning must surface.
+    const invalidContext = await extractClineContext(sessionFor('cline', invalidPath));
+    expect(invalidContext.recentMessages).toEqual([]);
+    expect(invalidContext.pendingTasks).toEqual([]);
+    expect(invalidContext.filesModified).toEqual([]);
+    expect(invalidContext.toolSummaries).toEqual([]);
+    expect(invalidContext.sessionNotes?.fidelityWarnings?.join('\n')).toContain(
+      'ui_messages.json could not be read as complete JSON',
+    );
 
-      expect(context.recentMessages).toEqual([]);
-      expect(context.pendingTasks).toEqual([]);
-      expect(context.filesModified).toEqual([]);
-      expect(context.toolSummaries).toEqual([]);
-      expect(context.sessionNotes).toEqual({});
-    }
+    // Non-array JSON: parses cleanly but yields no messages — no warning needed.
+    const nonArrayContext = await extractClineContext(sessionFor('cline', nonArrayPath));
+    expect(nonArrayContext.recentMessages).toEqual([]);
+    expect(nonArrayContext.pendingTasks).toEqual([]);
+    expect(nonArrayContext.filesModified).toEqual([]);
+    expect(nonArrayContext.toolSummaries).toEqual([]);
+    expect(nonArrayContext.sessionNotes).toEqual({});
   });
 });
