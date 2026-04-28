@@ -24,6 +24,8 @@ function makeAmpFixture(): { root: string; xdgDataHome: string; threadPath: stri
         env: {
           initial: {
             tags: ['model:claude-opus-4-5'],
+            installationID: 'inst-test-do-not-leak',
+            deviceFingerprint: 'fp-test-do-not-leak',
             trees: [
               {
                 uri: pathToFileURL(projectCwd).href,

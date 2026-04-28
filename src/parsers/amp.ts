@@ -163,12 +163,14 @@ function extractAmpMetadata(thread: AmpThread): Pick<UnifiedSession, 'cwd' | 're
 /**
  * Extract session notes: model info and token usage from usageLedger
  */
-function extractSessionNotes(thread: AmpThread): SessionNotes {
+function extractSessionNotes(
+  thread: AmpThread,
+  metadata: Pick<UnifiedSession, 'cwd' | 'repo' | 'branch' | 'gitSha'> = extractAmpMetadata(thread),
+): SessionNotes {
   const notes: SessionNotes = {};
 
   const model = extractModel(thread);
   if (model) notes.model = model;
-  const metadata = extractAmpMetadata(thread);
   notes.sourceMetadata = {
     ...(metadata.cwd ? { cwd: metadata.cwd } : {}),
     ...(metadata.repo ? { repo: metadata.repo } : {}),
@@ -260,8 +262,9 @@ export async function extractAmpContext(session: UnifiedSession, config?: Verbos
   let sessionNotes: SessionNotes | undefined;
 
   if (thread) {
-    sessionNotes = extractSessionNotes(thread);
+    // Compute metadata once and reuse for both sessionNotes and the enrichedSession.
     const metadata = extractAmpMetadata(thread);
+    sessionNotes = extractSessionNotes(thread, metadata);
     const enrichedSession: UnifiedSession = {
       ...session,
       cwd: session.cwd || metadata.cwd || '',
