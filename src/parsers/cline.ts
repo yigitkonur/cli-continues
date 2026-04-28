@@ -131,6 +131,8 @@ interface TaskEntry {
   source: ClineSource;
 }
 
+type TaskHistoryMap = Map<string, ClineTaskHistoryItem>;
+
 interface TaskFiles {
   taskDir: string;
   storageRoot: string;
@@ -533,14 +535,23 @@ function taskHistoryArray(value: unknown): unknown[] {
   return [];
 }
 
-async function readTaskHistoryItem(paths: string[], taskId: string): Promise<ClineTaskHistoryItem | undefined> {
+async function readTaskHistoryMap(paths: string[]): Promise<TaskHistoryMap> {
+  const itemsById: TaskHistoryMap = new Map();
   for (const filePath of paths) {
     const parsed = await readJson(filePath, TASK_HISTORY_FILE);
-    const items = taskHistoryArray(parsed).map(normalizeTaskHistoryItem);
-    const item = items.find((entry): entry is ClineTaskHistoryItem => entry !== null && entry.id === taskId);
-    if (item) return item;
+    for (const item of taskHistoryArray(parsed).map(normalizeTaskHistoryItem)) {
+      if (item && !itemsById.has(item.id)) itemsById.set(item.id, item);
+    }
   }
-  return undefined;
+  return itemsById;
+}
+
+async function readTaskHistoryItem(paths: string[], taskId: string): Promise<ClineTaskHistoryItem | undefined> {
+  return (await readTaskHistoryMap(paths)).get(taskId);
+}
+
+function taskHistoryCandidatesFromStorageRoot(storageRoot: string): string[] {
+  return [path.join(storageRoot, 'state', TASK_HISTORY_FILE), path.join(storageRoot, TASK_HISTORY_FILE)];
 }
 
 function taskFilesFromDir(taskDir: string, storageRoot: string): TaskFiles {
@@ -550,10 +561,7 @@ function taskFilesFromDir(taskDir: string, storageRoot: string): TaskFiles {
     uiMessages: path.join(taskDir, UI_MESSAGES_FILE),
     apiConversationHistory: path.join(taskDir, API_CONVERSATION_HISTORY_FILE),
     taskMetadata: path.join(taskDir, TASK_METADATA_FILE),
-    taskHistoryCandidates: [
-      path.join(storageRoot, 'state', TASK_HISTORY_FILE),
-      path.join(storageRoot, TASK_HISTORY_FILE),
-    ],
+    taskHistoryCandidates: taskHistoryCandidatesFromStorageRoot(storageRoot),
   };
 }
 
@@ -566,13 +574,20 @@ function inferStorageRootFromTaskDir(taskDir: string): string {
   return path.basename(parent) === 'tasks' ? path.dirname(parent) : parent;
 }
 
-async function loadTaskData(taskDir: string, storageRoot: string, taskId: string): Promise<LoadedTaskData> {
+async function loadTaskData(
+  taskDir: string,
+  storageRoot: string,
+  taskId: string,
+  taskHistoryById?: TaskHistoryMap,
+): Promise<LoadedTaskData> {
   const files = taskFilesFromDir(taskDir, storageRoot);
   const [uiMessages, apiMessages, taskMetadata, taskHistoryItem] = await Promise.all([
     readUiMessages(files.uiMessages),
     readApiConversationHistory(files.apiConversationHistory),
     readTaskMetadata(files.taskMetadata),
-    readTaskHistoryItem(files.taskHistoryCandidates, taskId),
+    taskHistoryById
+      ? Promise.resolve(taskHistoryById.get(taskId))
+      : readTaskHistoryItem(files.taskHistoryCandidates, taskId),
   ]);
 
   return { files, uiMessages, apiMessages, taskMetadata, taskHistoryItem };
@@ -1044,7 +1059,7 @@ function looksLikePath(value: string): boolean {
 
 function findCwdInValue(value: unknown, depth = 0): string | undefined {
   if (depth > 4) return undefined;
-  if (typeof value === 'string') return looksLikePath(value) ? value : undefined;
+  if (typeof value === 'string') return looksLikePath(value) ? value : extractCwdFromText(value);
   if (Array.isArray(value)) {
     for (const item of value) {
       const cwd = findCwdInValue(item, depth + 1);
@@ -1285,11 +1300,19 @@ function messageTimestamps(data: LoadedTaskData): number[] {
  */
 async function parseSessionsForSource(filterSource?: ClineSource): Promise<UnifiedSession[]> {
   const taskEntries = await discoverTaskDirs(filterSource);
+  const taskHistoryCache = new Map<string, Promise<TaskHistoryMap>>();
   const sessions: UnifiedSession[] = [];
 
   for (const { taskDir, taskId, storageRoot, source } of taskEntries) {
     try {
-      const data = await loadTaskData(taskDir, storageRoot, taskId);
+      const storageRootKey = path.resolve(storageRoot);
+      let taskHistoryById = taskHistoryCache.get(storageRootKey);
+      if (!taskHistoryById) {
+        taskHistoryById = readTaskHistoryMap(taskHistoryCandidatesFromStorageRoot(storageRoot));
+        taskHistoryCache.set(storageRootKey, taskHistoryById);
+      }
+
+      const data = await loadTaskData(taskDir, storageRoot, taskId, await taskHistoryById);
       if (data.uiMessages.length === 0 && data.apiMessages.length === 0 && !data.taskHistoryItem) continue;
 
       const firstUserMsg =

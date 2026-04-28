@@ -6,6 +6,10 @@ import type { SessionSource, UnifiedSession } from '../types/index.js';
 
 const tempDirs: string[] = [];
 
+interface LoadClineParserOptions {
+  onReadFile?: (filePath: string) => void;
+}
+
 function makeHome(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cline-parser-'));
   tempDirs.push(dir);
@@ -29,8 +33,26 @@ function clineCliTasksRoot(clineDir: string): string {
   return path.join(clineDir, 'data', 'tasks');
 }
 
-async function loadClineParser(home: string): Promise<typeof import('../parsers/cline.js')> {
+async function loadClineParser(
+  home: string,
+  options: LoadClineParserOptions = {},
+): Promise<typeof import('../parsers/cline.js')> {
   vi.resetModules();
+  if (options.onReadFile) {
+    vi.doMock('node:fs/promises', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:fs/promises')>();
+      return {
+        ...actual,
+        readFile: (
+          filePath: Parameters<typeof actual.readFile>[0],
+          readOptions?: Parameters<typeof actual.readFile>[1],
+        ) => {
+          options.onReadFile?.(String(filePath));
+          return actual.readFile(filePath, readOptions);
+        },
+      };
+    });
+  }
   vi.stubEnv('APPDATA', path.join(home, 'AppData', 'Roaming'));
   vi.doMock('../utils/parser-helpers.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../utils/parser-helpers.js')>();
@@ -107,6 +129,7 @@ function sessionFor(source: SessionSource, originalPath: string, id = `${source}
 }
 
 afterEach(() => {
+  vi.doUnmock('node:fs/promises');
   vi.doUnmock('../utils/parser-helpers.js');
   vi.doUnmock('../utils/markdown.js');
   vi.unstubAllEnvs();
@@ -412,6 +435,80 @@ describe('Cline-family parser hardening', () => {
     });
     expect(context.sessionNotes?.tokenUsage).toEqual({ input: 123, output: 45 });
     expect(context.sessionNotes?.cacheTokens).toEqual({ creation: 6, read: 7 });
+  });
+
+  it('loads shared task history once per storage root while listing sessions', async () => {
+    const home = makeHome();
+    const firstPath = writeTask(home, 'saoudrizwan.claude-dev', 'history-cache-a', [
+      { ts: 1770000450000, type: 'say', say: 'task', text: 'Cache task history for first task' },
+    ]);
+    writeTask(home, 'saoudrizwan.claude-dev', 'history-cache-b', [
+      { ts: 1770000451000, type: 'say', say: 'task', text: 'Cache task history for second task' },
+    ]);
+    writeTaskHistory(firstPath, [
+      {
+        id: 'history-cache-a',
+        ts: 1770000452000,
+        cwdOnTaskInitialization: '/tmp/history-cache-a',
+        modelId: 'history-model-a',
+      },
+      {
+        id: 'history-cache-b',
+        ts: 1770000453000,
+        cwdOnTaskInitialization: '/tmp/history-cache-b',
+        modelId: 'history-model-b',
+      },
+    ]);
+    const taskHistoryReads: string[] = [];
+
+    const { parseClineSessions } = await loadClineParser(home, {
+      onReadFile: (filePath) => {
+        if (path.basename(filePath) === 'taskHistory.json') taskHistoryReads.push(filePath);
+      },
+    });
+    const sessions = await parseClineSessions();
+
+    expect(sessions.map((session) => session.id).sort()).toEqual(['history-cache-a', 'history-cache-b']);
+    expect(sessions.find((session) => session.id === 'history-cache-a')).toMatchObject({
+      cwd: '/tmp/history-cache-a',
+      model: 'history-model-a',
+    });
+    expect(sessions.find((session) => session.id === 'history-cache-b')).toMatchObject({
+      cwd: '/tmp/history-cache-b',
+      model: 'history-model-b',
+    });
+    expect(taskHistoryReads).toHaveLength(1);
+  });
+
+  it('extracts cwd from request strings inside UI API metadata', async () => {
+    const home = makeHome();
+    const originalPath = writeTask(home, 'saoudrizwan.claude-dev', 'request-string-cwd', [
+      { ts: 1770000460000, type: 'say', say: 'task', text: 'Recover cwd from request metadata' },
+      {
+        ts: 1770000461000,
+        type: 'say',
+        say: 'api_req_started',
+        text: JSON.stringify({
+          request: 'Current Working Directory (/tmp/request-string-project) Files\nsrc/parsers/cline.ts',
+        }),
+      },
+    ]);
+
+    const { parseClineSessions, extractClineContext } = await loadClineParser(home);
+    const sessions = await parseClineSessions();
+    const session = sessions.find((item) => item.id === 'request-string-cwd');
+
+    expect(session).toMatchObject({
+      cwd: '/tmp/request-string-project',
+      repo: 'tmp/request-string-project',
+    });
+
+    const context = await extractClineContext(sessionFor('cline', originalPath, 'request-string-cwd'));
+
+    expect(context.session).toMatchObject({
+      cwd: '/tmp/request-string-project',
+      repo: 'tmp/request-string-project',
+    });
   });
 
   it('recovers context from API history and metadata when ui_messages.json is malformed', async () => {
