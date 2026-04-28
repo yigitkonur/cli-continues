@@ -122,7 +122,7 @@ export async function parseCopilotSessions(): Promise<UnifiedSession[]> {
       const eventsExist = fs.existsSync(eventsPath);
       const stats = eventsExist ? await getFileStats(eventsPath) : { lines: 0, bytes: 0 };
       const model = eventsExist ? await extractModel(eventsPath) : undefined;
-      const lastEventTimestamp = eventsExist ? await extractLastEventTimestamp(eventsPath) : undefined;
+      const lastEventTimestamp = eventsExist ? await extractLastEventTimestamp(eventsPath, stats.bytes) : undefined;
 
       let summary = workspace.summary || '';
       if (summary.startsWith('|')) {
@@ -241,7 +241,9 @@ export async function extractCopilotContext(
   const trimmedIds = new Set<string>(
     trimmed.map((m) => m.sourceId).filter((id): id is string => typeof id === 'string'),
   );
-  const emittedStartIds = new Set<string>();
+  // Map tool.execution_start id → toolName so the matching tool.execution_complete
+  // event can carry the correct toolName (the complete event payload doesn't repeat it).
+  const emittedStartToolNames = new Map<string, string>();
   const timeline: SessionEvent[] = [];
   let sequence = 0;
 
@@ -290,14 +292,17 @@ export async function extractCopilotContext(
       }
 
       // Inline tool requests on the assistant message — emit only when the
-      // assistant message itself is retained.
-      for (const toolRequest of toolRequests) {
+      // assistant message itself is retained. Each sibling gets a distinct
+      // sourceId so they can be told apart, parented to the assistant message.
+      for (const [index, toolRequest] of toolRequests.entries()) {
+        const toolRequestId =
+          getOptionalString((toolRequest as { id?: unknown }).id) ?? `${event.id}:toolRequest:${index}`;
         timeline.push({
           kind: 'tool_call',
           sequence: sequence++,
           timestamp: new Date(event.timestamp),
-          sourceId: event.id,
-          sourceParentId: event.parentId ?? undefined,
+          sourceId: toolRequestId,
+          sourceParentId: event.id,
           toolName: toolRequest.name,
           arguments: getCopilotToolArguments(toolRequest),
         });
@@ -309,7 +314,7 @@ export async function extractCopilotContext(
       if (!parentId || !trimmedIds.has(parentId)) continue;
       const toolName = getOptionalString(event.data?.toolName);
       if (toolName) {
-        if (event.id) emittedStartIds.add(event.id);
+        if (event.id) emittedStartToolNames.set(event.id, toolName);
         timeline.push({
           kind: 'tool_call',
           sequence: sequence++,
@@ -325,7 +330,9 @@ export async function extractCopilotContext(
       // Anchor by id: tool.execution_complete.parentId references its
       // tool.execution_start event. Emit only when that start was emitted.
       const parentId = event.parentId ?? undefined;
-      if (!parentId || !emittedStartIds.has(parentId)) continue;
+      if (!parentId) continue;
+      const startToolName = emittedStartToolNames.get(parentId);
+      if (!startToolName) continue;
       const result = extractCopilotResult(event.data?.result);
       timeline.push({
         kind: 'tool_result',
@@ -333,6 +340,7 @@ export async function extractCopilotContext(
         timestamp: new Date(event.timestamp),
         sourceId: event.id,
         sourceParentId: event.parentId ?? undefined,
+        toolName: startToolName,
         toolCallId: getOptionalString(event.data?.toolCallId),
         status: typeof event.data?.success === 'boolean' ? (event.data.success ? 'success' : 'error') : undefined,
         result: result.resultText ?? result.resultDetail,
@@ -669,18 +677,25 @@ function stableStringify(value: unknown): string {
 // session that exceeds the cap.
 const MAX_TIMESTAMP_SCAN_BYTES = 1024 * 1024;
 
-async function extractLastEventTimestamp(eventsPath: string): Promise<Date | undefined> {
+async function extractLastEventTimestamp(
+  eventsPath: string,
+  eventsFileSizeBytes?: number,
+): Promise<Date | undefined> {
   // If the file exceeds the scan cap, scanJsonlFile would truncate mid-file and leave us
   // with some early timestamp instead of the actual last event. That would make active
   // large sessions appear oldest in lists. Skip the scan entirely so the caller's
-  // `?? new Date(workspace.updated_at)` fallback fires.
-  try {
-    const stats = fs.statSync(eventsPath);
-    if (stats.size > MAX_TIMESTAMP_SCAN_BYTES) {
+  // `?? new Date(workspace.updated_at)` fallback fires. When the caller has already
+  // stat'd the file (parseCopilotSessions), reuse that size to avoid a redundant statSync.
+  let sizeBytes = eventsFileSizeBytes;
+  if (sizeBytes === undefined) {
+    try {
+      sizeBytes = fs.statSync(eventsPath).size;
+    } catch (err) {
+      logger.debug('copilot: failed to stat events.jsonl for timestamp scan', eventsPath, err);
       return undefined;
     }
-  } catch (err) {
-    logger.debug('copilot: failed to stat events.jsonl for timestamp scan', eventsPath, err);
+  }
+  if (sizeBytes > MAX_TIMESTAMP_SCAN_BYTES) {
     return undefined;
   }
 
