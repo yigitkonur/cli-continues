@@ -387,7 +387,9 @@ function stripDroidInjectedText(text: string): string {
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/giu, '')
     .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '');
   if (hadSystemReminder) {
-    result = result.replace(/\bTodoWrite\b[\s\S]*$/u, '');
+    // Only strip TodoWrite when it appears at start-of-line (bootstrap tool-list signature),
+    // not when mentioned inline in user prose like "use TodoWrite for tasks".
+    result = result.replace(/^[ \t]*TodoWrite\b[\s\S]*$/mu, '');
   }
   return result.trim();
 }
