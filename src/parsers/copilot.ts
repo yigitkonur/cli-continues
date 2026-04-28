@@ -7,6 +7,7 @@ import { logger } from '../logger.js';
 import type {
   ConversationMessage,
   SessionContext,
+  SessionEvent,
   StructuredToolSample,
   ToolUsageSummary,
   UnifiedSession,
@@ -14,7 +15,7 @@ import type {
 import type { CopilotEvent, CopilotWorkspace } from '../types/schemas.js';
 import { classifyToolName } from '../types/tool-names.js';
 import { listSubdirectories } from '../utils/fs-helpers.js';
-import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
+import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { homeDir, trimMessages } from '../utils/parser-helpers.js';
 import {
@@ -79,8 +80,8 @@ async function extractModel(eventsPath: string): Promise<string | undefined> {
 
   await scanJsonlHead(eventsPath, 50, (parsed) => {
     const event = parsed as CopilotEvent;
-    if (event.type === 'session.start' && event.data?.selectedModel) {
-      model = event.data.selectedModel;
+    if (event.data?.selectedModel || event.data?.currentModel) {
+      model = event.data.selectedModel || event.data.currentModel;
       return 'stop';
     }
     return 'continue';
@@ -104,8 +105,10 @@ export async function parseCopilotSessions(): Promise<UnifiedSession[]> {
       const workspace = parseWorkspace(workspacePath);
       if (!workspace) continue;
 
-      const stats = fs.existsSync(eventsPath) ? await getFileStats(eventsPath) : { lines: 0, bytes: 0 };
-      const model = await extractModel(eventsPath);
+      const eventsExist = fs.existsSync(eventsPath);
+      const stats = eventsExist ? await getFileStats(eventsPath) : { lines: 0, bytes: 0 };
+      const model = eventsExist ? await extractModel(eventsPath) : undefined;
+      const lastEventTimestamp = eventsExist ? await extractLastEventTimestamp(eventsPath) : undefined;
 
       let summary = workspace.summary || '';
       if (summary.startsWith('|')) {
@@ -121,7 +124,7 @@ export async function parseCopilotSessions(): Promise<UnifiedSession[]> {
         lines: stats.lines,
         bytes: stats.bytes,
         createdAt: new Date(workspace.created_at),
-        updatedAt: new Date(workspace.updated_at),
+        updatedAt: lastEventTimestamp ?? new Date(workspace.updated_at),
         originalPath: sessionDir,
         summary: summary.slice(0, 60),
         model,
@@ -147,7 +150,9 @@ export async function extractCopilotContext(
   const events = await readJsonlFile<CopilotEvent>(eventsPath);
 
   const recentMessages: ConversationMessage[] = [];
+  const timeline: SessionEvent[] = [];
   const pendingTasks: string[] = [];
+  let sequence = 0;
 
   // Process all events before trimming; Copilot tails often contain only tool execution events.
   for (const event of events) {
@@ -158,19 +163,44 @@ export async function extractCopilotContext(
           role: 'user',
           content,
           timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+        });
+        timeline.push({
+          kind: 'message',
+          sequence: sequence++,
+          role: 'user',
+          content,
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
         });
       }
     } else if (event.type === 'assistant.message') {
       const content = event.data?.content || '';
       const toolRequests = event.data?.toolRequests || [];
+      const toolCalls =
+        toolRequests.length > 0
+          ? toolRequests.map((t) => ({ name: t.name, arguments: getCopilotToolArguments(t) }))
+          : undefined;
 
       if (content) {
         recentMessages.push({
           role: 'assistant',
           content: typeof content === 'string' ? content : JSON.stringify(content),
           timestamp: new Date(event.timestamp),
-          toolCalls:
-            toolRequests.length > 0 ? toolRequests.map((t) => ({ name: t.name, arguments: t.arguments })) : undefined,
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+          toolCalls,
+        });
+        timeline.push({
+          kind: 'message',
+          sequence: sequence++,
+          role: 'assistant',
+          content: typeof content === 'string' ? content : JSON.stringify(content),
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
         });
       } else if (toolRequests.length > 0) {
         // Assistant message with only tool calls (no text content)
@@ -179,9 +209,58 @@ export async function extractCopilotContext(
           role: 'assistant',
           content: `[Used tools: ${toolNames}]`,
           timestamp: new Date(event.timestamp),
-          toolCalls: toolRequests.map((t) => ({ name: t.name, arguments: t.arguments })),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+          toolCalls,
+        });
+        timeline.push({
+          kind: 'message',
+          sequence: sequence++,
+          role: 'assistant',
+          content: `[Used tools: ${toolNames}]`,
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
         });
       }
+
+      for (const toolRequest of toolRequests) {
+        timeline.push({
+          kind: 'tool_call',
+          sequence: sequence++,
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+          toolName: toolRequest.name,
+          arguments: getCopilotToolArguments(toolRequest),
+        });
+      }
+    } else if (event.type === 'tool.execution_start') {
+      const toolName = getOptionalString(event.data?.toolName);
+      if (toolName) {
+        timeline.push({
+          kind: 'tool_call',
+          sequence: sequence++,
+          timestamp: new Date(event.timestamp),
+          sourceId: event.id,
+          sourceParentId: event.parentId ?? undefined,
+          toolName,
+          toolCallId: getOptionalString(event.data?.toolCallId),
+          arguments: normalizeCopilotArguments(event.data?.arguments),
+        });
+      }
+    } else if (event.type === 'tool.execution_complete') {
+      const result = extractCopilotResult(event.data?.result);
+      timeline.push({
+        kind: 'tool_result',
+        sequence: sequence++,
+        timestamp: new Date(event.timestamp),
+        sourceId: event.id,
+        sourceParentId: event.parentId ?? undefined,
+        toolCallId: getOptionalString(event.data?.toolCallId),
+        status: typeof event.data?.success === 'boolean' ? (event.data.success ? 'success' : 'error') : undefined,
+        result: result.resultText ?? result.resultDetail,
+      });
     }
   }
 
@@ -213,6 +292,8 @@ export async function extractCopilotContext(
     toolSummaries,
     undefined,
     resolvedConfig,
+    'inline',
+    timeline,
   );
 
   return {
@@ -221,6 +302,7 @@ export async function extractCopilotContext(
     filesModified,
     pendingTasks,
     toolSummaries,
+    timeline,
     markdown,
   };
 }
@@ -352,7 +434,7 @@ function mergeCopilotToolInvocations(events: CopilotEvent[]): CopilotToolInvocat
       for (const toolRequest of event.data?.toolRequests || []) {
         planned.push({
           name: toolRequest.name || 'unknown',
-          arguments: normalizeCopilotArguments(toolRequest.arguments),
+          arguments: getCopilotToolArguments(toolRequest),
           order: order++,
         });
       }
@@ -494,6 +576,13 @@ function getCopilotFilePath(args: Record<string, unknown>): string {
   return getOptionalString(args.path) || getOptionalString(args.file_path) || '';
 }
 
+function getCopilotToolArguments(toolRequest: { args?: unknown; arguments?: unknown }): Record<string, unknown> {
+  return {
+    ...normalizeCopilotArguments(toolRequest.args),
+    ...normalizeCopilotArguments(toolRequest.arguments),
+  };
+}
+
 function normalizeCopilotArguments(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
@@ -516,4 +605,26 @@ function stableStringify(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+// Cap the timestamp scan so discovery (called every list) stays fast on
+// multi-MB events.jsonl files; falls back to workspace.updated_at on the rare
+// session that exceeds the cap.
+const MAX_TIMESTAMP_SCAN_BYTES = 1024 * 1024;
+
+async function extractLastEventTimestamp(eventsPath: string): Promise<Date | undefined> {
+  let lastTimestamp: Date | undefined;
+  await scanJsonlFile(
+    eventsPath,
+    (parsed) => {
+      const event = parsed as CopilotEvent;
+      const timestamp = event.timestamp ? new Date(event.timestamp) : undefined;
+      if (timestamp && !Number.isNaN(timestamp.getTime())) {
+        lastTimestamp = timestamp;
+      }
+      return 'continue';
+    },
+    { maxBytes: MAX_TIMESTAMP_SCAN_BYTES },
+  );
+  return lastTimestamp;
 }

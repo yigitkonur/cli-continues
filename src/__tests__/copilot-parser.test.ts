@@ -492,4 +492,82 @@ describe('copilot parser regressions', () => {
       filePath: 'src/new-file.ts',
     });
   });
+
+  it('preserves assistant toolRequests args payloads without inventing execution output', async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-home-'));
+    const copilotHome = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-config-'));
+    tmpDirs.push(fakeHome, copilotHome);
+
+    const sessionDir = createCopilotSession({
+      copilotHome,
+      sessionId: 'assistant-args-session',
+      events: [
+        {
+          type: 'session.start',
+          id: 'evt-001',
+          timestamp: '2026-04-15T10:00:00.000Z',
+          parentId: null,
+          data: { sessionId: 'assistant-args-session', currentModel: 'gpt-5.3-copilot' },
+        },
+        {
+          type: 'assistant.message',
+          id: 'evt-002',
+          timestamp: '2026-04-15T10:00:01.000Z',
+          parentId: 'evt-001',
+          data: {
+            content: 'Checking the shell.',
+            toolRequests: [{ name: 'bash', args: { command: 'echo verification-ok' } }],
+          },
+        },
+      ],
+    });
+
+    const { extractCopilotContext } = await loadCopilotParserWithHome(fakeHome);
+    const context = await extractCopilotContext(makeSession(sessionDir, 'assistant-args-session'));
+    const bashSummary = context.toolSummaries.find((summary) => summary.name === 'bash');
+
+    expect(context.recentMessages[0].toolCalls?.[0].arguments).toEqual({ command: 'echo verification-ok' });
+    expect(bashSummary?.samples[0].data).toMatchObject({
+      category: 'shell',
+      command: 'echo verification-ok',
+    });
+    expect(bashSummary?.samples[0].summary).not.toContain('verification-ok"');
+  });
+
+  it('uses event timestamps and currentModel before stale workspace metadata', async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-home-'));
+    const copilotHome = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-config-'));
+    tmpDirs.push(fakeHome, copilotHome);
+
+    createCopilotSession({
+      copilotHome,
+      sessionId: 'event-time-session',
+      workspace: {
+        updatedAt: '2026-04-15T09:00:00.000Z',
+      },
+      events: [
+        {
+          type: 'session.start',
+          id: 'evt-001',
+          timestamp: '2026-04-15T10:00:00.000Z',
+          parentId: null,
+          data: { sessionId: 'event-time-session' },
+        },
+        {
+          type: 'session.shutdown',
+          id: 'evt-002',
+          timestamp: '2026-04-15T10:12:34.000Z',
+          parentId: 'evt-001',
+          data: { currentModel: 'claude-4-current' },
+        },
+      ],
+    });
+
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+    const { parseCopilotSessions } = await loadCopilotParserWithHome(fakeHome);
+    const sessions = await parseCopilotSessions();
+
+    expect(sessions[0].updatedAt.toISOString()).toBe('2026-04-15T10:12:34.000Z');
+    expect(sessions[0].model).toBe('claude-4-current');
+  });
 });
