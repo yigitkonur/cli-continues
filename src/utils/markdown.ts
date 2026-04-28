@@ -1,4 +1,5 @@
 import * as os from 'node:os';
+import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { adapters } from '../parsers/registry.js';
@@ -30,7 +31,7 @@ import {
 /** Replace home directory prefix with ~ and escape backticks for safe markdown inline code */
 const _home = os.homedir();
 export function safePath(p: string): string {
-  const tildified = p === _home || p.startsWith(`${_home}/`) ? `~${p.slice(_home.length)}` : p;
+  const tildified = p === _home || p.startsWith(`${_home}${path.sep}`) ? `~${p.slice(_home.length)}` : p;
   return tildified.replace(/`/g, '\\`');
 }
 
