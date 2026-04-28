@@ -890,6 +890,7 @@ register({
   label: 'Kimi CLI',
   color: chalk.hex('#00D4AA'),
   storagePath: '~/.kimi/sessions/',
+  envVar: 'KIMI_SHARE_DIR',
   binaryName: 'kimi',
   parseSessions: parseKimiSessions,
   extractContext: extractKimiContext,

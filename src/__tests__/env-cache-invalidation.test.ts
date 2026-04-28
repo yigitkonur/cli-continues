@@ -127,6 +127,14 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
+  it('indexNeedsRebuild returns true when KIMI_SHARE_DIR changes', () => {
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kimi')]);
+
+    vi.stubEnv('KIMI_SHARE_DIR', '/home/user/.kimi-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
   it('loadIndex skips the fingerprint line and returns only sessions', () => {
     writeIndex('#env:CLAUDE_CONFIG_DIR=', [makeSession('sess-1', 'claude'), makeSession('sess-2', 'codex')]);
 
