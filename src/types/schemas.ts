@@ -280,22 +280,27 @@ export const GeminiToolCallSchema = z
       .optional(),
     status: z.string().optional(),
     resultDisplay: z
-      .object({
-        fileName: z.string().optional(),
-        filePath: z.string().optional(),
-        fileDiff: z.string().optional(),
-        originalContent: z.string().optional(),
-        newContent: z.string().optional(),
-        diffStat: z
+      .union([
+        z.string(),
+        z
           .object({
-            model_added_lines: z.number().optional(),
-            model_removed_lines: z.number().optional(),
+            fileName: z.string().optional(),
+            filePath: z.string().optional(),
+            fileDiff: z.string().optional(),
+            originalContent: z.string().optional(),
+            newContent: z.string().optional(),
+            renderOutputAsMarkdown: z.boolean().optional(),
+            diffStat: z
+              .object({
+                model_added_lines: z.number().optional(),
+                model_removed_lines: z.number().optional(),
+              })
+              .passthrough()
+              .optional(),
+            isNewFile: z.boolean().optional(),
           })
-          .passthrough()
-          .optional(),
-        isNewFile: z.boolean().optional(),
-      })
-      .passthrough()
+          .passthrough(),
+      ])
       .optional(),
   })
   .passthrough();

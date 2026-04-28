@@ -6,7 +6,9 @@ import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type {
   ConversationMessage,
+  ReasoningStep,
   SessionContext,
+  SessionEvent,
   SessionNotes,
   ToolUsageSummary,
   UnifiedSession,
@@ -109,7 +111,7 @@ function getSessionDirectory(session: GeminiSessionData, projectDirectories: Map
   const metadataDirectory = session.directories?.find(
     (directory) => typeof directory === 'string' && directory.length > 0,
   );
-  return metadataDirectory || projectDirectories.get(session.projectHash) || '';
+  return metadataDirectory || projectDirectories.get(session.projectHash) || inferGeminiCwdFromToolPaths(session) || '';
 }
 
 function findRewindIndex(messages: GeminiMessage[], messageId: string): number {
@@ -235,6 +237,41 @@ function extractGeminiContent(content: string | Array<{ text?: string; type?: st
   return extractTextFromBlocks(content as string | Array<{ type: string; text?: string }>);
 }
 
+type GeminiResultDisplayObject = Exclude<NonNullable<GeminiMessage['toolCalls']>[number]['resultDisplay'], string>;
+
+function getGeminiResultDisplayObject(
+  value: NonNullable<GeminiMessage['toolCalls']>[number]['resultDisplay'],
+): GeminiResultDisplayObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+}
+
+function getGeminiResultDisplayText(value: NonNullable<GeminiMessage['toolCalls']>[number]['resultDisplay']): string {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  return value.fileDiff || value.newContent || value.originalContent || '';
+}
+
+function getGeminiToolResultText(tc: NonNullable<GeminiMessage['toolCalls']>[number]): string {
+  const response = tc.result?.[0]?.functionResponse?.response;
+  return response?.output || response?.error || getGeminiResultDisplayText(tc.resultDisplay);
+}
+
+function getGeminiToolFilePath(tc: NonNullable<GeminiMessage['toolCalls']>[number]): string {
+  const resultDisplay = getGeminiResultDisplayObject(tc.resultDisplay);
+  return resultDisplay?.filePath || (tc.args?.file_path as string) || (tc.args?.path as string) || '';
+}
+
+function inferGeminiCwdFromToolPaths(session: GeminiSessionData): string {
+  for (const msg of session.messages) {
+    if (msg.type !== 'gemini' || !msg.toolCalls) continue;
+    for (const toolCall of msg.toolCalls) {
+      const filePath = getGeminiToolFilePath(toolCall);
+      if (filePath.startsWith('/')) return path.dirname(filePath);
+    }
+  }
+  return '';
+}
+
 /**
  * Extract first real user message from Gemini session
  */
@@ -259,31 +296,32 @@ function extractToolData(
   for (const msg of sessionData.messages) {
     if (msg.type !== 'gemini' || !msg.toolCalls) continue;
     for (const tc of msg.toolCalls) {
-      const { name, args, result, resultDisplay, status } = tc;
+      const { name, args, resultDisplay, status } = tc;
+      const display = getGeminiResultDisplayObject(resultDisplay);
       const category = classifyToolName(name);
       if (!category) continue; // skip internal tools
 
-      const fp = resultDisplay?.filePath || (args?.file_path as string) || (args?.path as string) || '';
-      const resultStr = result?.[0]?.functionResponse?.response?.output;
+      const fp = getGeminiToolFilePath(tc);
+      const resultStr = getGeminiToolResultText(tc);
       const isError = status ? !['ok', 'success', 'completed'].includes(status.toLowerCase()) : false;
 
       switch (category) {
         case 'write': {
           let diffStat: { added: number; removed: number } | undefined;
-          if (resultDisplay?.diffStat) {
+          if (display?.diffStat) {
             diffStat = {
-              added: resultDisplay.diffStat.model_added_lines || 0,
-              removed: resultDisplay.diffStat.model_removed_lines || 0,
+              added: display.diffStat.model_added_lines || 0,
+              removed: display.diffStat.model_removed_lines || 0,
             };
-          } else if (resultDisplay?.fileDiff) {
-            const lines = resultDisplay.fileDiff.split('\n');
+          } else if (display?.fileDiff) {
+            const lines = display.fileDiff.split('\n');
             diffStat = {
               added: lines.filter((l: string) => l.startsWith('+')).length,
               removed: lines.filter((l: string) => l.startsWith('-')).length,
             };
           }
-          const isNewFile = resultDisplay?.isNewFile ?? false;
-          const diff = resultDisplay?.fileDiff || undefined;
+          const isNewFile = display?.isNewFile ?? false;
+          const diff = display?.fileDiff || undefined;
           collector.add(name, fileSummary('write', fp, diffStat, isNewFile), {
             data: {
               category: 'write',
@@ -317,19 +355,19 @@ function extractToolData(
         }
         case 'edit': {
           let diffStat: { added: number; removed: number } | undefined;
-          if (resultDisplay?.diffStat) {
+          if (display?.diffStat) {
             diffStat = {
-              added: resultDisplay.diffStat.model_added_lines || 0,
-              removed: resultDisplay.diffStat.model_removed_lines || 0,
+              added: display.diffStat.model_added_lines || 0,
+              removed: display.diffStat.model_removed_lines || 0,
             };
-          } else if (resultDisplay?.fileDiff) {
-            const dLines = resultDisplay.fileDiff.split('\n');
+          } else if (display?.fileDiff) {
+            const dLines = display.fileDiff.split('\n');
             diffStat = {
               added: dLines.filter((l: string) => l.startsWith('+')).length,
               removed: dLines.filter((l: string) => l.startsWith('-')).length,
             };
           }
-          const diff = resultDisplay?.fileDiff || undefined;
+          const diff = display?.fileDiff || undefined;
           collector.add(name, fileSummary('edit', fp, diffStat), {
             data: {
               category: 'edit',
@@ -417,7 +455,7 @@ function extractToolData(
  */
 function extractSessionNotes(sessionData: GeminiSession): SessionNotes {
   const notes: SessionNotes = {};
-  const reasoning: string[] = [];
+  const reasoningSteps: ReasoningStep[] = [];
 
   for (const msg of sessionData.messages) {
     if (msg.type !== 'gemini') continue;
@@ -439,16 +477,25 @@ function extractSessionNotes(sessionData: GeminiSession): SessionNotes {
       }
     }
 
-    if (msg.thoughts && reasoning.length < 5) {
+    if (msg.thoughts && reasoningSteps.length < 10) {
       for (const thought of msg.thoughts) {
-        if (reasoning.length >= 5) break;
+        if (reasoningSteps.length >= 10) break;
         const text = thought.description || thought.subject || '';
-        if (text.length > 10) reasoning.push(truncate(text, 200));
+        if (text.length > 10) {
+          reasoningSteps.push({
+            stepNumber: reasoningSteps.length + 1,
+            totalSteps: msg.thoughts.length,
+            purpose: 'analysis',
+            thought: truncate(text, 200),
+            outcome: '',
+            nextAction: '',
+          });
+        }
       }
     }
   }
 
-  if (reasoning.length > 0) notes.reasoning = reasoning;
+  if (reasoningSteps.length > 0) notes.reasoningSteps = reasoningSteps;
   return notes;
 }
 
@@ -507,6 +554,8 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
   const pendingTasks: string[] = [];
   let toolSummaries: ToolUsageSummary[] = [];
   let sessionNotes: SessionNotes | undefined;
+  const timeline: SessionEvent[] = [];
+  let sequence = 0;
 
   if (sessionData) {
     const toolData = extractToolData(sessionData, resolvedConfig);
@@ -514,7 +563,7 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
     filesModified = toolData.filesModified;
     sessionNotes = extractSessionNotes(sessionData);
 
-    for (const msg of sessionData.messages.slice(-resolvedConfig.recentMessages * 2)) {
+    for (const msg of sessionData.messages) {
       // Extract pending tasks from thoughts
       if (msg.type === 'gemini' && msg.thoughts && pendingTasks.length < 5) {
         for (const thought of msg.thoughts) {
@@ -536,10 +585,20 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
       }
 
       if (msg.type === 'user') {
+        const content = extractGeminiContent(msg.content);
         recentMessages.push({
           role: 'user',
-          content: extractGeminiContent(msg.content),
+          content,
           timestamp: new Date(msg.timestamp),
+          sourceId: msg.id,
+        });
+        timeline.push({
+          kind: 'message',
+          sequence: sequence++,
+          role: 'user',
+          content,
+          timestamp: new Date(msg.timestamp),
+          sourceId: msg.id,
         });
       } else if (msg.type === 'gemini') {
         const textContent = extractGeminiContent(msg.content);
@@ -548,6 +607,64 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
             role: 'assistant',
             content: textContent,
             timestamp: new Date(msg.timestamp),
+            sourceId: msg.id,
+          });
+          timeline.push({
+            kind: 'message',
+            sequence: sequence++,
+            role: 'assistant',
+            content: textContent,
+            timestamp: new Date(msg.timestamp),
+            sourceId: msg.id,
+          });
+        } else if (msg.toolCalls && msg.toolCalls.length > 0) {
+          recentMessages.push({
+            role: 'assistant',
+            content: `[Used tools: ${msg.toolCalls.map((toolCall) => toolCall.name).join(', ')}]`,
+            timestamp: new Date(msg.timestamp),
+            sourceId: msg.id,
+            toolCalls: msg.toolCalls.map((toolCall) => ({
+              id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.args,
+              result: getGeminiToolResultText(toolCall) || undefined,
+              success: toolCall.status
+                ? ['ok', 'success', 'completed'].includes(toolCall.status.toLowerCase())
+                : undefined,
+            })),
+          });
+        }
+
+        for (const toolCall of msg.toolCalls ?? []) {
+          timeline.push({
+            kind: 'tool_call',
+            sequence: sequence++,
+            timestamp: toolCall.timestamp ? new Date(toolCall.timestamp) : new Date(msg.timestamp),
+            sourceId: msg.id,
+            toolCallId: toolCall.id,
+            toolName: toolCall.name,
+            status: toolCall.status,
+            arguments: toolCall.args,
+            result: getGeminiToolResultText(toolCall) || undefined,
+            filePaths: getGeminiToolFilePath(toolCall) ? [getGeminiToolFilePath(toolCall)] : undefined,
+          });
+        }
+      } else if (['info', 'warning', 'error'].includes(msg.type)) {
+        const content = extractGeminiContent(msg.content);
+        if (content) {
+          recentMessages.push({
+            role: 'system',
+            content,
+            timestamp: new Date(msg.timestamp),
+            sourceId: msg.id,
+          });
+          timeline.push({
+            kind: msg.type === 'info' ? 'metadata' : 'warning',
+            sequence: sequence++,
+            timestamp: new Date(msg.timestamp),
+            sourceId: msg.id,
+            status: msg.type,
+            content,
           });
         }
       }
@@ -564,6 +681,8 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
     toolSummaries,
     sessionNotes,
     resolvedConfig,
+    'inline',
+    timeline,
   );
 
   return {
@@ -573,6 +692,7 @@ export async function extractGeminiContext(session: UnifiedSession, config?: Ver
     pendingTasks,
     toolSummaries,
     sessionNotes,
+    timeline,
     markdown,
   };
 }

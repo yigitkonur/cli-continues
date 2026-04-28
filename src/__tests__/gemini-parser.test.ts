@@ -261,4 +261,115 @@ describe('gemini parser hardening', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].id).toBe('gemini-malformed-session');
   });
+
+  it('preserves info, warning, error, and tool-only Gemini records chronologically without promoting thoughts to key decisions', async () => {
+    const home = makeGeminiHome();
+    const originalPath = writeGeminiJsonlSession({
+      home,
+      projectId: 'tool-only-proj',
+      fileName: 'session-2026-04-15T10-00-toolonly1234.jsonl',
+      records: [
+        {
+          sessionId: 'gemini-tool-only-session',
+          projectHash: 'tool-only-proj',
+          startTime: '2026-04-15T10:00:00.000Z',
+          lastUpdated: '2026-04-15T10:00:05.000Z',
+        },
+        {
+          id: 'msg-user-1',
+          timestamp: '2026-04-15T10:00:01.000Z',
+          type: 'user',
+          content: 'Write the verification file',
+        },
+        {
+          id: 'msg-info-1',
+          timestamp: '2026-04-15T10:00:02.000Z',
+          type: 'info',
+          content: 'Gemini CLI update available',
+        },
+        {
+          id: 'msg-warning-1',
+          timestamp: '2026-04-15T10:00:02.250Z',
+          type: 'warning',
+          content: 'Retrying transient API error',
+        },
+        {
+          id: 'msg-error-1',
+          timestamp: '2026-04-15T10:00:02.500Z',
+          type: 'error',
+          content: 'Tool call recovered after retry',
+        },
+        {
+          id: 'msg-tool-1',
+          timestamp: '2026-04-15T10:00:03.000Z',
+          type: 'gemini',
+          content: '',
+          model: 'gemini-2.5-pro',
+          toolCalls: [
+            {
+              id: 'call-write-1',
+              name: 'write_file',
+              args: { file_path: '/tmp/gemini-project/verification.txt' },
+              status: 'completed',
+              timestamp: '2026-04-15T10:00:03.000Z',
+              resultDisplay: 'wrote verification.txt',
+              result: [
+                {
+                  functionResponse: {
+                    id: 'call-write-1',
+                    name: 'write_file',
+                    response: { output: 'write complete' },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'msg-asst-1',
+          timestamp: '2026-04-15T10:00:04.000Z',
+          type: 'gemini',
+          content: 'Verification file written.',
+          thoughts: [{ subject: 'Analysis', description: 'Need to preserve tool-only records' }],
+        },
+      ],
+    });
+
+    const { extractGeminiContext } = await loadGeminiParser(home);
+    const context = await extractGeminiContext({
+      id: 'gemini-tool-only-session',
+      source: 'gemini',
+      cwd: '/tmp/gemini-project',
+      lines: 5,
+      bytes: fs.statSync(originalPath).size,
+      createdAt: new Date('2026-04-15T10:00:00.000Z'),
+      updatedAt: new Date('2026-04-15T10:00:05.000Z'),
+      originalPath,
+      summary: 'Write the verification file',
+    });
+
+    expect(context.recentMessages.map((message) => message.content)).toEqual([
+      'Write the verification file',
+      'Gemini CLI update available',
+      'Retrying transient API error',
+      'Tool call recovered after retry',
+      '[Used tools: write_file]',
+      'Verification file written.',
+    ]);
+    expect(context.filesModified).toContain('/tmp/gemini-project/verification.txt');
+    expect(context.timeline?.map((event) => event.kind)).toEqual([
+      'message',
+      'metadata',
+      'warning',
+      'warning',
+      'tool_call',
+      'message',
+    ]);
+    expect(context.sessionNotes?.reasoning).toBeUndefined();
+    expect(context.sessionNotes?.reasoningSteps?.[0].thought).toContain('preserve tool-only');
+    expect(context.markdown).toContain('Tool Call: write_file completed');
+    expect(context.markdown).toContain('Gemini CLI update available');
+    expect(context.markdown).toContain('Retrying transient API error');
+    expect(context.markdown).toContain('Tool call recovered after retry');
+  });
 });
