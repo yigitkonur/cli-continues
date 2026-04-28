@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
@@ -14,8 +15,7 @@ import type {
 import type { KimiMessage } from '../types/schemas.js';
 import { classifyToolName } from '../types/tool-names.js';
 import { extractTextFromBlocks } from '../utils/content.js';
-import { listSubdirectories } from '../utils/fs-helpers.js';
-import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
+import { scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir, trimMessages } from '../utils/parser-helpers.js';
 import { fileSummary, mcpSummary, SummaryCollector, shellSummary, truncate } from '../utils/tool-summarizer.js';
@@ -46,6 +46,8 @@ type KimiContextReadResult = {
   rawLineCount: number;
   bytes: number;
   droppedRecordCount: number;
+  mtime?: Date;
+  birthtime?: Date;
 };
 type KimiWireMetadata = {
   path?: string;
@@ -149,11 +151,45 @@ function deriveSessionId(sessionPath: string): string {
   return path.basename(sessionPath);
 }
 
-function getSessionMetadataDir(sessionPath: string): string | undefined {
+async function getSessionMetadataDir(sessionPath: string): Promise<string | undefined> {
   try {
-    return fs.statSync(sessionPath).isDirectory() ? sessionPath : undefined;
+    const stats = await fs.promises.stat(sessionPath);
+    return stats.isDirectory() ? sessionPath : undefined;
   } catch {
     return undefined;
+  }
+}
+
+async function listSubdirectoriesAsync(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    const subdirs: string[] = [];
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        subdirs.push(fullPath);
+      } else if (entry.isSymbolicLink()) {
+        try {
+          const stat = await fs.promises.stat(fullPath);
+          if (stat.isDirectory()) subdirs.push(fullPath);
+        } catch {
+          // broken symlink — skip
+        }
+      }
+    }
+    return subdirs;
+  } catch (err) {
+    logger.debug('kimi: cannot list subdirectories of', dir, err);
+    return [];
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -161,20 +197,39 @@ function getSessionMetadataDir(sessionPath: string): string | undefined {
  * Find all Kimi session directories and legacy flat context files.
  */
 async function findSessionPaths(): Promise<string[]> {
-  const results: string[] = [];
-
-  if (!fs.existsSync(KIMI_SESSIONS_DIR)) {
-    return results;
+  if (!(await pathExists(KIMI_SESSIONS_DIR))) {
+    return [];
   }
 
+  const results: string[] = [];
+
   // Kimi stores sessions as: ~/.kimi/sessions/{workdir_hash}/{session_id}/
-  for (const workdirDir of listSubdirectories(KIMI_SESSIONS_DIR)) {
+  const workdirDirs = await listSubdirectoriesAsync(KIMI_SESSIONS_DIR);
+  for (const workdirDir of workdirDirs) {
     try {
-      for (const entry of fs.readdirSync(workdirDir, { withFileTypes: true })) {
+      const entries = await fs.promises.readdir(workdirDir, { withFileTypes: true });
+      for (const entry of entries) {
         const fullPath = path.join(workdirDir, entry.name);
-        if (entry.isDirectory() || (entry.isSymbolicLink() && fs.existsSync(path.join(fullPath, 'context.jsonl')))) {
-          const contextPath = path.join(fullPath, 'context.jsonl');
-          if (fs.existsSync(contextPath)) {
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          // Directory or symlink (covers symlinked dirs and symlinked flat files).
+          // For symlinks, follow once via stat to decide which branch applies.
+          let isDir = entry.isDirectory();
+          let isFile = false;
+          if (entry.isSymbolicLink()) {
+            try {
+              const stat = await fs.promises.stat(fullPath);
+              isDir = stat.isDirectory();
+              isFile = stat.isFile();
+            } catch {
+              continue; // broken symlink — skip
+            }
+          }
+          if (isDir) {
+            const contextPath = path.join(fullPath, 'context.jsonl');
+            if (await pathExists(contextPath)) {
+              results.push(fullPath);
+            }
+          } else if (isFile && fullPath.endsWith('.jsonl')) {
             results.push(fullPath);
           }
         } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
@@ -231,10 +286,10 @@ async function parseSessionMetadata(sessionDir: string): Promise<KimiSessionMeta
   };
 }
 
-function getMetadataCreatedAt(sessionDir: string, fallback: Date): Date {
+async function getMetadataCreatedAt(sessionDir: string, fallback: Date): Promise<Date> {
   for (const filename of ['state.json', 'metadata.json']) {
     try {
-      const stats = fs.statSync(path.join(sessionDir, filename));
+      const stats = await fs.promises.stat(path.join(sessionDir, filename));
       return stats.birthtime;
     } catch (err) {
       logger.debug('kimi: metadata stats unavailable', sessionDir, filename, err);
@@ -245,65 +300,121 @@ function getMetadataCreatedAt(sessionDir: string, fallback: Date): Date {
 }
 
 /**
- * Read context.jsonl from a Kimi session directory
+ * Read context.jsonl from a Kimi session directory.
+ *
+ * Single-pass implementation: streams the file once, counts every newline-
+ * terminated line (including malformed ones), parses each line as JSON, and
+ * tracks dropped records for fidelity reporting. Uses a single async stat to
+ * obtain bytes/mtime/birthtime. Avoids the previous double-scan approach
+ * (readJsonlFile + getFileStats) which streamed the same file twice.
  */
 async function readContextData(sessionPath: string): Promise<KimiContextReadResult> {
   const contextPath = resolveContextPath(sessionPath);
+  const empty: KimiContextReadResult = {
+    contextPath,
+    messages: [],
+    rawLineCount: 0,
+    bytes: 0,
+    droppedRecordCount: 0,
+  };
+
+  let stats: fs.Stats;
+  try {
+    stats = await fs.promises.stat(contextPath);
+  } catch (err) {
+    logger.debug('kimi: failed to stat context', contextPath, err);
+    return empty;
+  }
+
+  if (stats.size === 0) {
+    return { ...empty, bytes: 0, mtime: stats.mtime, birthtime: stats.birthtime };
+  }
+
+  const messages: KimiMessage[] = [];
+  let rawLineCount = 0;
+  let droppedRecordCount = 0;
+
+  const decoder = new StringDecoder('utf8');
+  const stream = fs.createReadStream(contextPath);
+  let lineBuffer = '';
+
+  const finishLine = (line: string): void => {
+    rawLineCount++;
+    if (line.length === 0) {
+      droppedRecordCount++;
+      return;
+    }
+    const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      logger.debug('kimi: skipping invalid JSON line in', contextPath);
+      droppedRecordCount++;
+      return;
+    }
+    if (!isRecord(parsed)) {
+      logger.debug('kimi: skipping non-object context record', contextPath);
+      droppedRecordCount++;
+      return;
+    }
+    if (typeof parsed.role !== 'string') {
+      logger.debug('kimi: skipping context record with missing role', contextPath);
+      droppedRecordCount++;
+      return;
+    }
+    messages.push(parsed as KimiMessage);
+  };
 
   try {
-    const [records, stats] = await Promise.all([readJsonlFile<unknown>(contextPath), getFileStats(contextPath)]);
-    const messages: KimiMessage[] = [];
-    let droppedRecordCount = Math.max(0, stats.lines - records.length);
-
-    for (const record of records) {
-      if (!isRecord(record)) {
-        logger.debug('kimi: skipping non-object context record', contextPath);
-        droppedRecordCount++;
-        continue;
+    for await (const chunk of stream) {
+      const text = decoder.write(chunk as Buffer);
+      let start = 0;
+      let newlineIndex = text.indexOf('\n', start);
+      while (newlineIndex !== -1) {
+        lineBuffer += text.slice(start, newlineIndex);
+        finishLine(lineBuffer);
+        lineBuffer = '';
+        start = newlineIndex + 1;
+        newlineIndex = text.indexOf('\n', start);
       }
-      if (typeof record.role !== 'string') {
-        logger.debug('kimi: skipping context record with missing role', contextPath);
-        droppedRecordCount++;
-        continue;
-      }
-      messages.push(record as KimiMessage);
+      lineBuffer += text.slice(start);
     }
-
-    return {
-      contextPath,
-      messages,
-      rawLineCount: stats.lines,
-      bytes: stats.bytes,
-      droppedRecordCount,
-    };
+    const remaining = decoder.end();
+    if (remaining.length > 0) lineBuffer += remaining;
+    if (lineBuffer.length > 0) {
+      finishLine(lineBuffer);
+    }
   } catch (err) {
     logger.debug('kimi: failed to read context', sessionPath, err);
-    return {
-      contextPath,
-      messages: [],
-      rawLineCount: 0,
-      bytes: 0,
-      droppedRecordCount: 0,
-    };
+    return empty;
   }
+
+  return {
+    contextPath,
+    messages,
+    rawLineCount,
+    bytes: stats.size,
+    droppedRecordCount,
+    mtime: stats.mtime,
+    birthtime: stats.birthtime,
+  };
 }
 
 async function readWireMetadata(sessionPath: string): Promise<KimiWireMetadata> {
-  const sessionDir = getSessionMetadataDir(sessionPath);
+  const sessionDir = await getSessionMetadataDir(sessionPath);
   if (!sessionDir) return { exists: false, recordTypes: [] };
 
   const wirePath = path.join(sessionDir, 'wire.jsonl');
-  if (!fs.existsSync(wirePath)) return { exists: false, path: wirePath, recordTypes: [] };
+  let bytes: number | undefined;
+  try {
+    bytes = (await fs.promises.stat(wirePath)).size;
+  } catch {
+    return { exists: false, path: wirePath, recordTypes: [] };
+  }
 
   const recordTypes: string[] = [];
   let protocolVersion: string | undefined;
-  let bytes: number | undefined;
-
-  try {
-    bytes = fs.statSync(wirePath).size;
-  } catch (err) {
-    logger.debug('kimi: failed to stat wire.jsonl', wirePath, err);
-  }
 
   await scanJsonlHead(wirePath, 25, (parsed) => {
     if (!isRecord(parsed)) return 'continue';
@@ -628,10 +739,7 @@ export async function parseKimiSessions(): Promise<UnifiedSession[]> {
 
   for (const sessionPath of sessionPaths) {
     try {
-      const contextPath = resolveContextPath(sessionPath);
-      const contextStats = fs.statSync(contextPath);
-
-      const metadataDir = getSessionMetadataDir(sessionPath);
+      const metadataDir = await getSessionMetadataDir(sessionPath);
       const metadata = metadataDir ? await parseSessionMetadata(metadataDir) : {};
       if (metadata.archived === true) continue;
       const sessionId = metadata.sessionId || deriveSessionId(sessionPath);
@@ -639,6 +747,9 @@ export async function parseKimiSessions(): Promise<UnifiedSession[]> {
 
       const contextData = await readContextData(sessionPath);
       if (contextData.messages.length === 0) continue;
+      // readContextData supplies mtime/birthtime from a single async stat, so we
+      // don't need a separate fs.statSync(contextPath) here.
+      if (!contextData.mtime || !contextData.birthtime) continue;
 
       const firstUserMessage = extractFirstUserMessage(contextData.messages);
       const summary = cleanSummary(firstUserMessage);
@@ -646,7 +757,7 @@ export async function parseKimiSessions(): Promise<UnifiedSession[]> {
       const cwd = resolveCwdFromSessionDir(sessionPath, workDirHashIndex);
       const repo = extractRepoFromCwd(cwd);
 
-      let updatedAt = contextStats.mtime;
+      let updatedAt = contextData.mtime;
       if (metadata.wireMtime !== null && metadata.wireMtime !== undefined && metadata.wireMtime > 0) {
         const wireUpdatedAt = new Date(metadata.wireMtime * 1000);
         if (!Number.isNaN(wireUpdatedAt.getTime())) {
@@ -661,7 +772,9 @@ export async function parseKimiSessions(): Promise<UnifiedSession[]> {
         repo,
         lines: contextData.rawLineCount,
         bytes: contextData.bytes,
-        createdAt: metadataDir ? getMetadataCreatedAt(metadataDir, contextStats.birthtime) : contextStats.birthtime,
+        createdAt: metadataDir
+          ? await getMetadataCreatedAt(metadataDir, contextData.birthtime)
+          : contextData.birthtime,
         updatedAt,
         originalPath: sessionPath,
         summary: summary || metadata.title || undefined,
@@ -689,7 +802,7 @@ export async function extractKimiContext(session: UnifiedSession, config?: Verbo
   const toolData = extractToolData(messages, resolvedConfig);
   const sessionNotes = extractSessionNotes(messages);
   const wireMetadata = await readWireMetadata(session.originalPath);
-  const metadataDir = getSessionMetadataDir(session.originalPath);
+  const metadataDir = await getSessionMetadataDir(session.originalPath);
   const statePath = metadataDir ? path.join(metadataDir, 'state.json') : undefined;
   const legacyMetadataPath = metadataDir ? path.join(metadataDir, 'metadata.json') : undefined;
   const sourceMetadata: Record<string, unknown> = {
@@ -701,10 +814,10 @@ export async function extractKimiContext(session: UnifiedSession, config?: Verbo
   if (contextData.droppedRecordCount > 0) {
     sourceMetadata.contextDroppedRecords = contextData.droppedRecordCount;
   }
-  if (statePath && fs.existsSync(statePath)) {
+  if (statePath && (await pathExists(statePath))) {
     sourceMetadata.statePath = statePath;
   }
-  if (legacyMetadataPath && fs.existsSync(legacyMetadataPath)) {
+  if (legacyMetadataPath && (await pathExists(legacyMetadataPath))) {
     sourceMetadata.legacyMetadataPath = legacyMetadataPath;
   }
   if (wireMetadata.path) {

@@ -537,6 +537,39 @@ describe('kimi parser hardening', () => {
     );
   });
 
+  it('reports total context lines and dropped record count from a single streaming pass', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const workDirPath = '/tmp/project-single-pass-counts';
+    const sessionId = 'single-pass-counts-session';
+
+    writeKimiConfig(home, [{ path: workDirPath }]);
+    const sessionDir = createKimiSession({
+      homeDir: home,
+      workDirPath,
+      sessionId,
+      messages: [],
+    });
+    // Mix valid + invalid + non-object + missing-role rows to exercise both
+    // counters in a single pass.
+    writeRawContext(path.join(sessionDir, 'context.jsonl'), [
+      JSON.stringify({ role: 'user', content: 'first valid' }),
+      '{ this-is-not-json',
+      'null',
+      JSON.stringify({ role: 'assistant', content: 'second valid' }),
+      JSON.stringify({ no_role_field: true }),
+    ]);
+
+    const { extractKimiContext, parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].lines).toBe(5);
+
+    const context = await extractKimiContext(sessions[0]);
+    expect(context.sessionNotes?.sourceMetadata?.contextLines).toBe(5);
+    expect(context.sessionNotes?.sourceMetadata?.contextDroppedRecords).toBe(3);
+  });
+
   it('discovers and extracts legacy flat context jsonl files without migrating them', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
