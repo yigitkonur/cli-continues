@@ -258,7 +258,12 @@ function getGeminiToolResultText(tc: NonNullable<GeminiMessage['toolCalls']>[num
 
 function getGeminiToolFilePath(tc: NonNullable<GeminiMessage['toolCalls']>[number]): string {
   const resultDisplay = getGeminiResultDisplayObject(tc.resultDisplay);
-  return resultDisplay?.filePath || (tc.args?.file_path as string) || (tc.args?.path as string) || '';
+  if (typeof resultDisplay?.filePath === 'string') return resultDisplay.filePath;
+  const argFilePath = tc.args?.file_path;
+  if (typeof argFilePath === 'string') return argFilePath;
+  const argPath = tc.args?.path;
+  if (typeof argPath === 'string') return argPath;
+  return '';
 }
 
 function inferGeminiCwdFromToolPaths(session: GeminiSessionData): string {
@@ -266,7 +271,7 @@ function inferGeminiCwdFromToolPaths(session: GeminiSessionData): string {
     if (msg.type !== 'gemini' || !msg.toolCalls) continue;
     for (const toolCall of msg.toolCalls) {
       const filePath = getGeminiToolFilePath(toolCall);
-      if (filePath.startsWith('/')) return path.dirname(filePath);
+      if (path.isAbsolute(filePath)) return path.dirname(filePath);
     }
   }
   return '';
@@ -495,7 +500,16 @@ function extractSessionNotes(sessionData: GeminiSession): SessionNotes {
     }
   }
 
-  if (reasoningSteps.length > 0) notes.reasoningSteps = reasoningSteps;
+  if (reasoningSteps.length > 0) {
+    // Backfill totalSteps with the final count so each step's stepNumber/totalSteps
+    // pair stays internally consistent (the inner loop only knew the per-message
+    // thought count, which made later steps render as "step N/M" with an outdated M).
+    const finalCount = reasoningSteps.length;
+    for (const step of reasoningSteps) {
+      step.totalSteps = finalCount;
+    }
+    notes.reasoningSteps = reasoningSteps;
+  }
   return notes;
 }
 
