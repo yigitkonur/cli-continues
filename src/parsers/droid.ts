@@ -1,11 +1,12 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type {
   ConversationMessage,
   SessionContext,
+  SessionEvent,
   SessionNotes,
   SessionParseOptions,
   UnifiedSession,
@@ -86,11 +87,13 @@ async function parseSessionInfo(
   firstUserMessage: string;
   firstTimestamp: string;
   lastTimestamp: string;
+  cwdIsNotGitRepo: boolean;
 }> {
   let sessionStart: DroidSessionStart | null = null;
   let firstUserMessage = '';
   let firstTimestamp = '';
   let lastTimestamp = '';
+  let cwdIsNotGitRepo = false;
 
   const visitor = (parsed: unknown): 'continue' | 'stop' => {
     const event = parsed as DroidEvent;
@@ -108,8 +111,10 @@ async function parseSessionInfo(
       if (!firstUserMessage && event.message.role === 'user') {
         for (const block of event.message.content) {
           if (block.type === 'text' && block.text) {
-            if (!block.text.startsWith('<') && !block.text.startsWith('/') && !block.text.includes('Session Handoff')) {
-              firstUserMessage = block.text;
+            const cleaned = stripDroidInjectedText(block.text);
+            if (block.text.includes('fatal: not a git repository')) cwdIsNotGitRepo = true;
+            if (!cleaned.startsWith('<') && !cleaned.startsWith('/') && !cleaned.includes('Session Handoff')) {
+              firstUserMessage = cleaned;
               break;
             }
           }
@@ -126,7 +131,7 @@ async function parseSessionInfo(
     await scanJsonlFile(filePath, visitor);
   }
 
-  return { sessionStart, firstUserMessage, firstTimestamp, lastTimestamp };
+  return { sessionStart, firstUserMessage, firstTimestamp, lastTimestamp, cwdIsNotGitRepo };
 }
 
 /**
@@ -139,7 +144,7 @@ export async function parseDroidSessions(options: SessionParseOptions = {}): Pro
 
   for (const filePath of files) {
     try {
-      const { sessionStart, firstUserMessage, firstTimestamp, lastTimestamp } = await parseSessionInfo(
+      const { sessionStart, firstUserMessage, firstTimestamp, lastTimestamp, cwdIsNotGitRepo } = await parseSessionInfo(
         filePath,
         options,
       );
@@ -161,7 +166,7 @@ export async function parseDroidSessions(options: SessionParseOptions = {}): Pro
         id: sessionStart.id,
         source: 'droid',
         cwd,
-        repo: extractRepoFromCwd(cwd),
+        repo: cwdIsNotGitRepo ? undefined : extractRepoFromCwd(cwd),
         lines: stats.lines,
         bytes: fileStats.size,
         createdAt,
@@ -212,6 +217,36 @@ function extractSessionNotes(events: DroidEvent[], settings: DroidSettings | nul
   }
   if (settings?.assistantActiveTimeMs) {
     notes.activeTimeMs = settings.assistantActiveTimeMs;
+  }
+
+  for (const event of events) {
+    if (event.type === 'session_start') {
+      notes.sourceMetadata = {
+        ...(notes.sourceMetadata ?? {}),
+        sessionTitle: event.sessionTitle,
+        owner: event.owner,
+        version: event.version,
+        cwd: event.cwd,
+      };
+      continue;
+    }
+    if (event.type !== 'message') continue;
+    for (const block of event.message.content) {
+      if (block.type !== 'text' || !block.text) continue;
+      if (
+        block.text.includes('<system-reminder>') ||
+        block.text.includes('git rev-parse') ||
+        block.text.includes('fatal: not a git repository')
+      ) {
+        if (!notes.bootstrap) notes.bootstrap = [];
+        notes.bootstrap.push({
+          type: 'bootstrap',
+          content: block.text,
+          ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+          metadata: { messageId: event.id, parentId: event.parentId },
+        });
+      }
+    }
   }
 
   // Extract compaction summary — take the LAST one (most comprehensive)
@@ -282,6 +317,8 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
 
   // Collect conversation messages (text content only)
   const recentMessages: ConversationMessage[] = [];
+  const timeline: SessionEvent[] = [];
+  let sequence = 0;
 
   for (const event of events) {
     if (event.type !== 'message') continue;
@@ -289,8 +326,9 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
     const textParts: string[] = [];
     for (const block of event.message.content) {
       if (block.type === 'text' && block.text) {
-        if (!isSystemContent(block.text)) {
-          textParts.push(block.text);
+        const cleaned = stripDroidInjectedText(block.text);
+        if (cleaned && !isSystemContent(cleaned)) {
+          textParts.push(cleaned);
         }
       }
     }
@@ -302,6 +340,17 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
       role: event.message.role === 'user' ? 'user' : 'assistant',
       content: text,
       timestamp: event.timestamp ? new Date(event.timestamp) : undefined,
+      sourceId: event.id,
+      sourceParentId: event.parentId,
+    });
+    timeline.push({
+      kind: 'message',
+      sequence: sequence++,
+      role: event.message.role === 'user' ? 'user' : 'assistant',
+      content: text,
+      timestamp: event.timestamp ? new Date(event.timestamp) : undefined,
+      sourceId: event.id,
+      sourceParentId: event.parentId,
     });
   }
 
@@ -315,6 +364,8 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
     toolSummaries,
     sessionNotes,
     resolvedConfig,
+    'inline',
+    timeline,
   );
 
   return {
@@ -324,6 +375,16 @@ export async function extractDroidContext(session: UnifiedSession, config?: Verb
     pendingTasks,
     toolSummaries,
     sessionNotes,
+    timeline,
     markdown,
   };
+}
+
+function stripDroidInjectedText(text: string): string {
+  return text
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/giu, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/giu, '')
+    .replace(/\bTodoWrite\b[\s\S]*$/u, '')
+    .trim();
 }

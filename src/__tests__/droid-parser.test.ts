@@ -124,4 +124,60 @@ describe('droid parser hardening', () => {
     expect(sessions.map((session) => session.id)).toContain(id);
     expect(sessions.find((session) => session.id === id)?.lines).toBe(0);
   });
+
+  it('strips bootstrap reminders from conversation and avoids repo inference when bootstrap proves non-git cwd', async () => {
+    const home = makeHome();
+    const id = '66666666-6666-4666-8666-666666666666';
+    const sessionPath = path.join(home, '.factory', 'projects', 'tmp-droid-project', `${id}.jsonl`);
+    writeJsonl(sessionPath, [
+      {
+        type: 'session_start',
+        id,
+        title: 'Droid bootstrap regression',
+        sessionTitle: 'Droid bootstrap regression',
+        cwd: '/tmp/droid-project',
+        owner: 'factory',
+        version: 42,
+      },
+      {
+        type: 'message',
+        id: `${id}-user`,
+        timestamp: '2026-04-15T10:00:00.000Z',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: '<system-reminder>git rev-parse --show-toplevel\nfatal: not a git repository</system-reminder>\nRepair the Droid parser now',
+            },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        id: `${id}-assistant`,
+        timestamp: '2026-04-15T10:00:01.000Z',
+        parentId: `${id}-user`,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Droid parser repaired.' }] },
+      },
+    ]);
+
+    const { parseDroidSessions, extractDroidContext } = await loadDroidParser(home);
+    const [session] = await parseDroidSessions();
+    const context = await extractDroidContext(session);
+
+    expect(session.repo).toBeUndefined();
+    expect(context.recentMessages.map((message) => message.content)).toEqual([
+      'Repair the Droid parser now',
+      'Droid parser repaired.',
+    ]);
+    expect(context.sessionNotes?.sourceMetadata).toMatchObject({
+      sessionTitle: 'Droid bootstrap regression',
+      owner: 'factory',
+      version: 42,
+      cwd: '/tmp/droid-project',
+    });
+    expect(context.sessionNotes?.bootstrap?.[0].content).toContain('fatal: not a git repository');
+    expect(context.markdown).not.toContain('<system-reminder>');
+  });
 });
