@@ -95,6 +95,8 @@ Quick start:
   $ continues
   $ npx continues --preset full
   $ continues claude 1
+  $ continues claude --in codex
+  $ continues codex --in claude
 
 Core workflows:
   $ continues list
@@ -268,8 +270,15 @@ for (const tool of ALL_TOOLS) {
   program
     .command(`${tool} [n]`)
     .description(`Resume Nth newest ${adapter.label} session (default: 1)`)
-    .action(async (n = '1') => {
-      await resumeBySource(tool, parseInt(n, 10));
+    .option('-i, --in <cli-tool>', `Hand off to a different CLI tool (${ALL_TOOLS.join(', ')})`)
+    .action(async (n = '1', options) => {
+      const globalOptions = program.opts();
+      await resumeBySource(tool, parseInt(n, 10), {
+        in: options.in as string | undefined,
+        preset: globalOptions.preset as string | undefined,
+        configPath: globalOptions.config as string | undefined,
+        chain: globalOptions.chain as boolean | undefined,
+      });
     });
 }
 
