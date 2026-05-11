@@ -1202,6 +1202,95 @@ export function createQwenCodeFixture(): FixtureDir {
 }
 
 /**
+ * Create VS Code Copilot Chat fixture
+ */
+export function createVscodeCopilotFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-vscode-copilot-'));
+  const hashDir = path.join(root, 'abc123def456abc1');
+  const chatSessionsDir = path.join(hashDir, 'chatSessions');
+  fs.mkdirSync(chatSessionsDir, { recursive: true });
+
+  const sessionId = 'test-vscode-copilot-session-1';
+  const sessionData = {
+    version: 3,
+    requesterUsername: 'testuser',
+    responderUsername: '',
+    initialLocation: 'panel',
+    sessionId,
+    creationDate: 1758735000000,
+    lastMessageDate: 1758735149883,
+    customTitle: 'Fix the authentication bug in login.ts',
+    isImported: false,
+    requests: [
+      {
+        requestId: 'request_00000001',
+        message: { text: 'Fix the authentication bug in login.ts' },
+        response: [
+          { value: 'I found the issue in login.ts. The token validation was missing.' },
+          { value: ' I have added the missing validateToken call.' },
+        ],
+        result: { details: 'GPT-4.1 • 1x' },
+        timestamp: 1758735100000,
+      },
+      {
+        requestId: 'request_00000002',
+        message: { text: 'Great, please also add error handling' },
+        response: [
+          { value: 'Done. I added try-catch blocks and proper error messages to the validation function.' },
+        ],
+        result: { details: 'GPT-4.1 • 1x' },
+        timestamp: 1758735149883,
+      },
+    ],
+  };
+
+  fs.writeFileSync(path.join(chatSessionsDir, `${sessionId}.json`), JSON.stringify(sessionData, null, 2));
+  fs.writeFileSync(
+    path.join(hashDir, 'workspace.json'),
+    JSON.stringify({ folder: 'file:///home/user/project' }),
+  );
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+export function createMistralVibeFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-mistral-vibe-'));
+  const sessionDir = path.join(root, 'session_20260508_120000_abcd1234');
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const meta = {
+    session_id: 'abcd1234-0000-0000-0000-000000000001',
+    parent_session_id: null,
+    start_time: '2026-05-08T12:00:00.000000+00:00',
+    end_time: '2026-05-08T12:05:00.000000+00:00',
+    git_branch: 'main',
+    environment: { working_directory: '/home/user/project' },
+    title: 'Fix auth bug',
+    title_source: 'auto',
+    config: { active_model: 'mistral-medium-3.5' },
+    total_messages: 4,
+  };
+  fs.writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+  const messages = [
+    JSON.stringify({ role: 'system', content: 'You are Mistral Vibe.', injected: false, message_id: '00000001' }),
+    JSON.stringify({ role: 'user', content: 'Fix the authentication bug in login.ts', injected: false, message_id: '00000002' }),
+    JSON.stringify({ role: 'assistant', content: 'I found the issue in login.ts. The token validation was missing.', injected: false, tool_calls: null, message_id: '00000003' }),
+    JSON.stringify({ role: 'user', content: 'Great, please also add error handling', injected: false, message_id: '00000004' }),
+    JSON.stringify({ role: 'assistant', content: 'Done. I added try-catch blocks and proper error messages.', injected: false, tool_calls: null, message_id: '00000005' }),
+  ];
+  fs.writeFileSync(path.join(sessionDir, 'messages.jsonl'), messages.join('\n') + '\n');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create OpenCode JSON-only fixture (legacy format)
  */
 export function createOpenCodeJsonFixture(): FixtureDir {

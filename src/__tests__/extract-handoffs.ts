@@ -22,6 +22,8 @@ import {
   extractOpenCodeContext,
   extractQwenCodeContext,
   extractRooCodeContext,
+  extractMistralVibeContext,
+  extractVscodeCopilotContext,
   parseAmpSessions,
   parseAntigravitySessions,
   parseClaudeSessions,
@@ -38,6 +40,8 @@ import {
   parseOpenCodeSessions,
   parseQwenCodeSessions,
   parseRooCodeSessions,
+  parseMistralVibeSessions,
+  parseVscodeCopilotSessions,
 } from '../parsers/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
@@ -60,7 +64,9 @@ const ALL_SOURCES: SessionSource[] = [
   'kilo-code',
   'antigravity',
   'kimi',
+  'mistral-vibe',
   'qwen-code',
+  'vscode-copilot',
 ];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
@@ -79,7 +85,9 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   'kilo-code': parseKiloCodeSessions,
   antigravity: parseAntigravitySessions,
   kimi: parseKimiSessions,
+  'mistral-vibe': parseMistralVibeSessions,
   'qwen-code': parseQwenCodeSessions,
+  'vscode-copilot': parseVscodeCopilotSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -98,7 +106,9 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   'kilo-code': extractKiloCodeContext,
   antigravity: extractAntigravityContext,
   kimi: extractKimiContext,
+  'mistral-vibe': extractMistralVibeContext,
   'qwen-code': extractQwenCodeContext,
+  'vscode-copilot': extractVscodeCopilotContext,
 };
 
 async function main() {

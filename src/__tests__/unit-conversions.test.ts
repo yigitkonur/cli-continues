@@ -26,6 +26,8 @@ import {
   createOpenCodeSqliteFixture,
   createQwenCodeFixture,
   createRooCodeFixture,
+  createMistralVibeFixture,
+  createVscodeCopilotFixture,
   type FixtureDir,
 } from './fixtures/index.js';
 
@@ -459,6 +461,8 @@ beforeAll(() => {
   fixtures['kilo-code'] = createKiloCodeFixture();
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
+  fixtures['mistral-vibe'] = createMistralVibeFixture();
+  fixtures['vscode-copilot'] = createVscodeCopilotFixture();
   fixtures.crush = createCrushFixture();
 
   // Build contexts from fixtures
@@ -905,6 +909,78 @@ beforeAll(() => {
     pendingTasks: [],
     toolSummaries: [],
     markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
+  };
+
+  // VS Code Copilot
+  const vscodeCopilotFile = fs
+    .readdirSync(fixtures['vscode-copilot'].root, { recursive: true })
+    .map((f) => path.join(fixtures['vscode-copilot'].root, f as string))
+    .find((f) => f.endsWith('.json') && f.includes('chatSessions'))!;
+  const vscodeCopilotData = JSON.parse(fs.readFileSync(vscodeCopilotFile, 'utf-8'));
+  const vscodeCopilotSession: UnifiedSession = {
+    id: 'test-vscode-copilot-session-1',
+    source: 'vscode-copilot',
+    cwd: '/home/user/project',
+    lines: 4,
+    bytes: fs.statSync(vscodeCopilotFile).size,
+    createdAt: new Date(vscodeCopilotData.creationDate),
+    updatedAt: new Date(vscodeCopilotData.lastMessageDate),
+    originalPath: vscodeCopilotFile,
+    summary: 'Fix auth bug',
+    model: 'GPT-4.1',
+  };
+  const vscodeCopilotMsgs: ConversationMessage[] = vscodeCopilotData.requests.flatMap(
+    (req: { message?: { text?: string }; response?: Array<{ value?: string; kind?: string }>; timestamp?: number }) => {
+      const msgs: ConversationMessage[] = [];
+      const userText = req.message?.text?.trim() ?? '';
+      if (userText) msgs.push({ role: 'user', content: userText, timestamp: req.timestamp ? new Date(req.timestamp) : undefined });
+      const assistantText = (req.response ?? []).filter((p) => p.kind !== 'inlineReference' && typeof p.value === 'string').map((p) => p.value as string).join('').trim();
+      if (assistantText) msgs.push({ role: 'assistant', content: assistantText, timestamp: req.timestamp ? new Date(req.timestamp) : undefined });
+      return msgs;
+    },
+  );
+  contexts['vscode-copilot'] = {
+    session: vscodeCopilotSession,
+    recentMessages: vscodeCopilotMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(vscodeCopilotSession, vscodeCopilotMsgs, [], [], []),
+  };
+
+  // Mistral Vibe
+  const mistralVibeSessionDir = fs
+    .readdirSync(fixtures['mistral-vibe'].root, { withFileTypes: true })
+    .find((d) => d.isDirectory())!;
+  const mistralVibeDir = path.join(fixtures['mistral-vibe'].root, mistralVibeSessionDir.name);
+  const mistralVibeMeta = JSON.parse(fs.readFileSync(path.join(mistralVibeDir, 'meta.json'), 'utf-8'));
+  const mistralVibeLines = fs
+    .readFileSync(path.join(mistralVibeDir, 'messages.jsonl'), 'utf-8')
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l));
+  const mistralVibeSession: UnifiedSession = {
+    id: mistralVibeMeta.session_id,
+    source: 'mistral-vibe',
+    cwd: mistralVibeMeta.environment.working_directory,
+    lines: 4,
+    bytes: fs.statSync(path.join(mistralVibeDir, 'messages.jsonl')).size,
+    createdAt: new Date(mistralVibeMeta.start_time),
+    updatedAt: new Date(mistralVibeMeta.end_time),
+    originalPath: mistralVibeDir,
+    summary: 'Fix auth bug',
+    model: mistralVibeMeta.config.active_model,
+  };
+  const mistralVibeMsgs: ConversationMessage[] = mistralVibeLines
+    .filter((m: any) => (m.role === 'user' || m.role === 'assistant') && !m.injected && m.content?.trim())
+    .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content.trim() }));
+  contexts['mistral-vibe'] = {
+    session: mistralVibeSession,
+    recentMessages: mistralVibeMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(mistralVibeSession, mistralVibeMsgs, [], [], []),
   };
 });
 

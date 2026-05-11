@@ -21,6 +21,8 @@ export const TOOL_NAMES = Object.freeze([
   'antigravity',
   'kimi',
   'qwen-code',
+  'mistral-vibe',
+  'vscode-copilot',
 ] as const);
 
 /** Source CLI tool — derived from TOOL_NAMES, never defined manually */
@@ -70,6 +72,7 @@ export const EDIT_TOOLS: ReadonlySet<string> = new Set([
   'apply_patch',
   'ApplyPatch',
   'replace',
+  'search_replace',
   'mcp__morph__edit_file',
   'morph___edit_file',
 ]);

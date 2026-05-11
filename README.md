@@ -8,7 +8,6 @@ npx continues
 
 https://github.com/user-attachments/assets/6945f3a5-bd19-45ab-9702-6df8e165a734
 
-
 [![npm version](https://img.shields.io/npm/v/continues.svg)](https://www.npmjs.com/package/continues)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -16,7 +15,7 @@ https://github.com/user-attachments/assets/6945f3a5-bd19-45ab-9702-6df8e165a734
 
 16 AI coding agents, any-to-any handoff:
 
-**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code**
+**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code** **VSCode Copilot** **Mistral Vibe**
 
 That's 240 cross-tool handoff paths. Pick any source, pick any destination — it works.
 
@@ -147,12 +146,12 @@ File naming: `{source}_{id}.md` or `{source}_{id}.json`
 
 Not every handoff needs to be a novel. Four presets control how much detail goes in:
 
-| Preset | Messages | Tool samples | Subagent detail | When to use |
-|:-------|:---------|:-------------|:----------------|:------------|
-| `minimal` | 3 | 0 | None | Quick context, token-constrained targets |
-| `standard` | 10 | 5 | 500 chars | Default — good balance |
-| `verbose` | 20 | 10 | 2000 chars | Debugging, complex multi-file tasks |
-| `full` | 50 | All | Everything | Complete session capture |
+| Preset     | Messages | Tool samples | Subagent detail | When to use                              |
+| :--------- | :------- | :----------- | :-------------- | :--------------------------------------- |
+| `minimal`  | 3        | 0            | None            | Quick context, token-constrained targets |
+| `standard` | 10       | 5            | 500 chars       | Default — good balance                   |
+| `verbose`  | 20       | 10           | 2000 chars      | Debugging, complex multi-file tasks      |
+| `full`     | 50       | All          | Everything      | Complete session capture                 |
 
 ```bash
 continues resume abc123 --preset full
@@ -176,38 +175,42 @@ Resolution order: `--config <path>` → `.continues.yml` in cwd → `~/.continue
 
 Every tool stores sessions differently — different formats, different schemas, different paths. Here's what `continues` reads:
 
-| Tool | Format | Where it lives |
-|:-----|:-------|:---------------|
-| Claude Code | JSONL | `~/.claude/projects/` |
-| Codex | JSONL | `~/.codex/sessions/` |
-| Copilot | YAML + JSONL | `~/.copilot/session-state/` |
-| Gemini CLI | JSON | `~/.gemini/tmp/*/chats/` |
-| OpenCode | SQLite | `~/.local/share/opencode/storage/` |
-| Factory Droid | JSONL + JSON | `~/.factory/sessions/` |
-| Cursor | JSONL | `~/.cursor/projects/*/agent-transcripts/` |
-| Amp | JSON | `~/.local/share/amp/threads/` |
-| Kiro | JSON | `~/Library/Application Support/Kiro/workspace-sessions/` |
-| Crush | SQLite | `~/.crush/crush.db` |
-| Cline | JSON | VS Code `globalStorage/saoudrizwan.claude-dev/tasks/` |
-| Roo Code | JSON | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/` |
-| Kilo Code | JSON | VS Code `globalStorage/kilocode.kilo-code/tasks/` |
-| Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
-| Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
-| Qwen Code | JSONL | `~/.qwen/projects/*/chats/` |
+| Tool           | Format                                   | Where it lives                                              |
+| :------------- | :--------------------------------------- | :---------------------------------------------------------- |
+| Claude Code    | JSONL                                    | `~/.claude/projects/`                                       |
+| Codex          | JSONL                                    | `~/.codex/sessions/`                                        |
+| Copilot        | YAML + JSONL                             | `~/.copilot/session-state/`                                 |
+| Gemini CLI     | JSON                                     | `~/.gemini/tmp/*/chats/`                                    |
+| OpenCode       | SQLite                                   | `~/.local/share/opencode/storage/`                          |
+| Factory Droid  | JSONL + JSON                             | `~/.factory/sessions/`                                      |
+| Cursor         | JSONL                                    | `~/.cursor/projects/*/agent-transcripts/`                   |
+| Amp            | JSON                                     | `~/.local/share/amp/threads/`                               |
+| Kiro           | JSON                                     | `~/Library/Application Support/Kiro/workspace-sessions/`    |
+| Crush          | SQLite                                   | `~/.crush/crush.db`                                         |
+| Cline          | JSON                                     | VS Code `globalStorage/saoudrizwan.claude-dev/tasks/`       |
+| Roo Code       | JSON                                     | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/`   |
+| Kilo Code      | JSON                                     | VS Code `globalStorage/kilocode.kilo-code/tasks/`           |
+| Antigravity    | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/`                                    |
+| Kimi CLI       | JSONL + JSON                             | `~/.kimi/sessions/`                                         |
+| Qwen Code      | JSONL                                    | `~/.qwen/projects/*/chats/`                                 |
+| Vscode Copilot | JSONL                                    | `~/Library/Application Support/Code/User/workspaceStorage/` |
+| Mistral Vibe   | JSONL + JSON                             | `~/.vibe/logs/session/`                                     |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 
 ### Tool activity in handoffs
 
-The handoff document includes a **Tool Activity** section so the target agent knows what was *done*, not just what was *said*:
+The handoff document includes a **Tool Activity** section so the target agent knows what was _done_, not just what was _said_:
 
 ```markdown
 ## Tool Activity
+
 - **Bash** (×47): `$ npm test → exit 0` · `$ git status → exit 0` · `$ npm run build → exit 1`
 - **Edit** (×12): `edit src/auth.ts` · `edit src/api/routes.ts` · `edit tests/auth.test.ts`
 - **Grep** (×8): `grep "handleLogin" src/` · `grep "JWT_SECRET"` · `grep "middleware"`
 
 ## Session Notes
+
 - **Model**: claude-sonnet-4
 - **Tokens**: 45,230 in / 12,847 out
 - 💭 Need to handle the edge case where token refresh races with logout
@@ -219,16 +222,16 @@ Every handoff also includes the **full file path** of the original session, so t
 
 ## Commands reference
 
-| Command | What it does |
-|:--------|:-------------|
-| `continues` | Interactive TUI picker |
-| `continues list` | List sessions (`--source`, `--json`, `--jsonl`, `-n`) |
-| `continues resume <id>` | Resume by ID (`--in <tool>`, `--preset`) |
-| `continues inspect <id>` | Diagnostic view (`--truncate`, `--write-md`, `--preset`) |
-| `continues dump <source\|all> <dir>` | Bulk export sessions (`--json`, `--preset`, `--limit`) |
-| `continues scan` | Discovery stats (`--rebuild`) |
-| `continues rebuild` | Force-rebuild session index |
-| `continues <tool> [n]` | Quick-resume Nth session from any of the 16 tools |
+| Command                              | What it does                                             |
+| :----------------------------------- | :------------------------------------------------------- |
+| `continues`                          | Interactive TUI picker                                   |
+| `continues list`                     | List sessions (`--source`, `--json`, `--jsonl`, `-n`)    |
+| `continues resume <id>`              | Resume by ID (`--in <tool>`, `--preset`)                 |
+| `continues inspect <id>`             | Diagnostic view (`--truncate`, `--write-md`, `--preset`) |
+| `continues dump <source\|all> <dir>` | Bulk export sessions (`--json`, `--preset`, `--limit`)   |
+| `continues scan`                     | Discovery stats (`--rebuild`)                            |
+| `continues rebuild`                  | Force-rebuild session index                              |
+| `continues <tool> [n]`               | Quick-resume Nth session from any of the 16 tools        |
 
 Global flags: `--config <path>`, `--preset <name>`, `--verbose`, `--debug`
 
@@ -244,6 +247,7 @@ This started as a 7-tool project and grew fast thanks to contributors:
 The latest batch — **Amp, Kiro, Crush, Cline, Roo Code, Kilo Code, Antigravity, Kimi CLI, and Qwen Code** — was added by reverse-engineering [mnemo](https://github.com/Pilan-AI/mnemo)'s Go adapters and adapting the schemas for TypeScript. Along the way we also improved token/cache/model extraction for the existing Claude, Codex, Cursor, and Gemini parsers.
 
 **Bugs fixed in this round:**
+
 - Symlink traversal — `fs.Dirent.isDirectory()` returns `false` for symlinks; fixed with `isSymbolicLink() && statSync()` fallback
 - Zero-token display — no longer shows "0 in / 0 out" when a session has no token data
 - Key Decisions count — now respects the verbosity config instead of being hardcoded to 5
