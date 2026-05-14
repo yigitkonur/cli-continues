@@ -1,0 +1,124 @@
+{
+  "name": "continues-relay",
+  "displayName": "Continues Relay",
+  "description": "VS Code side view for browsing Continues CLI sessions, previewing handoffs, and resuming in Codex or Claude.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "type": "module",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jafengh/cli-continues-extension.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "vscode:prepublish": "pnpm run compile"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "continuesRelay.refreshSessions",
+        "title": "Refresh Sessions",
+        "category": "Continues Relay",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "continuesRelay.previewHandoff",
+        "title": "Preview Handoff",
+        "category": "Continues Relay",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "continuesRelay.resumeInCodex",
+        "title": "Resume in Codex",
+        "category": "Continues Relay",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "continuesRelay.resumeInClaude",
+        "title": "Resume in Claude",
+        "category": "Continues Relay",
+        "icon": "$(terminal)"
+      }
+    ],
+    "configuration": {
+      "title": "Continues Relay",
+      "properties": {
+        "continuesRelay.cliPath": {
+          "type": "string",
+          "default": "continues",
+          "description": "Path to the local continues CLI executable."
+        },
+        "continuesRelay.preset": {
+          "type": "string",
+          "default": "standard",
+          "enum": [
+            "minimal",
+            "standard",
+            "verbose",
+            "full"
+          ],
+          "description": "Verbosity preset used when generating handoff previews and cross-tool resumes."
+        },
+        "continuesRelay.language": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "en",
+            "zh-CN"
+          ],
+          "enumDescriptions": [
+            "Use the VS Code display language.",
+            "Use English.",
+            "Use Simplified Chinese."
+          ],
+          "description": "Display language for the Continues Relay view."
+        }
+      }
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "continuesRelay.refreshSessions",
+          "when": "view == continuesRelay.sessionsView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "views": {
+      "continuesRelay": [
+        {
+          "id": "continuesRelay.sessionsView",
+          "name": "Sessions & Handoff",
+          "icon": "media/icon.svg",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "continuesRelay",
+          "title": "Continues Relay",
+          "icon": "media/icon.svg"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "@types/vscode": "1.92.0",
+    "typescript": "^5.9.3"
+  }
+}

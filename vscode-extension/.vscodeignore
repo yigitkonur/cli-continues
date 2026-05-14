@@ -1,0 +1,9 @@
+src/
+tsconfig.json
+node_modules/
+.vscode/
+.gitignore
+*.vsix
+!dist/**
+!media/**
+!media/icon.png
