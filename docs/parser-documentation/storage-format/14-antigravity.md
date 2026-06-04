@@ -5,6 +5,8 @@ Accessed: 2026-04-28
 ## Observed Storage
 
 - Root: `~/.gemini/antigravity/`
+- CLI root: `~/.gemini/antigravity-cli/`
+- CLI conversations: `antigravity-cli/conversations/<conversation-id>.db`
 - Persisted conversation IDs: `conversations/*.pb`
 - Handoff artifacts: `brain/<conversation-id>/task.md`, `implementation_plan.md`, `walkthrough.md`, plus `.resolved*` variants.
 - UI/index metadata: Antigravity global storage SQLite at `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` on macOS.
@@ -12,7 +14,8 @@ Accessed: 2026-04-28
 
 ## Parser Behavior
 
-- `src/parsers/antigravity.ts` now discovers sessions from the union of `conversations/*.pb`, `brain/<id>/`, `state.vscdb` trajectory summaries, and optional live language-server RPC.
+- `src/parsers/antigravity.ts` now discovers sessions from the union of CLI `conversations/*.db`, IDE `conversations/*.pb`, `brain/<id>/`, `state.vscdb` trajectory summaries, and optional live language-server RPC.
+- CLI `.db` extraction reads `steps` read-only through `node:sqlite` and decodes embedded protobuf/JSON strings best-effort for messages and tool activity.
 - `code_tracker/` is no longer treated as canonical. It is parsed only as a legacy fallback when a file actually contains chat-shaped `{type, content, timestamp}` records.
 - Offline extraction does not decrypt `.pb`; it builds a useful handoff from brain artifacts and state metadata.
 - When Antigravity is running, the parser attempts read-only RPC extraction for full steps, messages, tool activity, and modified files.
@@ -26,6 +29,7 @@ Accessed: 2026-04-28
 ## Direct Access Recipe
 
 ```bash
+find ~/.gemini/antigravity-cli/conversations -name '*.db'
 find ~/.gemini/antigravity/conversations -name '*.pb'
 find ~/.gemini/antigravity/brain -maxdepth 2 -type f | head -n 80
 sqlite3 "$HOME/Library/Application Support/Antigravity/User/globalStorage/state.vscdb" \
