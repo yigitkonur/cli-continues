@@ -54,6 +54,7 @@ function makeRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'continues-antigravity-'));
   tempRoots.push(root);
   vi.stubEnv('ANTIGRAVITY_HOME', root);
+  vi.stubEnv('ANTIGRAVITY_CLI_HOME', path.join(root, 'missing-antigravity-cli'));
   vi.stubEnv('ANTIGRAVITY_STATE_DB', path.join(root, 'missing-state.vscdb'));
   vi.stubEnv('ANTIGRAVITY_DISABLE_RPC', '1');
   return root;
@@ -115,6 +116,28 @@ function createStateDb(dbPath: string, key: string, value: string): void {
   try {
     db.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB)');
     db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(key, value);
+  } finally {
+    db.close();
+  }
+}
+
+function createCliConversationDb(
+  dbPath: string,
+  rows: Array<{ idx: number; stepType: number; payload: string }>,
+): void {
+  const sqliteModule = require('node:sqlite') as {
+    DatabaseSync: new (database: string) => SqliteDatabase;
+  };
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  const db = new sqliteModule.DatabaseSync(dbPath);
+  try {
+    db.exec(
+      'CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer NOT NULL DEFAULT 0, metadata blob, task_details blob, render_info blob, step_payload blob)',
+    );
+    const insert = db.prepare('INSERT INTO steps (idx, step_type, step_payload) VALUES (?, ?, ?)');
+    for (const row of rows) {
+      insert.run(row.idx, row.stepType, Buffer.from(row.payload, 'utf8'));
+    }
   } finally {
     db.close();
   }
@@ -235,6 +258,64 @@ describe('Antigravity parser', () => {
     expect(sessions[0].lines).toBe(7);
     expect(sessions[0].createdAt.toISOString()).toBe(createdAt.toISOString());
     expect(sessions[0].updatedAt.toISOString()).toBe(updatedAt.toISOString());
+  });
+
+  it('discovers Antigravity CLI sqlite conversations under antigravity-cli', async () => {
+    const root = makeRoot();
+    const cliRoot = path.join(root, 'antigravity-cli');
+    const id = 'dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    vi.stubEnv('ANTIGRAVITY_CLI_HOME', cliRoot);
+    writeFile(path.join(cliRoot, 'cache', 'last_conversations.json'), JSON.stringify({ '/home/user/project': id }));
+    createCliConversationDb(path.join(cliRoot, 'conversations', `${id}.db`), [
+      { idx: 0, stepType: 14, payload: 'Fix the CLI resume flow for Antigravity' },
+      {
+        idx: 1,
+        stepType: 15,
+        payload:
+          'I will inspect the resume adapter. run_command {"CommandLine":"git status --short","Cwd":"/home/user/project"}',
+      },
+    ]);
+
+    const sessions = await parseAntigravitySessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      id,
+      source: 'antigravity',
+      cwd: '/home/user/project',
+      repo: 'user/project',
+      lines: 2,
+      summary: 'Fix the CLI resume flow for Antigravity',
+      originalPath: path.join(cliRoot, 'conversations', `${id}.db`),
+    });
+  });
+
+  it('extracts Antigravity CLI context from sqlite steps without launching the IDE', async () => {
+    const root = makeRoot();
+    const cliRoot = path.join(root, 'antigravity-cli');
+    const id = 'eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    vi.stubEnv('ANTIGRAVITY_CLI_HOME', cliRoot);
+    createCliConversationDb(path.join(cliRoot, 'conversations', `${id}.db`), [
+      { idx: 0, stepType: 14, payload: 'Fix the Antigravity CLI parser' },
+      {
+        idx: 1,
+        stepType: 15,
+        payload:
+          'I will inspect the registry. run_command {"CommandLine":"rg antigravity src/parsers/registry.ts","Cwd":"/home/user/project"}',
+      },
+    ]);
+
+    const [session] = await parseAntigravitySessions();
+    const context = await extractAntigravityContext(session);
+
+    expect(context.recentMessages.map((message) => message.role)).toContain('user');
+    expect(context.recentMessages.map((message) => message.role)).toContain('assistant');
+    expect(
+      context.toolSummaries.some((summary) =>
+        summary.samples.some((sample) => sample.summary.includes('rg antigravity')),
+      ),
+    ).toBe(true);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('extracts an offline handoff from brain artifacts when live RPC is unavailable', async () => {
