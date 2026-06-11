@@ -32,6 +32,7 @@ import {
   extractOpenCodeContext,
   extractQwenCodeContext,
   extractRooCodeContext,
+  extractCommandCodeContext,
   parseAmpSessions,
   parseAntigravitySessions,
   parseClaudeSessions,
@@ -48,6 +49,7 @@ import {
   parseOpenCodeSessions,
   parseQwenCodeSessions,
   parseRooCodeSessions,
+  parseCommandCodeSessions,
 } from '../parsers/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { WHICH_CMD } from '../utils/platform.js';
@@ -69,6 +71,7 @@ const ALL_SOURCES: SessionSource[] = [
   'antigravity',
   'kimi',
   'qwen-code',
+  'command-code',
 ];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
@@ -88,6 +91,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   antigravity: parseAntigravitySessions,
   kimi: parseKimiSessions,
   'qwen-code': parseQwenCodeSessions,
+  'command-code': parseCommandCodeSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -107,6 +111,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   antigravity: extractAntigravityContext,
   kimi: extractKimiContext,
   'qwen-code': extractQwenCodeContext,
+  'command-code': extractCommandCodeContext,
 };
 
 // Results directory
@@ -298,6 +303,7 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
           antigravity: 'Antigravity',
           kimi: 'Kimi CLI',
           'qwen-code': 'Qwen Code',
+          'command-code': 'Command Code',
         };
         const sourceLabel = sourceLabels[source];
 

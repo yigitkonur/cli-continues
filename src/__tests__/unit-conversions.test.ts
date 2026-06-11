@@ -24,6 +24,7 @@ import {
   createKimiFixture,
   createKiroFixture,
   createOpenCodeSqliteFixture,
+  createCommandCodeFixture,
   createQwenCodeFixture,
   createRooCodeFixture,
   type FixtureDir,
@@ -402,6 +403,36 @@ function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
   return messages;
 }
 
+function parseCommandCodeFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.trim().split('\n');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.role !== 'user' && parsed.role !== 'assistant') continue;
+
+      const text = (parsed.content || [])
+        .filter((c: any) => c?.type === 'text' && c?.text)
+        .map((c: any) => c.text)
+        .join('\n');
+
+      if (!text) continue;
+
+      messages.push({
+        role: parsed.role as 'user' | 'assistant',
+        content: text,
+        timestamp: parsed.timestamp ? new Date(parsed.timestamp) : undefined,
+      });
+    } catch {
+      /* skip */
+    }
+  }
+
+  return messages;
+}
+
 function parseQwenCodeFixtureMessages(filePath: string): ConversationMessage[] {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines = content.trim().split('\n');
@@ -460,6 +491,7 @@ beforeAll(() => {
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
   fixtures.crush = createCrushFixture();
+  fixtures['command-code'] = createCommandCodeFixture();
 
   // Build contexts from fixtures
   const now = new Date();
@@ -906,6 +938,35 @@ beforeAll(() => {
     toolSummaries: [],
     markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
   };
+
+  // CommandCode
+  const commandCodeJsonl = fs
+    .readdirSync(fixtures['command-code'].root, { recursive: true })
+    .map((f) => path.join(fixtures['command-code'].root, f as string))
+    .find((f) => f.endsWith('.jsonl') && !f.endsWith('.checkpoints.jsonl'))!;
+  const commandCodeSession: UnifiedSession = {
+    id: 'aaaabbbb-cccc-4ddd-eeee-ffffffffffff',
+    source: 'command-code',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    branch: 'main',
+    lines: 4,
+    bytes: fs.statSync(commandCodeJsonl).size,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: commandCodeJsonl,
+    summary: 'Fix auth bug',
+    model: 'claude-sonnet-4-5',
+  };
+  const commandCodeMsgs = parseCommandCodeFixtureMessages(commandCodeJsonl);
+  contexts['command-code'] = {
+    session: commandCodeSession,
+    recentMessages: commandCodeMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(commandCodeSession, commandCodeMsgs, [], [], []),
+  };
 });
 
 afterAll(() => {
@@ -1049,6 +1110,35 @@ describe('Low-Level Fixture Parsing', () => {
     for (const msg of msgs) {
       expect(msg.content).not.toContain('tool_use');
       expect(msg.content).not.toContain('tool_result');
+    }
+  });
+
+  it('CommandCode: extracts user and assistant text messages from JSONL', () => {
+    const msgs = contexts['command-code'].recentMessages;
+    expect(msgs.length).toBe(4);
+    expect(msgs[0].role).toBe('user');
+    expect(msgs[0].content).toContain('Fix the authentication bug');
+    expect(msgs[1].role).toBe('assistant');
+    expect(msgs[1].content).toContain('token validation was missing');
+  });
+
+  it('CommandCode: joins multiple text blocks into single message content', () => {
+    // The fixture assistant message has reasoning + text blocks; only text blocks should be joined
+    const msgs = contexts['command-code'].recentMessages;
+    const assistantMsgs = msgs.filter((m) => m.role === 'assistant');
+    expect(assistantMsgs.length).toBe(2);
+    // reasoning block should NOT appear in content
+    for (const msg of assistantMsgs) {
+      expect(msg.content).not.toContain('I need to inspect login.ts first');
+    }
+  });
+
+  it('CommandCode: skips tool-call and tool-result blocks from message content', () => {
+    const msgs = contexts['command-code'].recentMessages;
+    for (const msg of msgs) {
+      expect(msg.content).not.toContain('tool-call');
+      expect(msg.content).not.toContain('tool-result');
+      expect(msg.content).not.toContain('toolCallId');
     }
   });
 });

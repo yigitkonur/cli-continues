@@ -1289,3 +1289,85 @@ export function createOpenCodeJsonFixture(): FixtureDir {
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
   };
 }
+
+export function createCommandCodeFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-command-code-'));
+  const projectSlug = 'home-user-project';
+  const projectDir = path.join(root, projectSlug);
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  const sessionId = 'aaaabbbb-cccc-4ddd-eeee-ffffffffffff';
+
+  fs.writeFileSync(
+    path.join(projectDir, `${sessionId}.meta.json`),
+    JSON.stringify({ title: 'Fix auth bug', model: 'claude-sonnet-4-5' }),
+  );
+
+  const lines = [
+    JSON.stringify({
+      id: '11111111-0000-0000-0000-000000000001',
+      timestamp: '2026-01-15T10:00:01.000Z',
+      sessionId,
+      parentId: null,
+      role: 'user',
+      content: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
+      gitBranch: 'main',
+      metadata: { source: 'cli', version: 2 },
+    }),
+    JSON.stringify({
+      id: '11111111-0000-0000-0000-000000000002',
+      timestamp: '2026-01-15T10:00:05.000Z',
+      sessionId,
+      parentId: '11111111-0000-0000-0000-000000000001',
+      role: 'assistant',
+      content: [
+        { type: 'reasoning', text: 'I need to inspect login.ts first.' },
+        { type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_001',
+          toolName: 'read_file',
+          input: { path: '/home/user/project/src/login.ts' },
+        },
+      ],
+      gitBranch: 'main',
+      metadata: { source: 'cli', version: 2 },
+    }),
+    JSON.stringify({
+      id: '11111111-0000-0000-0000-000000000003',
+      timestamp: '2026-01-15T10:00:10.000Z',
+      sessionId,
+      parentId: '11111111-0000-0000-0000-000000000002',
+      role: 'user',
+      content: [{ type: 'text', text: 'Great, please also add error handling' }],
+      gitBranch: 'main',
+      metadata: { source: 'cli', version: 2 },
+    }),
+    JSON.stringify({
+      id: '11111111-0000-0000-0000-000000000004',
+      timestamp: '2026-01-15T10:00:15.000Z',
+      sessionId,
+      parentId: '11111111-0000-0000-0000-000000000003',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_002',
+          toolName: 'shell_command',
+          input: { command: 'npm test -- login' },
+        },
+      ],
+      gitBranch: 'main',
+      metadata: { source: 'cli', version: 2 },
+    }),
+  ];
+
+  fs.writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(projectDir, `${sessionId}.checkpoints.jsonl`), '');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
