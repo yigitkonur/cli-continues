@@ -130,7 +130,7 @@ export async function extractCommandCodeContext(
   session: UnifiedSession,
   config?: VerbosityConfig,
 ): Promise<SessionContext> {
-  const resolvedConfig = config ?? getPreset('default');
+  const resolvedConfig = config ?? getPreset('standard');
   const messages: ConversationMessage[] = [];
   const collector = new SummaryCollector(resolvedConfig);
 
