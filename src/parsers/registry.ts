@@ -30,6 +30,7 @@ import { extractKimiContext, parseKimiSessions } from './kimi.js';
 import { extractKiroContext, parseKiroSessions } from './kiro.js';
 import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
+import { extractCommandCodeContext, parseCommandCodeSessions } from './command-code.js';
 
 /**
  * Adapter interface — single contract for all supported CLI tools.
@@ -937,6 +938,22 @@ register({
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: (s) => `qwen --resume ${s.id}`,
   mapHandoffFlags: mapGeminiFlags,
+});
+
+// ── Command Code ──────────────────────────────────────────────────────
+register({
+  name: 'command-code',
+  label: 'Command Code',
+  color: chalk.hex('#F97316'),
+  storagePath: '~/.commandcode/projects/*/',
+  envVar: 'COMMAND_CODE_HOME',
+  binaryName: 'cmdc',
+  binaryFallbacks: ['cmd', 'command-code', 'commandcode'],
+  parseSessions: parseCommandCodeSessions,
+  extractContext: extractCommandCodeContext,
+  nativeResumeArgs: (s) => ['--resume', s.id],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: (s) => `cmdc --resume ${s.id}`,
 });
 
 // ── Completeness assertion ──────────────────────────────────────────
