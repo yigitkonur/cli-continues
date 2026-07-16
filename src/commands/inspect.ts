@@ -6,9 +6,9 @@
  * Designed for verifying that nothing is silently dropped during extraction.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import chalk from 'chalk';
-import * as fs from 'fs';
-import * as path from 'path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset, loadConfig } from '../config/index.js';
 import { adapters } from '../parsers/registry.js';
@@ -34,7 +34,7 @@ function getSessionFormat(source: string, session?: UnifiedSession): SessionForm
       // (id prefixed `legacy:`). Detect from the file extension so `inspect`
       // can read raw events for those sessions instead of always reporting
       // raw analysis as unavailable.
-      if (session && session.id.startsWith('legacy:')) {
+      if (session?.id.startsWith('legacy:')) {
         if (session.originalPath.endsWith('.jsonl')) return 'jsonl';
         if (session.originalPath.endsWith('.json')) return 'json';
       }
@@ -363,7 +363,7 @@ function renderEventDistribution(events: RawEventCounts, source: string): string
   for (const [type, count] of sorted) {
     const frac = count / events.total;
     const pct = (frac * 100).toFixed(1);
-    lines.push(`  ${bar(frac)}  ${pad(type + ':', maxLabel + 1)} ${rpad(count, 6)}  (${rpad(pct, 5)}%)`);
+    lines.push(`  ${bar(frac)}  ${pad(`${type}:`, maxLabel + 1)} ${rpad(count, 6)}  (${rpad(pct, 5)}%)`);
   }
 
   lines.push(`  ${' '.repeat(30)}  ${pad('TOTAL:', maxLabel + 1)} ${rpad(events.total, 6)}`);
@@ -383,7 +383,7 @@ function renderContentBlocks(blocks: ContentBlockCounts): string {
   const maxLabel = Math.max(...sorted.map(([k]) => k.length));
 
   for (const [type, count] of sorted) {
-    lines.push(`  ${pad(type + ':', maxLabel + 1)} ${rpad(count, 6)}`);
+    lines.push(`  ${pad(`${type}:`, maxLabel + 1)} ${rpad(count, 6)}`);
   }
 
   lines.push(`  ${pad('TOTAL:', maxLabel + 1)} ${rpad(blocks.total, 6)}`);
@@ -400,7 +400,7 @@ function renderToolCategories(tools: ToolCategoryCounts): string {
 
   for (const [category, count] of sorted) {
     const barWidth = Math.max(1, Math.round((count / maxCount) * 20));
-    lines.push(`  ${pad(category + ':', maxLabel + 1)} ${rpad(count, 5)}  ${'█'.repeat(barWidth)}`);
+    lines.push(`  ${pad(`${category}:`, maxLabel + 1)} ${rpad(count, 5)}  ${'█'.repeat(barWidth)}`);
   }
 
   lines.push(`  ${pad('TOTAL:', maxLabel + 1)} ${rpad(tools.total, 5)}`);
@@ -430,10 +430,10 @@ function renderReasoningChain(steps: ReasoningStep[]): string {
   const lines: string[] = [chalk.cyan.bold(`🧠 Reasoning Chain (${steps.length} steps extracted)`)];
 
   for (const step of steps) {
-    const thought = step.thought.length > 60 ? step.thought.slice(0, 57) + '...' : step.thought;
+    const thought = step.thought.length > 60 ? `${step.thought.slice(0, 57)}...` : step.thought;
     const next = step.nextAction
       ? step.nextAction.length > 30
-        ? step.nextAction.slice(0, 27) + '...'
+        ? `${step.nextAction.slice(0, 27)}...`
         : step.nextAction
       : '';
     lines.push(
@@ -513,7 +513,7 @@ function renderConversionSummary(
 
 function truncateLine(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
-  return s.slice(0, maxLen - 3) + '...';
+  return `${s.slice(0, maxLen - 3)}...`;
 }
 
 function renderTruncated(

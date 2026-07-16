@@ -11,9 +11,6 @@ import { TOOL_NAMES } from './types/tool-names.js';
  */
 export class ContinuesError extends Error {
   override readonly name: string = 'ContinuesError';
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-  }
 }
 
 /** Thrown when a parser fails to read or interpret session data. */
@@ -56,9 +53,6 @@ export class UnknownSourceError extends ContinuesError {
 /** Thrown when the session index cannot be read or written. */
 export class IndexError extends ContinuesError {
   override readonly name = 'IndexError';
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
-  }
 }
 
 /** Thrown when file storage operations fail (read/write handoff, cache). */

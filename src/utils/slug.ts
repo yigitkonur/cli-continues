@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import * as fs from 'node:fs';
 import { IS_WINDOWS } from './platform.js';
 
 /**
@@ -15,7 +15,7 @@ export function cwdFromSlug(slug: string): string {
   const isDriveSlug = parts.length > 0 && /^[A-Za-z]$/.test(parts[0] || '');
 
   function candidatePaths(segments: string[]): string[] {
-    const unixPath = '/' + segments.join('/');
+    const unixPath = `/${segments.join('/')}`;
     if (segments.length > 0 && /^[A-Za-z]$/.test(segments[0] || '')) {
       const drive = segments[0].toUpperCase();
       const rest = segments.slice(1).join('/');
@@ -50,11 +50,11 @@ export function cwdFromSlug(slug: string): string {
       const rest = segments.slice(0, -1);
 
       // Option 2: treat dash as dot (e.g. dzcm-test → dzcm.test)
-      resolve(idx + 1, [...rest, last + '.' + part]);
+      resolve(idx + 1, [...rest, `${last}.${part}`]);
       if (best) return;
 
       // Option 3: keep as literal dash (e.g. laravel-contentai)
-      resolve(idx + 1, [...rest, last + '-' + part]);
+      resolve(idx + 1, [...rest, `${last}-${part}`]);
     }
   }
 
@@ -67,7 +67,7 @@ export function cwdFromSlug(slug: string): string {
     return rest ? `${drive}:/${rest}` : `${drive}:/`;
   }
 
-  return '/' + slug.replace(/-/g, '/');
+  return `/${slug.replace(/-/g, '/')}`;
 }
 
 /**
@@ -79,5 +79,5 @@ export function matchesCwd(sessionCwd: string, targetDir: string): boolean {
   const normTarget = targetDir.replace(/\/+$/, '');
   if (normTarget === '') return false; // guard against root '/'
   const normSession = sessionCwd.replace(/\/+$/, '');
-  return normSession === normTarget || normSession.startsWith(normTarget + '/');
+  return normSession === normTarget || normSession.startsWith(`${normTarget}/`);
 }

@@ -1,4 +1,4 @@
-import * as os from 'os';
+import * as os from 'node:os';
 import type { ConversationMessage } from '../types/index.js';
 import { extractRepoFromGitUrl } from './content.js';
 

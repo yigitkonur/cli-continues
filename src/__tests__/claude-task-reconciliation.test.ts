@@ -1,6 +1,6 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { getPreset } from '../config/index.js';
 import { extractClaudeContext } from '../parsers/claude.js';
@@ -22,7 +22,7 @@ function makeSession(originalPath: string): UnifiedSession {
 
 function writeJsonl(filePath: string, records: Array<Record<string, unknown>>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  fs.writeFileSync(filePath, `${records.map((r) => JSON.stringify(r)).join('\n')}\n`, 'utf8');
 }
 
 describe('Claude task reconciliation', () => {

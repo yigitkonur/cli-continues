@@ -1,6 +1,6 @@
-import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { UnknownSourceError } from '../errors.js';
 import { logger } from '../logger.js';
@@ -77,7 +77,7 @@ function serializeSessions(sessions: UnifiedSession[]): string[] {
 
 function writeIndexFile(indexFile: string, sessions: UnifiedSession[], source?: SessionSource): void {
   const fingerprint = `${ENV_FINGERPRINT_PREFIX}${computeEnvFingerprint(source)}`;
-  fs.writeFileSync(indexFile, fingerprint + '\n' + serializeSessions(sessions).join('\n') + '\n');
+  fs.writeFileSync(indexFile, `${fingerprint}\n${serializeSessions(sessions).join('\n')}\n`);
 }
 
 /**

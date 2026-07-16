@@ -677,10 +677,7 @@ function stableStringify(value: unknown): string {
 // session that exceeds the cap.
 const MAX_TIMESTAMP_SCAN_BYTES = 1024 * 1024;
 
-async function extractLastEventTimestamp(
-  eventsPath: string,
-  eventsFileSizeBytes?: number,
-): Promise<Date | undefined> {
+async function extractLastEventTimestamp(eventsPath: string, eventsFileSizeBytes?: number): Promise<Date | undefined> {
   // If the file exceeds the scan cap, scanJsonlFile would truncate mid-file and leave us
   // with some early timestamp instead of the actual last event. That would make active
   // large sessions appear oldest in lists. Skip the scan entirely so the caller's

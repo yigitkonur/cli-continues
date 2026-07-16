@@ -394,9 +394,10 @@ async function discoverLegacyRecords(records: Map<string, AntigravityRecord>): P
     // sessions whose basenames collide across subdirectories don't merge in
     // addRecord. Falls back to basename for any file outside code_tracker/.
     const relative = path.relative(codeTrackerDir, filePath);
-    const idBase = relative && !relative.startsWith('..')
-      ? relative.slice(0, -ext.length).replace(/[\\/]/gu, ':')
-      : path.basename(filePath, ext);
+    const idBase =
+      relative && !relative.startsWith('..')
+        ? relative.slice(0, -ext.length).replace(/[\\/]/gu, ':')
+        : path.basename(filePath, ext);
     addRecord(records, `legacy:${idBase}`, { legacyPath: filePath });
   }
 }

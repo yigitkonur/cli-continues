@@ -4,13 +4,13 @@
  * State persisted in ~/.continues/star-prompt.json.
  */
 
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import * as clack from '@clack/prompts';
 import chalk from 'chalk';
-import { spawnSync } from 'child_process';
-import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import { homedir } from 'os';
-import { join } from 'path';
 import { SHELL_OPTION } from '../utils/platform.js';
 
 const REPO = 'yigitkonur/cli-continues';
@@ -66,7 +66,7 @@ export async function maybePromptGithubStar(): Promise<void> {
   await markPrompted();
 
   const shouldStar = await clack.confirm({
-    message: chalk.hex('#FFD93D')('⭐') + ' ' + chalk.gray('Enjoying continues? Star it on GitHub?'),
+    message: `${chalk.hex('#FFD93D')('⭐')} ${chalk.gray('Enjoying continues? Star it on GitHub?')}`,
     initialValue: true,
   });
 

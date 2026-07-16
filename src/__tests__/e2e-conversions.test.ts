@@ -11,9 +11,9 @@
  *   copilot -i "prompt" (falls back to stdin)
  */
 
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
+import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   extractAmpContext,
@@ -185,8 +185,9 @@ function runTool(tool: SessionSource, prompt: string, cwd: string): string {
     });
 
     return output.trim();
-  } catch (err: any) {
-    return `ERROR: ${err.message?.slice(0, 500) || 'unknown error'}`;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `ERROR: ${message.slice(0, 500) || 'unknown error'}`;
   } finally {
     try {
       fs.unlinkSync(tmpFile);

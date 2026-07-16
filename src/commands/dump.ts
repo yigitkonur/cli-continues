@@ -2,10 +2,10 @@
  * `continues dump <source|all> <directory>` — bulk export sessions to files.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import chalk from 'chalk';
-import * as fs from 'fs';
 import ora from 'ora';
-import * as path from 'path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset, loadConfig } from '../config/index.js';
 import { ALL_TOOLS, adapters } from '../parsers/registry.js';
@@ -144,7 +144,7 @@ export async function dumpCommand(
 
     // Clear progress line and print summary
     if (context.isTTY) {
-      process.stdout.write('\r' + ' '.repeat(80) + '\r');
+      process.stdout.write(`\r${' '.repeat(80)}\r`);
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
