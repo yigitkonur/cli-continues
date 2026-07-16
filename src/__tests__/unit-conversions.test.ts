@@ -23,6 +23,7 @@ import {
   createKiloCodeFixture,
   createKimiFixture,
   createKiroFixture,
+  createOmpFixture,
   createOpenCodeSqliteFixture,
   createQwenCodeFixture,
   createRooCodeFixture,
@@ -432,6 +433,34 @@ function parseQwenCodeFixtureMessages(filePath: string): ConversationMessage[] {
   return messages;
 }
 
+function parseOmpFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const lines = content.trim().split('\n');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        timestamp?: string;
+        message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+      };
+      if (parsed.type !== 'message') continue;
+      const role = parsed.message?.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      const text = (parsed.message?.content ?? [])
+        .filter((block) => block.type === 'text' && block.text)
+        .map((block) => block.text)
+        .join('\n');
+      if (text) messages.push({ role, content: text, timestamp: new Date(parsed.timestamp ?? 0) });
+    } catch {
+      /* skip */
+    }
+  }
+
+  return messages;
+}
+
 // ─── Fixture Data ────────────────────────────────────────────────────────────
 
 // Derive from registry — automatically picks up new tools
@@ -459,6 +488,7 @@ beforeAll(() => {
   fixtures['kilo-code'] = createKiloCodeFixture();
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
+  fixtures.omp = createOmpFixture();
   fixtures.crush = createCrushFixture();
 
   // Build contexts from fixtures
@@ -905,6 +935,34 @@ beforeAll(() => {
     pendingTasks: [],
     toolSummaries: [],
     markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
+  };
+
+  // OMP
+  const ompFile = fs
+    .readdirSync(fixtures.omp.root, { recursive: true })
+    .map((f) => path.join(fixtures.omp.root, f as string))
+    .find((f) => f.endsWith('.jsonl'))!;
+  const ompSession: UnifiedSession = {
+    id: 'test-omp-session-1',
+    source: 'omp',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 6,
+    bytes: fs.statSync(ompFile).size,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: ompFile,
+    summary: 'Fix auth bug',
+    model: 'openai-codex/gpt-5.5',
+  };
+  const ompMsgs = parseOmpFixtureMessages(ompFile);
+  contexts.omp = {
+    session: ompSession,
+    recentMessages: ompMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(ompSession, ompMsgs, [], [], []),
   };
 });
 

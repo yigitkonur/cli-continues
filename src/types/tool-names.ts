@@ -21,6 +21,7 @@ export const TOOL_NAMES = Object.freeze([
   'antigravity',
   'kimi',
   'qwen-code',
+  'omp',
 ] as const);
 
 /** Source CLI tool — derived from TOOL_NAMES, never defined manually */
@@ -48,13 +49,14 @@ export const SHELL_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /** File read tools */
-export const READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'ReadFile', 'read_file']);
+export const READ_TOOLS: ReadonlySet<string> = new Set(['Read', 'ReadFile', 'read_file', 'read']);
 
 /** File write/create tools */
 export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   'Write',
   'WriteFile',
   'write_file',
+  'write',
   'Create',
   'create',
   'create_file',
@@ -97,7 +99,7 @@ export const GLOB_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /** Web search tools */
-export const SEARCH_TOOLS: ReadonlySet<string> = new Set(['WebSearch', 'web_search', 'web_search_call']);
+export const SEARCH_TOOLS: ReadonlySet<string> = new Set(['WebSearch', 'web_search', 'web_search_call', 'web_search']);
 
 /** Web fetch tools */
 export const FETCH_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'web_fetch']);
@@ -109,7 +111,7 @@ export const TASK_TOOLS: ReadonlySet<string> = new Set(['Task', 'task', 'Agent']
 export const TASK_OUTPUT_TOOLS: ReadonlySet<string> = new Set(['TaskOutput']);
 
 /** User interaction tools */
-export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'request_user_input']);
+export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'request_user_input', 'ask']);
 
 /** Tools to skip — internal bookkeeping, no useful handoff context */
 export const SKIP_TOOLS: ReadonlySet<string> = new Set([
