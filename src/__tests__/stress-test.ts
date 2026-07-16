@@ -11,10 +11,10 @@
  * Run with: npx tsx src/__tests__/stress-test.ts
  */
 
-import * as fs from 'fs';
-import { createRequire } from 'module';
-import * as path from 'path';
-import { performance } from 'perf_hooks';
+import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
+import * as path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { extractClaudeContext } from '../parsers/claude.js';
 import { extractCodexContext } from '../parsers/codex.js';
 import { extractCopilotContext } from '../parsers/copilot.js';
@@ -175,6 +175,7 @@ function createSessionFromPath(testSession: TestSession): UnifiedSession | null 
 
   // Extract session ID from path
   let sessionId: string;
+  let opencodeDir: string | undefined;
   if (source === 'claude' || source === 'codex') {
     sessionId = path.basename(filePath, '.jsonl').split('-').slice(-5).join('-');
   } else if (source === 'copilot') {
@@ -203,8 +204,7 @@ function createSessionFromPath(testSession: TestSession): UnifiedSession | null 
           | undefined;
 
         if (sessionRow?.directory) {
-          // Store directory for later use in the return statement
-          (testSession as any)._opencodeDir = sessionRow.directory;
+          opencodeDir = sessionRow.directory;
         }
       } else {
         sessionId = 'latest';
@@ -222,12 +222,7 @@ function createSessionFromPath(testSession: TestSession): UnifiedSession | null 
   return {
     id: sessionId,
     source,
-    cwd:
-      source === 'copilot'
-        ? filePath
-        : source === 'opencode' && (testSession as any)._opencodeDir
-          ? (testSession as any)._opencodeDir
-          : path.dirname(filePath),
+    cwd: source === 'copilot' ? filePath : source === 'opencode' && opencodeDir ? opencodeDir : path.dirname(filePath),
     repo: 'test-repo',
     lines: 0,
     bytes: size,
@@ -239,7 +234,7 @@ function createSessionFromPath(testSession: TestSession): UnifiedSession | null 
 }
 
 /** Validate SessionContext structure */
-function validateContext(context: SessionContext, sourceName: string): { valid: boolean; errors: string[] } {
+function validateContext(context: SessionContext, _sourceName: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
 
   // Check required fields
@@ -516,7 +511,7 @@ async function runStressTest() {
   // Take one successful extraction from each source
   const sourceContexts = new Map<string, SessionContext>();
   for (const source of sources) {
-    const context = Array.from(extractedContexts.entries()).find(([name, ctx]) => ctx.session.source === source)?.[1];
+    const context = Array.from(extractedContexts.entries()).find(([_name, ctx]) => ctx.session.source === source)?.[1];
     if (context) {
       sourceContexts.set(source, context);
     }

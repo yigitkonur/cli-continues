@@ -13,14 +13,14 @@ import type { StructuredToolSample, ToolSample, ToolUsageSummary } from '../type
 /** Truncate a string, adding '...' if it exceeds max length */
 export function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
-  return s.slice(0, max - 3) + '...';
+  return `${s.slice(0, max - 3)}...`;
 }
 
 /** Extract exit code from tool result text */
 export function extractExitCode(text?: string): number | undefined {
   if (!text) return undefined;
   const m = text.match(/exit(?:ed with)? code[:\s]+(\d+)/i);
-  return m ? parseInt(m[1]) : undefined;
+  return m ? parseInt(m[1], 10) : undefined;
 }
 
 /** Append ` → "result"` to a summary if result is non-empty */

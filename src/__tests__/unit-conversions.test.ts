@@ -4,8 +4,8 @@
  * independent of real session files on the machine.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ConversationMessage, SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { generateHandoffMarkdown, getSourceLabels } from '../utils/markdown.js';
@@ -52,8 +52,8 @@ function parseClaudeFixtureMessages(filePath: string): ConversationMessage[] {
           typeof parsed.message.content === 'string'
             ? parsed.message.content
             : parsed.message.content
-                .filter((c: any) => c.type === 'text' && c.text)
-                .map((c: any) => c.text)
+                .filter((c: { type?: unknown; text?: unknown }) => c.type === 'text' && typeof c.text === 'string')
+                .map((c: { text: string }) => c.text)
                 .join('\n');
         if (text && !text.startsWith('<') && !text.startsWith('/') && !text.includes('Session Handoff')) {
           messages.push({ role: 'user', content: text, timestamp: new Date(parsed.timestamp) });
@@ -63,8 +63,8 @@ function parseClaudeFixtureMessages(filePath: string): ConversationMessage[] {
           typeof parsed.message.content === 'string'
             ? parsed.message.content
             : parsed.message.content
-                .filter((c: any) => c.type === 'text' && c.text)
-                .map((c: any) => c.text)
+                .filter((c: { type?: unknown; text?: unknown }) => c.type === 'text' && typeof c.text === 'string')
+                .map((c: { text: string }) => c.text)
                 .join('\n');
         if (text) {
           messages.push({ role: 'assistant', content: text, timestamp: new Date(parsed.timestamp) });
@@ -110,12 +110,12 @@ function parseGeminiFixtureMessages(filePath: string): ConversationMessage[] {
       if (msg.content) {
         messages.push({ role: 'assistant', content: msg.content, timestamp: new Date(msg.timestamp) });
       } else if (msg.toolCalls?.length > 0) {
-        const toolNames = msg.toolCalls.map((t: any) => t.name).join(', ');
+        const toolNames = msg.toolCalls.map((t: { name: string }) => t.name).join(', ');
         messages.push({
           role: 'assistant',
           content: `[Used tools: ${toolNames}]`,
           timestamp: new Date(msg.timestamp),
-          toolCalls: msg.toolCalls.map((t: any) => ({ name: t.name, arguments: t.args })),
+          toolCalls: msg.toolCalls.map((t: { name: string; args: unknown }) => ({ name: t.name, arguments: t.args })),
         });
       }
     }
@@ -199,7 +199,7 @@ function parseOpenCodeFixtureMessages(dbPath: string, sessionId: string): Conver
   try {
     const msgRows = db
       .prepare('SELECT id, session_id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC')
-      .all(sessionId) as any[];
+      .all(sessionId) as { id: string; time_created: number; data: string }[];
 
     for (const msgRow of msgRows) {
       const msgData = JSON.parse(msgRow.data);
@@ -207,12 +207,12 @@ function parseOpenCodeFixtureMessages(dbPath: string, sessionId: string): Conver
 
       const partRows = db
         .prepare('SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC')
-        .all(msgRow.id) as any[];
+        .all(msgRow.id) as { data: string }[];
 
       let text = '';
       for (const partRow of partRows) {
         const partData = JSON.parse(partRow.data);
-        if (partData.type === 'text' && partData.text) text += partData.text + '\n';
+        if (partData.type === 'text' && partData.text) text += `${partData.text}\n`;
       }
 
       if (text.trim()) {
@@ -384,8 +384,8 @@ function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
         typeof parsed.content === 'string'
           ? parsed.content
           : (parsed.content || [])
-              .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
-              .map((b: any) => b.text)
+              .filter((b: { type?: unknown; text?: unknown }) => b?.type === 'text' && typeof b.text === 'string')
+              .map((b: { text: string }) => b.text)
               .join('\n');
 
       if (!text) continue;
@@ -413,8 +413,8 @@ function parseQwenCodeFixtureMessages(filePath: string): ConversationMessage[] {
       if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
 
       const text = (parsed.message?.parts || [])
-        .filter((p: any) => p?.text)
-        .map((p: any) => p.text)
+        .filter((p: { text?: unknown }) => p?.text)
+        .map((p: { text: string }) => p.text)
         .join('\n');
 
       if (!text) continue;
@@ -1112,7 +1112,7 @@ describe('Shared generateHandoffMarkdown', () => {
       originalPath: '/tmp',
     };
     const md = generateHandoffMarkdown(session, [longMsg], [], [], []);
-    expect(md).toContain('A'.repeat(500) + '…');
+    expect(md).toContain(`${'A'.repeat(500)}…`);
     expect(md).not.toContain('A'.repeat(501));
   });
 

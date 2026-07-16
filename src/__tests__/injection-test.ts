@@ -10,9 +10,9 @@
  *  5. Verify the key phrase survives the round-trip
  */
 
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { extractClaudeContext } from '../parsers/claude.js';
 import { extractCodexContext } from '../parsers/codex.js';
 import { extractCopilotContext } from '../parsers/copilot.js';
@@ -106,7 +106,7 @@ function createClaudeSource(): string {
     }),
   ];
 
-  fs.writeFileSync(filePath, lines.join('\n') + '\n');
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
   return filePath;
 }
 
@@ -140,7 +140,7 @@ function createCopilotSource(): string {
     }),
   ];
 
-  fs.writeFileSync(path.join(dirPath, 'events.jsonl'), events.join('\n') + '\n');
+  fs.writeFileSync(path.join(dirPath, 'events.jsonl'), `${events.join('\n')}\n`);
   return dirPath;
 }
 
@@ -195,7 +195,7 @@ function createCodexSource(): string {
     }),
   ];
 
-  fs.writeFileSync(filePath, lines.join('\n') + '\n');
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
   return filePath;
 }
 
@@ -270,7 +270,7 @@ function writeClaudeTarget(markdown: string, label: string): string {
     }),
   ];
 
-  fs.writeFileSync(filePath, lines.join('\n') + '\n');
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
   return filePath;
 }
 
@@ -304,7 +304,7 @@ function writeCopilotTarget(markdown: string, label: string): string {
     }),
   ];
 
-  fs.writeFileSync(path.join(dirPath, 'events.jsonl'), events.join('\n') + '\n');
+  fs.writeFileSync(path.join(dirPath, 'events.jsonl'), `${events.join('\n')}\n`);
   return dirPath;
 }
 
@@ -349,7 +349,7 @@ function writeCodexTarget(markdown: string, label: string): string {
     }),
   ];
 
-  fs.writeFileSync(filePath, lines.join('\n') + '\n');
+  fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
   return filePath;
 }
 
@@ -453,8 +453,8 @@ async function main() {
         const ctx = await extractSourceContext(source);
         sourceContexts.set(source, ctx);
         console.log(`✅  ${ctx.recentMessages.length} msgs, ${ctx.markdown.length} chars markdown`);
-      } catch (err: any) {
-        console.log(`❌  ${err.message ?? err}`);
+      } catch (err: unknown) {
+        console.log(`❌  ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -533,12 +533,12 @@ async function main() {
             results.push(r);
             console.log(r.passed ? `✅ ${r.details}` : `❌ ${r.details}`);
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           const r: TestResult = {
             source,
             target,
             passed: false,
-            details: `Error: ${err.message ?? err}`,
+            details: `Error: ${err instanceof Error ? err.message : String(err)}`,
           };
           results.push(r);
           console.log(`❌ ${r.details}`);
@@ -554,7 +554,7 @@ async function main() {
     console.log('\n╔══════════════════════════════════════════════════╗');
     console.log('║                  RESULTS TABLE                   ║');
     console.log('╚══════════════════════════════════════════════════╝\n');
-    console.log('Source'.padEnd(10) + '  Target'.padEnd(12) + '  Status'.padEnd(8) + '  Details');
+    console.log(`${'Source'.padEnd(10) + '  Target'.padEnd(12) + '  Status'.padEnd(8)}  Details`);
     console.log('─'.repeat(72));
 
     for (const r of results) {

@@ -1,8 +1,8 @@
 /**
  * Shared filesystem helpers used by multiple parsers.
  */
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { logger } from '../logger.js';
 
 export interface FindFilesOptions {

@@ -8,9 +8,9 @@
  * 4. Semantic verification: target must reference specific facts from the source
  */
 
-import { execSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
+import { execSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 import { extractContext, getAllSessions } from '../utils/index.js';
 
@@ -197,8 +197,19 @@ Based ONLY on the handoff context above, describe in 2-3 sentences:
       default:
         throw new Error(`Unknown target: ${target}`);
     }
-  } catch (e: any) {
-    if (e.stdout && e.stdout.length > 20) return e.stdout.toString().trim();
+  } catch (e: unknown) {
+    if (typeof e === 'object' && e !== null && 'stdout' in e) {
+      const stdout = e.stdout;
+      if (
+        typeof stdout === 'object' &&
+        stdout !== null &&
+        'length' in stdout &&
+        typeof stdout.length === 'number' &&
+        stdout.length > 20
+      ) {
+        return String(stdout).trim();
+      }
+    }
     throw e;
   }
 }
@@ -278,8 +289,9 @@ async function main() {
 
         // Save response
         fs.writeFileSync(path.join(RESULTS_DIR, `response-${source}-to-${target}.txt`), response);
-      } catch (e: any) {
-        console.log(`     ⚠️  Error: ${e.message?.slice(0, 80)}`);
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.log(`     ⚠️  Error: ${message.slice(0, 80)}`);
         results.push({
           id: testId,
           source,
@@ -289,7 +301,7 @@ async function main() {
           factsTotal: sourceData.keyFacts.length,
           factDetails: [],
           responsePreview: '',
-          error: e.message?.slice(0, 200),
+          error: message.slice(0, 200),
         });
       }
     }

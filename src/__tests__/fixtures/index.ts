@@ -1,10 +1,10 @@
 /**
  * Test fixtures - sanitized session data for supported parsers
  */
-import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 export interface FixtureDir {
   root: string;
@@ -68,7 +68,7 @@ export function createClaudeFixture(): FixtureDir {
     }),
   ];
 
-  fs.writeFileSync(sessionFile, lines.join('\n') + '\n');
+  fs.writeFileSync(sessionFile, `${lines.join('\n')}\n`);
 
   return {
     root,
@@ -153,7 +153,7 @@ updated_at: 2026-01-15T10:05:00.000Z
     }),
   ];
 
-  fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), events.join('\n') + '\n');
+  fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), `${events.join('\n')}\n`);
 
   return {
     root,
@@ -284,7 +284,7 @@ export function createCodexFixture(): FixtureDir {
   ];
 
   const filename = 'rollout-2026-01-15T10-00-00-test-codex-uuid-1234.jsonl';
-  fs.writeFileSync(path.join(dateDir, filename), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(dateDir, filename), `${lines.join('\n')}\n`);
 
   return {
     root,
@@ -723,7 +723,7 @@ export function createDroidFixture(): FixtureDir {
     }),
   ];
 
-  fs.writeFileSync(path.join(workspaceDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(workspaceDir, `${sessionId}.jsonl`), `${lines.join('\n')}\n`);
 
   return {
     root,
@@ -808,7 +808,7 @@ export function createCursorFixture(): FixtureDir {
     }),
   ];
 
-  fs.writeFileSync(path.join(sessionDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(sessionDir, `${sessionId}.jsonl`), `${lines.join('\n')}\n`);
 
   return {
     root,
@@ -1060,7 +1060,7 @@ export function createKimiFixture(): FixtureDir {
       content: 'Done. I added try-catch blocks and proper error messages.',
     }),
   ];
-  fs.writeFileSync(path.join(sessionDir, 'context.jsonl'), contextLines.join('\n') + '\n');
+  fs.writeFileSync(path.join(sessionDir, 'context.jsonl'), `${contextLines.join('\n')}\n`);
 
   // metadata.json — optional in Kimi, but included here for schema/compat coverage
   fs.writeFileSync(
@@ -1193,7 +1193,7 @@ export function createQwenCodeFixture(): FixtureDir {
     }),
   ];
 
-  fs.writeFileSync(path.join(chatsDir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(chatsDir, `${sessionId}.jsonl`), `${lines.join('\n')}\n`);
 
   return {
     root,
