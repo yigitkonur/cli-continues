@@ -1202,6 +1202,84 @@ export function createQwenCodeFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary directory with Oh My Pi session fixtures
+ */
+export function createOmpFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-omp-'));
+  const projectDir = path.join(root, 'sessions', '-home-user-project');
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  const sessionFile = path.join(projectDir, '2026-01-15T10-00-00-000Z_test-omp-session-1.jsonl');
+  const lines = [
+    JSON.stringify({
+      type: 'session',
+      version: 3,
+      id: 'test-omp-session-1',
+      timestamp: '2026-01-15T10:00:00.000Z',
+      cwd: '/home/user/project',
+      title: 'Fix auth bug',
+    }),
+    JSON.stringify({
+      type: 'model_change',
+      id: 'model-1',
+      timestamp: '2026-01-15T10:00:00.500Z',
+      model: 'openai-codex/gpt-5.5',
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'user-1',
+      parentId: 'model-1',
+      timestamp: '2026-01-15T10:00:01.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'assistant-1',
+      parentId: 'user-1',
+      timestamp: '2026-01-15T10:00:05.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' }],
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'user-2',
+      parentId: 'assistant-1',
+      timestamp: '2026-01-15T10:00:10.000Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Great, please also add error handling' }],
+      },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: 'assistant-2',
+      parentId: 'user-2',
+      timestamp: '2026-01-15T10:00:15.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' }],
+        provider: 'openai-codex',
+        model: 'gpt-5.5',
+      },
+    }),
+  ];
+
+  fs.writeFileSync(sessionFile, lines.join('\n') + '\n');
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create OpenCode JSON-only fixture (legacy format)
  */
 export function createOpenCodeJsonFixture(): FixtureDir {

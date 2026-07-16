@@ -28,6 +28,7 @@ import { extractDroidContext, parseDroidSessions } from './droid.js';
 import { extractGeminiContext, parseGeminiSessions } from './gemini.js';
 import { extractKimiContext, parseKimiSessions } from './kimi.js';
 import { extractKiroContext, parseKiroSessions } from './kiro.js';
+import { extractOmpContext, parseOmpSessions } from './omp.js';
 import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 
@@ -937,6 +938,21 @@ register({
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: (s) => `qwen --resume ${s.id}`,
   mapHandoffFlags: mapGeminiFlags,
+});
+
+// ── Oh My Pi ─────────────────────────────────────────────────────────
+register({
+  name: 'omp',
+  label: 'Oh My Pi',
+  color: chalk.hex('#FFB000'),
+  storagePath: '$PI_CODING_AGENT_DIR/sessions/ (default: ~/.omp/agent/sessions/)',
+  envVar: 'PI_CODING_AGENT_DIR',
+  binaryName: 'omp',
+  parseSessions: parseOmpSessions,
+  extractContext: extractOmpContext,
+  nativeResumeArgs: (s) => ['--resume', s.id],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: (s) => `omp --resume ${s.id}`,
 });
 
 // ── Completeness assertion ──────────────────────────────────────────

@@ -17,6 +17,7 @@ export { extractDroidContext, parseDroidSessions } from './droid.js';
 export { extractGeminiContext, parseGeminiSessions } from './gemini.js';
 export { extractKimiContext, parseKimiSessions } from './kimi.js';
 export { extractKiroContext, parseKiroSessions } from './kiro.js';
+export { extractOmpContext, parseOmpSessions } from './omp.js';
 export { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 export { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
 export type { ToolAdapter } from './registry.js';

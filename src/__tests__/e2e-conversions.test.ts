@@ -29,6 +29,7 @@ import {
   extractKiloCodeContext,
   extractKimiContext,
   extractKiroContext,
+  extractOmpContext,
   extractOpenCodeContext,
   extractQwenCodeContext,
   extractRooCodeContext,
@@ -45,6 +46,7 @@ import {
   parseKiloCodeSessions,
   parseKimiSessions,
   parseKiroSessions,
+  parseOmpSessions,
   parseOpenCodeSessions,
   parseQwenCodeSessions,
   parseRooCodeSessions,
@@ -69,6 +71,7 @@ const ALL_SOURCES: SessionSource[] = [
   'antigravity',
   'kimi',
   'qwen-code',
+  'omp',
 ];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
@@ -88,6 +91,7 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   antigravity: parseAntigravitySessions,
   kimi: parseKimiSessions,
   'qwen-code': parseQwenCodeSessions,
+  omp: parseOmpSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -107,6 +111,7 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   antigravity: extractAntigravityContext,
   kimi: extractKimiContext,
   'qwen-code': extractQwenCodeContext,
+  omp: extractOmpContext,
 };
 
 // Results directory
@@ -298,6 +303,7 @@ describe('E2E: 20 Cross-Tool Conversion Paths', () => {
           antigravity: 'Antigravity',
           kimi: 'Kimi CLI',
           'qwen-code': 'Qwen Code',
+          omp: 'Oh My Pi',
         };
         const sourceLabel = sourceLabels[source];
 

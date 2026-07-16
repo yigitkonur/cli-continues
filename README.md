@@ -14,11 +14,11 @@ https://github.com/user-attachments/assets/6945f3a5-bd19-45ab-9702-6df8e165a734
 
 ## Supported tools
 
-16 AI coding agents, any-to-any handoff:
+17 AI coding agents, any-to-any handoff:
 
-**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code**
+**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Oh My Pi** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code**
 
-That's 240 cross-tool handoff paths. Pick any source, pick any destination — it works.
+That's 272 cross-tool handoff paths. Pick any source, pick any destination — it works.
 
 ## Install
 
@@ -194,6 +194,7 @@ Every tool stores sessions differently — different formats, different schemas,
 | Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
 | Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
 | Qwen Code | JSONL | `~/.qwen/projects/*/chats/` |
+| Oh My Pi | JSONL | `$PI_CODING_AGENT_DIR/sessions/` (default: `~/.omp/agent/sessions/`) |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 
