@@ -40,6 +40,15 @@ function writeCursorRepoJson(home: string, slug: string, data: unknown): void {
   fs.writeFileSync(path.join(dir, 'repo.json'), JSON.stringify(data), 'utf8');
 }
 
+function copyCursorFixture(home: string, slug: string, sessionId: string, fixtureName: string): string {
+  const dir = path.join(home, '.cursor', 'projects', slug, 'agent-transcripts', sessionId);
+  fs.mkdirSync(dir, { recursive: true });
+  const fixturePath = path.join(import.meta.dirname, 'fixtures', fixtureName);
+  const transcriptPath = path.join(dir, `${sessionId}.jsonl`);
+  fs.copyFileSync(fixturePath, transcriptPath);
+  return transcriptPath;
+}
+
 function cursorTextRow(role: 'user' | 'assistant', text: string, timestamp: string): unknown {
   return {
     role,
@@ -128,6 +137,36 @@ describe('cursor parser confidence warnings', () => {
 });
 
 describe('cursor parser hardening', () => {
+  it('keeps a user_query whose text starts with an absolute path while filtering Cursor system reminders', async () => {
+    const home = makeCursorHome();
+    const sessionId = '12345678-1234-1234-1234-123456789abc';
+    const originalPath = copyCursorFixture(home, 'Users-test-project', sessionId, 'cursor-user-query-path.jsonl');
+    const { extractCursorContext } = await loadCursorParser(home);
+
+    const context = await extractCursorContext({
+      id: sessionId,
+      source: 'cursor',
+      cwd: '/tmp/cursor-project',
+      repo: 'test/project',
+      lines: 4,
+      bytes: fs.statSync(originalPath).size,
+      createdAt: new Date('2026-07-20T07:03:00.000Z'),
+      updatedAt: new Date('2026-07-20T07:03:00.000Z'),
+      originalPath,
+    });
+
+    expect(context.recentMessages).toEqual([
+      expect.objectContaining({ role: 'user', content: '/Users/example/project/scripts/check.ts\n\nPlease inspect this file.' }),
+      expect.objectContaining({ role: 'assistant', content: 'I will inspect the file.' }),
+    ]);
+    expect(context.markdown).toContain('### User');
+    expect(context.markdown).toContain('/Users/example/project/scripts/check.ts');
+    expect(context.markdown).toContain('### Assistant');
+    expect(context.markdown.indexOf('### User')).toBeLessThan(context.markdown.indexOf('### Assistant'));
+    expect(context.markdown).not.toContain('internal Cursor state');
+    expect(context.markdown).not.toContain('[REDACTED]');
+  });
+
   it('discovers nested transcript.jsonl and flat Cursor CLI transcript layouts', async () => {
     const home = makeCursorHome();
     const nestedId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';

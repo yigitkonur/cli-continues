@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Monday, Jul 20, 2026, 3:03 PM (UTC+8)</timestamp>\n<user_query>\n/Users/example/project/scripts/check.ts\n\nPlease inspect this file.\n</user_query>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<system_reminder>internal Cursor state</system_reminder>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"[REDACTED]"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I will inspect the file."}]}}

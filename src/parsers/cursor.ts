@@ -5,7 +5,7 @@ import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
 import type { ConversationMessage, SessionContext, SessionNotes, UnifiedSession } from '../types/index.js';
 import { CursorTranscriptLineSchema } from '../types/schemas.js';
-import { cleanUserQueryText, isRealUserMessage, isSystemContent } from '../utils/content.js';
+import { cleanUserQueryText, isSystemContent } from '../utils/content.js';
 import { findFiles } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
@@ -122,13 +122,14 @@ function cleanCursorUserText(text: string): string {
   return stripCursorMetadataTags(cleanUserQueryText(text)).trim();
 }
 
-function isCursorNoiseText(rawText: string, cleanedText: string, role: NormalizedCursorLine['role']): boolean {
+function isCursorNoiseText(rawText: string, cleanedText: string): boolean {
   const raw = rawText.trim();
   const cleaned = cleanedText.trim();
   if (!cleaned) return true;
+  if (cleaned === '[REDACTED]') return true;
   if (isSystemContent(raw) || isSystemContent(cleaned)) return true;
   if (raw.startsWith('<system_reminder>') || cleaned.startsWith('<system_reminder>')) return true;
-  if (role === 'user' && !isRealUserMessage(cleaned)) return true;
+  if (cleaned.includes('Session Handoff')) return true;
   return false;
 }
 
@@ -370,7 +371,7 @@ async function parseSessionInfo(filePath: string): Promise<{
       for (const block of line.content) {
         if (block.type !== 'text' || !block.text) continue;
         const cleaned = cleanCursorUserText(block.text);
-        if (!isCursorNoiseText(block.text, cleaned, line.role)) {
+        if (!isCursorNoiseText(block.text, cleaned)) {
           firstUserMessage = cleaned;
           break;
         }
@@ -502,7 +503,7 @@ export async function extractCursorContext(session: UnifiedSession, config?: Ver
     for (const block of line.content) {
       if (block.type === 'text' && block.text) {
         const cleaned = line.role === 'user' ? cleanCursorUserText(block.text) : stripCursorMetadataTags(block.text);
-        if (isCursorNoiseText(block.text, cleaned, line.role)) continue;
+        if (isCursorNoiseText(block.text, cleaned)) continue;
         if (cleaned) textParts.push(cleaned);
       }
     }
