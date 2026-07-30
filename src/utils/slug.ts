@@ -1,6 +1,9 @@
 import * as fs from 'fs';
 import { IS_WINDOWS } from './platform.js';
 
+// Missing dash-heavy paths otherwise expand into 3^(dash count) filesystem probes.
+const MAX_CANDIDATE_CHECKS = 10_000;
+
 /**
  * Derive cwd from a slug directory name using recursive backtracking.
  * Slugs replace `/` and `.` with `-` in the directory name, e.g.:
@@ -12,6 +15,7 @@ import { IS_WINDOWS } from './platform.js';
 export function cwdFromSlug(slug: string): string {
   const parts = slug.split('-');
   let best: string | null = null;
+  let candidateChecks = 0;
   const isDriveSlug = parts.length > 0 && /^[A-Za-z]$/.test(parts[0] || '');
 
   function candidatePaths(segments: string[]): string[] {
@@ -27,10 +31,12 @@ export function cwdFromSlug(slug: string): string {
   }
 
   function resolve(idx: number, segments: string[]): void {
-    if (best) return; // already found a match
+    if (best || candidateChecks >= MAX_CANDIDATE_CHECKS) return;
 
     if (idx >= parts.length) {
       for (const p of candidatePaths(segments)) {
+        if (candidateChecks >= MAX_CANDIDATE_CHECKS) break;
+        candidateChecks++;
         if (fs.existsSync(p)) {
           best = p;
           break;
