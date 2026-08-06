@@ -3,7 +3,13 @@ import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
-import type { ConversationMessage, SessionContext, SessionNotes, UnifiedSession } from '../types/index.js';
+import type {
+  ConversationMessage,
+  SessionContext,
+  SessionNotes,
+  SessionParseOptions,
+  UnifiedSession,
+} from '../types/index.js';
 import { CursorTranscriptLineSchema } from '../types/schemas.js';
 import { cleanUserQueryText, isRealUserMessage, isSystemContent } from '../utils/content.js';
 import { findFiles } from '../utils/fs-helpers.js';
@@ -226,7 +232,43 @@ async function readNormalizedTranscript(filePath: string): Promise<NormalizedCur
  * filename — `getSessionId()` derives the UUID, and `parseCursorSessions()`
  * deduplicates by id when both layouts coexist for the same session.
  */
-async function findTranscriptFiles(): Promise<string[]> {
+function normalizeCwdForComparison(cwd: string): string {
+  const normalized = path.normalize(path.resolve(cwd));
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function cursorSlugFromCwd(cwd: string): string {
+  return cwd.replace(/\\/g, '/').replace(/^\/+/, '').replace(/[/.]/g, '-');
+}
+
+async function readRepoJsonCwd(projectDir: string): Promise<string | undefined> {
+  try {
+    const content = await fs.promises.readFile(path.join(projectDir, 'repo.json'), 'utf8');
+    const parsed = JSON.parse(content) as unknown;
+    if (!isRecord(parsed)) return undefined;
+
+    for (const key of ['workspace', 'rootPath', 'path']) {
+      const value = getStringField(parsed, key);
+      if (value) return value;
+    }
+  } catch (err) {
+    logger.debug('cursor: failed to read project metadata while filtering by cwd', projectDir, err);
+  }
+
+  return undefined;
+}
+
+async function projectMatchesCwd(projectDir: string, targetCwd: string): Promise<boolean> {
+  const repoCwd = await readRepoJsonCwd(projectDir);
+  if (repoCwd) return normalizeCwdForComparison(repoCwd) === normalizeCwdForComparison(targetCwd);
+
+  // Projects without repo.json can still be selected safely by comparing the
+  // directory name with Cursor's direct slug encoding. Do not decode the slug
+  // here: that is the exponential operation this cwd lookup is avoiding.
+  return path.basename(projectDir) === cursorSlugFromCwd(targetCwd);
+}
+
+async function findTranscriptFiles(options: SessionParseOptions = {}): Promise<string[]> {
   if (!fs.existsSync(CURSOR_PROJECTS_DIR)) return [];
 
   const files: string[] = [];
@@ -234,7 +276,10 @@ async function findTranscriptFiles(): Promise<string[]> {
     const projectDirs = fs.readdirSync(CURSOR_PROJECTS_DIR, { withFileTypes: true });
     for (const projectDir of projectDirs) {
       if (!projectDir.isDirectory()) continue;
-      const transcriptsDir = path.join(CURSOR_PROJECTS_DIR, projectDir.name, 'agent-transcripts');
+      const projectPath = path.join(CURSOR_PROJECTS_DIR, projectDir.name);
+      if (options.cwd && !(await projectMatchesCwd(projectPath, options.cwd))) continue;
+
+      const transcriptsDir = path.join(projectPath, 'agent-transcripts');
       const found = findFiles(transcriptsDir, {
         match: (entry, fullPath) => entry.name.endsWith('.jsonl') && fullPath.includes('agent-transcripts'),
         maxDepth: 2,
@@ -292,20 +337,25 @@ function getSessionId(filePath: string): string {
  *
  * Falls back to slug-derived cwd when `repo.json` is absent or unreadable.
  */
-async function resolveProjectCwd(projectDir: string, slug: string, cache: Map<string, string>): Promise<string> {
-  const fallback = cwdFromSlug(slug);
-  if (!projectDir) return fallback;
+async function resolveProjectCwd(
+  projectDir: string,
+  slug: string,
+  cache: Map<string, string>,
+  cwdFallback?: string,
+): Promise<string> {
+  const fallback = (): string => cwdFallback || cwdFromSlug(slug);
+  if (!projectDir) return fallback();
 
   // Cache the resolved cwd per project directory: a single `repo.json` is
   // shared by every transcript in a project, and discovery typically iterates
   // many sibling sessions in the same project.
   const cached = cache.get(projectDir);
-  if (cached !== undefined) return cached || fallback;
+  if (cached !== undefined) return cached || fallback();
 
   const repoJsonPath = path.join(projectDir, 'repo.json');
   if (!fs.existsSync(repoJsonPath)) {
     cache.set(projectDir, '');
-    return fallback;
+    return fallback();
   }
 
   let resolved = '';
@@ -326,7 +376,7 @@ async function resolveProjectCwd(projectDir: string, slug: string, cache: Map<st
   }
 
   cache.set(projectDir, resolved);
-  return resolved || fallback;
+  return resolved || fallback();
 }
 
 /**
@@ -392,10 +442,11 @@ async function parseSessionInfo(filePath: string): Promise<{
 /**
  * Parse all Cursor sessions
  */
-export async function parseCursorSessions(): Promise<UnifiedSession[]> {
-  const files = await findTranscriptFiles();
+export async function parseCursorSessions(options: SessionParseOptions = {}): Promise<UnifiedSession[]> {
+  const files = await findTranscriptFiles(options);
   const sessionsById = new Map<string, UnifiedSession>();
   const projectCwdCache = new Map<string, string>();
+  const cwdFallback = options.cwd ? path.resolve(options.cwd) : undefined;
 
   for (const filePath of files) {
     try {
@@ -406,7 +457,7 @@ export async function parseCursorSessions(): Promise<UnifiedSession[]> {
       // `lines > 0 && bytes > 0` filter still excludes truly empty files.
       const fileStats = fs.statSync(filePath);
       const slug = getProjectSlug(filePath);
-      const cwd = await resolveProjectCwd(getProjectDir(filePath), slug, projectCwdCache);
+      const cwd = await resolveProjectCwd(getProjectDir(filePath), slug, projectCwdCache, cwdFallback);
 
       const summary = cleanSummary(firstUserMessage);
 

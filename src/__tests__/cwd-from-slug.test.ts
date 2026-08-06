@@ -1,6 +1,7 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 import { cwdFromSlug } from '../utils/slug.js';
 
@@ -32,5 +33,15 @@ describe('cwdFromSlug', () => {
 
   it('keeps Unix fallback behavior for non-drive slugs', () => {
     expect(cwdFromSlug('Users-alice-my-project')).toBe('/Users/alice/my/project');
+  });
+
+  it('uses the bounded fallback for long Cursor slugs quickly', () => {
+    const slug = 'continues-regression-a-b-c-d-e-f-g-h-i-j-k';
+    const startedAt = performance.now();
+    const resolved = cwdFromSlug(slug);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(resolved).toBe(`/${slug.replace(/-/g, '/')}`);
+    expect(elapsedMs).toBeLessThan(100);
   });
 });

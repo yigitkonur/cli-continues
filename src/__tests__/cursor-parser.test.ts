@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedSession } from '../types/index.js';
 
@@ -460,6 +461,56 @@ describe('cursor parser hardening', () => {
     expect(byId.get('bbbbbbbb-1111-2222-3333-444444444444')).toBe('/tmp/cursor-projectB-rootpath');
     expect(byId.get('cccccccc-1111-2222-3333-444444444444')).toBe('/tmp/cursor-projectC-path');
     expect(byId.get('dddddddd-1111-2222-3333-444444444444')).toBe('/tmp/cursor-projectD-rootpath');
+  });
+
+  it('reads repo.json before resolving a long project slug', async () => {
+    const home = makeCursorHome();
+    const slug = 'continues-repo-json-a-b-c-d-e-f-g-h-i';
+    const sessionId = 'eeeeeeee-1111-2222-3333-444444444444';
+    writeCursorRepoJson(home, slug, { workspace: '/tmp/cursor-project-from-repo-json' });
+    writeCursorTranscript(home, slug, sessionId, [
+      { role: 'user', message: { content: [{ type: 'text', text: 'repo.json wins quickly' }] } },
+    ]);
+
+    const { parseCursorSessions } = await loadCursorParser(home);
+    const startedAt = performance.now();
+    const sessions = await parseCursorSessions();
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(sessions.find((session) => session.id === sessionId)?.cwd).toBe('/tmp/cursor-project-from-repo-json');
+    expect(elapsedMs).toBeLessThan(100);
+  });
+
+  it('skips unrelated Cursor projects during a cwd lookup', async () => {
+    const home = makeCursorHome();
+    const targetCwd = '/tmp/current-project';
+    const unrelatedSlug = 'private-tmp-unrelated-a-b-c-d-e-f-g-h-i-j-k';
+    writeCursorTranscript(home, unrelatedSlug, 'ffffffff-1111-2222-3333-444444444444', [
+      { role: 'user', message: { content: [{ type: 'text', text: 'unrelated Cursor session' }] } },
+    ]);
+
+    const { parseCursorSessions } = await loadCursorParser(home);
+    const startedAt = performance.now();
+    const sessions = await parseCursorSessions({ cwd: targetCwd });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(sessions).toEqual([]);
+    expect(elapsedMs).toBeLessThan(100);
+  });
+
+  it('preserves the exact cwd for a matching long slug without repo.json', async () => {
+    const home = makeCursorHome();
+    const targetCwd = '/tmp/cursor-project-a-b-c-d-e-f-g-h-i-j';
+    const slug = targetCwd.replace(/^\/+/, '').replace(/[/.]/g, '-');
+    const sessionId = '99999999-1111-2222-3333-444444444444';
+    writeCursorTranscript(home, slug, sessionId, [
+      { role: 'user', message: { content: [{ type: 'text', text: 'exact cwd lookup' }] } },
+    ]);
+
+    const { parseCursorSessions } = await loadCursorParser(home);
+    const sessions = await parseCursorSessions({ cwd: targetCwd });
+
+    expect(sessions.find((session) => session.id === sessionId)?.cwd).toBe(targetCwd);
   });
 
   it('discovers Cursor sub-agent transcripts under <sid>/subagents/', async () => {

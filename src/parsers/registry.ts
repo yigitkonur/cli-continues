@@ -771,6 +771,7 @@ register({
   binaryName: 'cursor-agent',
   binaryFallbacks: ['agent'],
   parseSessions: parseCursorSessions,
+  supportsCwdLookup: true,
   extractContext: extractCursorContext,
   nativeResumeArgs: (s) => ['--resume', s.id],
   crossToolArgs: (prompt) => [prompt],

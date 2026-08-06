@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import * as fs from 'node:fs';
 import { IS_WINDOWS } from './platform.js';
 
 /**
@@ -11,8 +11,23 @@ import { IS_WINDOWS } from './platform.js';
  */
 export function cwdFromSlug(slug: string): string {
   const parts = slug.split('-');
-  let best: string | null = null;
   const isDriveSlug = parts.length > 0 && /^[A-Za-z]$/.test(parts[0] || '');
+
+  const fallbackPath = (): string => {
+    if (isDriveSlug && IS_WINDOWS) {
+      const drive = parts[0].toUpperCase();
+      const rest = parts.slice(1).join('/');
+      return rest ? `${drive}:/${rest}` : `${drive}:/`;
+    }
+
+    return `/${slug.replace(/-/g, '/')}`;
+  };
+
+  // The recursive decoder has three branches per separator. Bound it so stale
+  // Cursor projects and unreachable mounts cannot monopolize the process.
+  if (parts[0] === 'Volumes' || parts.length > 12) return fallbackPath();
+
+  let best: string | null = null;
 
   function candidatePaths(segments: string[]): string[] {
     const unixPath = '/' + segments.join('/');
@@ -60,14 +75,7 @@ export function cwdFromSlug(slug: string): string {
 
   resolve(0, []);
   if (best) return best;
-
-  if (isDriveSlug && IS_WINDOWS) {
-    const drive = parts[0].toUpperCase();
-    const rest = parts.slice(1).join('/');
-    return rest ? `${drive}:/${rest}` : `${drive}:/`;
-  }
-
-  return '/' + slug.replace(/-/g, '/');
+  return fallbackPath();
 }
 
 /**

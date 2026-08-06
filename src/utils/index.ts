@@ -123,17 +123,23 @@ export function indexNeedsRebuild(source?: SessionSource): boolean {
 /**
  * Build the unified session index
  */
-export async function buildIndex(force = false): Promise<UnifiedSession[]> {
+export async function buildIndex(force = false, parseOptions?: SessionParseOptions): Promise<UnifiedSession[]> {
   ensureDirectories();
 
   // Check if we can use cached index
   if (!force && !indexNeedsRebuild()) {
-    return loadIndex();
+    const cached = loadIndex();
+    return parseOptions?.cwd ? cached.filter((session) => matchesCwd(session.cwd, parseOptions.cwd as string)) : cached;
   }
 
   // Parse all sessions from all sources in parallel — use allSettled so one
   // broken parser doesn't crash the entire CLI
-  const results = await Promise.allSettled(Object.values(adapters).map((a) => a.parseSessions()));
+  const results = await Promise.allSettled(
+    Object.values(adapters).map((adapter) => {
+      const options = parseOptions?.cwd && adapter.supportsCwdLookup ? parseOptions : undefined;
+      return options ? adapter.parseSessions(options) : adapter.parseSessions();
+    }),
+  );
 
   const allSessions = results
     .filter((r): r is PromiseFulfilledResult<UnifiedSession[]> => r.status === 'fulfilled')
@@ -141,6 +147,10 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
 
   // Sort by updated time (newest first)
   allSessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+
+  // A cwd-scoped parse is intentionally not written to the global index: it
+  // contains only the requested scope for adapters with direct cwd lookup.
+  if (parseOptions?.cwd) return allSessions;
 
   // Write to index file — first line is the env fingerprint
   writeIndexFile(INDEX_FILE, allSessions);
@@ -239,7 +249,7 @@ export async function getSessionsBySource(source: SessionSource, forceRebuild = 
  * Get current-working-directory sessions from the complete index.
  */
 export async function getSessionsByCwd(cwd: string, forceRebuild = false): Promise<UnifiedSession[]> {
-  const sessions = await buildIndex(forceRebuild);
+  const sessions = await buildIndex(forceRebuild, { cwd });
   return sessions.filter((session) => matchesCwd(session.cwd, cwd));
 }
 
