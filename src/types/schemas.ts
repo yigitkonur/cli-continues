@@ -555,6 +555,7 @@ export type DroidSettings = z.infer<typeof DroidSettingsSchema>;
 
 // ── Kimi ────────────────────────────────────────────────────────────────────
 
+/** Legacy Kimi metadata.json (pre-0.39 layout; migrated into state.json) */
 export const KimiMetadataSchema = z
   .object({
     session_id: z.string(),
@@ -565,6 +566,61 @@ export const KimiMetadataSchema = z
     wire_mtime: z.number().nullable().optional(),
   })
   .passthrough();
+
+/**
+ * Kimi Code v2 state.json (>= 0.39): per-session runtime state stored under
+ * ~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/state.json.
+ * Timestamps are epoch milliseconds; the main agent's wire log lives at
+ * `agents.main.homedir/wire.jsonl`.
+ */
+export const KimiStateV2Schema = z
+  .object({
+    id: z.string(),
+    version: z.number().optional(),
+    cwd: z.string().optional(),
+    createdAt: z.number().optional(),
+    updatedAt: z.number().optional(),
+    archived: z.boolean().optional(),
+    title: z.string().optional(),
+    isCustomTitle: z.boolean().optional(),
+    lastPrompt: z.string().optional(),
+    lastTurnReason: z.string().optional(),
+    agents: z
+      .record(
+        z.string(),
+        z
+          .object({
+            homedir: z.string().optional(),
+            type: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
+  })
+  .passthrough();
+
+export type KimiStateV2 = z.infer<typeof KimiStateV2Schema>;
+
+/** Kimi Code v2 session index entry: ~/.kimi-code/session_index.jsonl */
+export const KimiSessionIndexEntrySchema = z
+  .object({
+    sessionId: z.string(),
+    sessionDir: z.string(),
+    workDir: z.string().optional(),
+  })
+  .passthrough();
+
+export type KimiSessionIndexEntry = z.infer<typeof KimiSessionIndexEntrySchema>;
+
+/** Kimi Code v2 wire record (agents/main/wire.jsonl, protocol 1.5) */
+export const KimiWireRecordSchema = z
+  .object({
+    type: z.string(),
+    time: z.number().optional(),
+  })
+  .passthrough();
+
+export type KimiWireRecord = z.infer<typeof KimiWireRecordSchema>;
 
 export const KimiMessageSchema = z
   .object({

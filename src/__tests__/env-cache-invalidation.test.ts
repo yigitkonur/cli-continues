@@ -190,6 +190,14 @@ describe('env fingerprint cache invalidation (issue #18)', () => {
     expect(indexNeedsRebuild()).toBe(true);
   });
 
+  it('indexNeedsRebuild returns true when KIMI_CODE_HOME changes', () => {
+    writeIndex(currentFingerprint(), [makeSession('sess-1', 'kimi')]);
+
+    vi.stubEnv('KIMI_CODE_HOME', '/home/user/.kimi-code-work');
+
+    expect(indexNeedsRebuild()).toBe(true);
+  });
+
   it('tracks Qwen Code storage env vars in the cache fingerprint', () => {
     const adapter = adapters['qwen-code'];
     expect(adapter.envVar).toBe('QWEN_RUNTIME_DIR');

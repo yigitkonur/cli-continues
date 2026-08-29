@@ -1,50 +1,82 @@
-# Kimi CLI Message Schema
+# Kimi Code CLI Message Schema
 
-Access date: 2026-04-15
+Access date: 2026-08-28
 
 ## Raw Schema
 
-- Documented fact: Official Kimi CLI code organizes sessions under `~/.kimi/sessions/<workdir-hash>/<session-id>/`.
-- Documented fact: Current session directories are expected to contain `context.jsonl`, `wire.jsonl`, and `state.json`.
-- Documented fact: The official code treats `metadata.json` as legacy and migrates its fields into `state.json`.
-- Documented fact: `wire.jsonl` begins with a metadata header line and then stores structured timestamped wire-message records.
-- Documented fact: `context.jsonl` is still the file the official session object treats as “message history.”
-- Observed example: Sampled local Kimi session directories contained `context.jsonl` and `wire.jsonl`, but the sampled `context.jsonl` files were empty.
-- Observed example: Sampled `wire.jsonl` files started with `{"type":"metadata","protocol_version":"1.3"}` followed by timestamped `TurnBegin` records.
+- Documented fact: Kimi Code CLI v2 organizes sessions under
+  `~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/`.
+- Documented fact: The conversation is stored in `agents/main/wire.jsonl` as a
+  protocol-1.5 event log (there is no `context.jsonl` in the v2 layout).
+- Documented fact: `session_index.jsonl` and `workspaces.json` are the
+  authoritative session/workspace registries.
+- Documented fact: `state.json` v2 carries `id`, `cwd`, epoch-ms
+  `createdAt`/`updatedAt`, `archived`, `title`, `lastPrompt`, `lastTurnReason`,
+  and `agents.main.homedir` (the absolute path of the main agent dir containing
+  `wire.jsonl`).
+- Observed example: Sampled local session directories contained
+  `state.json` + `agents/main/wire.jsonl` (2152 records), `tasks/*.json`, and
+  `logs/kimi-code.log`.
 
-## Assistant Messages
+## Wire Records (protocol 1.5)
 
-- Documented fact: The official session code reads `context.jsonl` as JSON lines containing at least a `role` field, and treats roles not starting with `_` as conversational.
-- Unresolved uncertainty: The official snippets reviewed here did not expose the full current assistant-message JSON shape inside `context.jsonl`.
-- Inference: The parser’s assumed `assistant` role plus `content`, `tool_calls`, and `_usage` lines may be correct for some builds, but that exact shape was not independently confirmed from upstream code in this audit.
+- `metadata` — `{protocol_version, created_at}` header (epoch ms)
+- `profile.bind` — `{modelAlias, profileName, systemPrompt}` (model binding)
+- `turn.prompt` — user turn: `{input: [{type: "text", text}], origin: {kind:
+  "user"|"task"|"injection"}, time}`; only `kind === "user"` is conversational
+- `context.append_loop_event` — events within a turn:
+  - `step.begin` / `step.end`
+  - `content.part` — `{part: {type: "think"|"text", ...}}` assistant content
+  - `tool.call` — `{toolCallId, name, args}` (args is an object, not a string)
+  - `tool.result` — `{parentUuid, toolCallId, result: {output}}`
+- `usage.record` — per-turn token usage `{inputOther, output, inputCacheRead,
+  inputCacheCreation}`
+- `turn.ended` — turn boundary
+- `context.apply_compaction` / `full_compaction.begin` — full-context compaction
+  markers
 
 ## User Messages
 
-- Documented fact: User messages are also stored in `context.jsonl`; the official code checks line JSON for `role`.
-- Observed example: The sampled local `wire.jsonl` `TurnBegin` payload clearly contains `user_input`, so usable user chronology may exist even when `context.jsonl` is empty.
+- Documented fact: user turns are recorded as `turn.prompt` with
+  `origin.kind === "user"`; task-completion notifications use
+  `origin.kind === "task"` and are not conversational.
+- Observed example: every `turn.prompt` matched a `context.append_message`
+  user record within 10s; the parser uses `turn.prompt` as the canonical
+  user-turn source.
+
+## Assistant Messages
+
+- Documented fact: assistant text and think blocks are streamed as
+  `content.part` events inside `context.append_loop_event`; tool calls are
+  `tool.call` events in the same turn.
+- Inference: the parser reconstructs one assistant `KimiMessage` per turn by
+  merging `content.part` (text/think) blocks and `tool.call` records in order.
 
 ## Ordering, Boundaries, And State
 
 - Documented fact: `wire.jsonl` is append-only and timestamped.
-- Documented fact: `state.json` now carries session title/archive/approval/todo state; `metadata.json` is legacy.
-- Inference: Full Kimi reconstruction may require both `context.jsonl` and `wire.jsonl`, especially when context files are empty or partially written.
+- Documented fact: `turn.ended` closes each turn; the parser flushes the open
+  assistant message there.
+- Documented fact: full compaction is recorded as
+  `context.apply_compaction`/`full_compaction.*`; the wire log retains prior
+  records, so reconstruction is unaffected (a fidelity warning is emitted).
 
 ## Direct Access
 
-- Session directories: `find ~/.kimi/sessions -maxdepth 3 -type f`
-- Wire log preview: `head -n 20 ~/.kimi/sessions/<hash>/<session>/wire.jsonl`
-- Context log preview: `head -n 20 ~/.kimi/sessions/<hash>/<session>/context.jsonl`
+- Session directories: `find ~/.kimi-code/sessions -maxdepth 4 -type f`
+- Wire log preview: `head -n 20 ~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl`
+- State preview: `jq . ~/.kimi-code/sessions/wd_*/session_*/state.json`
 
 ## Parser Comparison
 
-- `src/parsers/kimi.ts` is only partially aligned with current upstream code.
-- It correctly targets `~/.kimi/sessions/<hash>/<session>/context.jsonl`, but it still looks for legacy `metadata.json` and ignores current `state.json`.
-- It ignores `wire.jsonl`, even though sampled local sessions had chronology there while `context.jsonl` was empty.
-- This makes Kimi a high-risk assistant-message coverage problem: the parser can return little or no conversation even when the session directory still contains recoverable wire history.
+- `src/parsers/kimi.ts` reads `agents/main/wire.jsonl` (protocol 1.5),
+  `state.json` v2, `session_index.jsonl`, and `workspaces.json`.
+- The legacy pre-0.39 layout (`~/.kimi/sessions/<md5>/<id>/context.jsonl` +
+  `metadata.json` + v1 `state.json`) is still parsed as a fallback.
 
 ## Sources
 
-- Kimi session model: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session.py (accessed 2026-04-15)
-- Kimi session state: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session_state.py (accessed 2026-04-15)
-- Kimi wire file format: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/wire/file.py (accessed 2026-04-15)
-- Observed local wire log: `~/.kimi/sessions/ac0c330c0ce4a33a0bd36cfa7edc03d5/52f9d645-ac68-42db-8e80-e6b20bc51435/wire.jsonl` (accessed 2026-04-15)
+- Observed locally on 2026-08-28: kimi 0.39.1 wire logs at
+  `~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl`
+- Kimi session model: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session.py
+- Kimi wire file format: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/wire/file.py

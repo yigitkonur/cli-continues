@@ -31,6 +31,9 @@ import {
   GeminiSessionSchema,
   GeminiToolCallSchema,
   KimiMetadataSchema,
+  KimiSessionIndexEntrySchema,
+  KimiStateV2Schema,
+  KimiWireRecordSchema,
   OpenCodeMessageSchema,
   OpenCodeSessionSchema,
   SerializedSessionSchema,
@@ -686,6 +689,55 @@ describe('KimiMetadataSchema', () => {
       session_id: 'kimi-session-2',
       archived_at: '2026-01-01T12:00:00.000Z',
       wire_mtime: 1735086302.21,
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('KimiStateV2Schema', () => {
+  it('accepts a v2 state.json with agents and epoch-ms timestamps', () => {
+    const result = KimiStateV2Schema.safeParse({
+      id: 'session_4c80c6b8-04a4-4015-b54f-74c11d898d1b',
+      version: 2,
+      cwd: '/home/user/project',
+      createdAt: 1786461111564,
+      updatedAt: 1786556548825,
+      archived: false,
+      title: 'Fix auth bug',
+      isCustomTitle: false,
+      lastPrompt: 'Fix the auth bug',
+      lastTurnReason: 'completed',
+      agents: {
+        main: { homedir: '/home/user/.kimi-code/sessions/wd_x/session_y/agents/main', type: 'main' },
+        'agent-1': { homedir: '/home/user/.kimi-code/sessions/wd_x/session_y/agents/agent-1', type: 'sub' },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts minimal state without agents block', () => {
+    const result = KimiStateV2Schema.safeParse({ id: 'session_abc', archived: true });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('KimiSessionIndexEntrySchema', () => {
+  it('accepts an entry with sessionDir and workDir', () => {
+    const result = KimiSessionIndexEntrySchema.safeParse({
+      sessionId: 'session_4c80c6b8-04a4-4015-b54f-74c11d898d1b',
+      sessionDir: '/home/user/.kimi-code/sessions/wd_x/session_4c80c6b8-04a4-4015-b54f-74c11d898d1b',
+      workDir: '/home/user/project',
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('KimiWireRecordSchema', () => {
+  it('accepts protocol 1.5 records with passthrough payloads', () => {
+    const result = KimiWireRecordSchema.safeParse({
+      type: 'context.append_loop_event',
+      time: 1786461136365,
+      event: { type: 'content.part', part: { type: 'text', text: 'ok' } },
     });
     expect(result.success).toBe(true);
   });

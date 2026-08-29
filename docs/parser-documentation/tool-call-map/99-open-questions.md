@@ -9,7 +9,11 @@
   - Current official repo also ships OpenCode-style `ToolPart` and `Session` code with `kilocode_change` customizations.
 - `cursor`: first-party staff say transcript JSONL intentionally excludes tool outputs. Do all Cursor agent-transcript builds at least persist tool inputs on disk, and if so in what exact shape?
 - `copilot`: GitHub documents a complete local session record plus `~/.copilot/session-store.db`, but the exact location of tool results and file-modification detail still needs direct schema confirmation.
-- `kimi`: when does `context.jsonl` remain empty while `wire.jsonl` is populated? Current parser likely needs a `wire.jsonl` fallback or at least a better session-discovery rule.
+- `kimi`: v2 (>= 0.39) removed `context.jsonl` entirely — the conversation now
+  lives only in `agents/main/wire.jsonl`. Resolved by the v2 parser rewrite.
+  Open: should subagent (`agents/agent-N/wire.jsonl`) conversations be merged
+  into the main session context, and should `tools.update_store` todo state
+  feed pending tasks?
 
 ## Redesign questions
 
