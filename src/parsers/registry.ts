@@ -901,13 +901,17 @@ register({
   resumeCommandDisplay: () => `antigravity`,
 });
 
-// ── Kimi CLI ──────────────────────────────────────────────────────────
+// ── Kimi Code CLI ────────────────────────────────────────────────────────
 register({
   name: 'kimi',
-  label: 'Kimi CLI',
+  label: 'Kimi Code CLI',
   color: chalk.hex('#00D4AA'),
-  storagePath: '~/.kimi/sessions/',
-  envVar: 'KIMI_SHARE_DIR',
+  // Kimi Code v2 (>= 0.39) stores sessions under ~/.kimi-code/sessions/ with
+  // a session_index.jsonl index; the legacy ~/.kimi/sessions/<md5>/ layout is
+  // still read as a fallback by the parser.
+  storagePath: '~/.kimi-code/sessions/',
+  envVar: 'KIMI_CODE_HOME',
+  extraEnvVars: ['KIMI_SHARE_DIR'],
   binaryName: 'kimi',
   parseSessions: parseKimiSessions,
   extractContext: extractKimiContext,

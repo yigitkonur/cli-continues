@@ -2,46 +2,60 @@
 
 ## Raw Source
 
-- Documented fact: upstream Kimi CLI creates session directories under a work-dir-scoped sessions root, writes `context.jsonl`, and also writes a `wire.jsonl` file with a metadata header plus typed wire records. Sources: [MoonshotAI/kimi-cli `session.py`](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session.py), [MoonshotAI/kimi-cli `wire/file.py`](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/wire/file.py) (accessed 2026-04-15).
-- Documented fact: `metadata.json` is optional in Kimi, and session lookup also uses `kimi.json` work-dir metadata. Source: `session.py`, accessed 2026-04-15.
-- Observed example: this machine has `~/.kimi/kimi.json`, `~/.kimi/sessions/<workdir-hash>/<session-id>/context.jsonl`, and `wire.jsonl`. Observed 2026-04-15.
-- Observed example: `wire.jsonl` begins with a metadata line like `{\"type\":\"metadata\",\"protocol_version\":\"1.3\"}`, followed by `TurnBegin` wire records. Observed 2026-04-15.
+- Documented fact: Kimi Code CLI v2 (>= 0.39) creates session directories under
+  `~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/`, writes v2
+  `state.json`, and records the conversation in `agents/main/wire.jsonl`
+  (protocol 1.5). Sources: observed locally 2026-08-28; official repo
+  [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli).
+- Documented fact: `session_index.jsonl` is the authoritative index of
+  `{sessionId, sessionDir, workDir}`; `workspaces.json` maps `wd_<name>_<hash>`
+  dirs to workspace roots.
+- Documented fact: legacy pre-0.39 sessions live under
+  `~/.kimi/sessions/<md5>/<session-id>/` with `context.jsonl`, `metadata.json`,
+  v1 `state.json`, and `wire.jsonl` (read by the parser as a fallback).
+- Observed example: this machine has `~/.kimi-code/session_index.jsonl`,
+  `~/.kimi-code/workspaces.json`, and
+  `~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl`. Observed
+  2026-08-28.
 
 ## Retrieval Patterns
 
-### Map work directories to hashed session roots
+### Map workspaces to session roots
 
 ```bash
-sed -n '1,120p' ~/.kimi/kimi.json | jq .
-find ~/.kimi/sessions -maxdepth 2 -type d
+jq . ~/.kimi-code/workspaces.json
+sed -n '1,40p' ~/.kimi-code/session_index.jsonl
+find ~/.kimi-code/sessions -maxdepth 3 -type d
 ```
 
 ### Inspect wire metadata and first records
 
 ```bash
-sed -n '1,10p' ~/.kimi/sessions/<workdir-hash>/<session-id>/wire.jsonl | jq .
+sed -n '1,10p' ~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl | jq .
 ```
 
-### Inspect the message history JSONL
+### Inspect the session state
 
 ```bash
-awk 'NR>=1 && NR<=30' ~/.kimi/sessions/<workdir-hash>/<session-id>/context.jsonl | jq .
+jq . ~/.kimi-code/sessions/wd_*/session_*/state.json
 ```
 
-### If `metadata.json` exists, use it
+### Enumerate wire record types
 
 ```bash
-sed -n '1,80p' ~/.kimi/sessions/<workdir-hash>/<session-id>/metadata.json | jq .
+grep -o '"type": "[^"]*"' ~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl | sort | uniq -c
 ```
 
 ## Current Parser Comparison
 
-- Current parser reads `context.jsonl` and optional `metadata.json`, which aligns with upstream code.
-- The parser currently ignores `wire.jsonl`, but `wire.jsonl` is valuable for turn boundaries, protocol version, and subagent-like wire events.
-- For Kimi, the pointer block should include both `context.jsonl` and `wire.jsonl`.
+- Current parser reads `session_index.jsonl`, `workspaces.json`, v2
+  `state.json`, and `agents/main/wire.jsonl`, which aligns with the current CLI.
+- The parser ignores `tools.update_store` (todo store) and subagent
+  `agents/agent-N/wire.jsonl` conversations.
+- For Kimi, the pointer block should include both `state.json` and
+  `agents/main/wire.jsonl`.
 
 ## Sources
 
-- [MoonshotAI/kimi-cli `session.py`](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session.py) (accessed 2026-04-15)
-- [MoonshotAI/kimi-cli `wire/file.py`](https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/wire/file.py) (accessed 2026-04-15)
-
+- Observed locally on 2026-08-28: kimi 0.39.1 `~/.kimi-code/` layout
+- [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)

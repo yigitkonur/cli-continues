@@ -192,7 +192,7 @@ Every tool stores sessions differently — different formats, different schemas,
 | Roo Code | JSON | VS Code `globalStorage/rooveterinaryinc.roo-cline/tasks/` |
 | Kilo Code | JSON | VS Code `globalStorage/kilocode.kilo-code/tasks/` |
 | Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
-| Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
+| Kimi Code CLI | JSONL + JSON | `~/.kimi-code/sessions/` |
 | Qwen Code | JSONL | `~/.qwen/projects/*/chats/` |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).

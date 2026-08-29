@@ -374,30 +374,42 @@ function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines = content.trim().split('\n');
   const messages: ConversationMessage[] = [];
+  let openAssistant: string[] = [];
+
+  const flushAssistant = (): void => {
+    if (openAssistant.length > 0) {
+      messages.push({ role: 'assistant', content: openAssistant.join('\n') });
+      openAssistant = [];
+    }
+  };
 
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line);
-      if (parsed.role !== 'user' && parsed.role !== 'assistant') continue;
-
-      const text =
-        typeof parsed.content === 'string'
-          ? parsed.content
-          : (parsed.content || [])
-              .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
-              .map((b: any) => b.text)
-              .join('\n');
-
-      if (!text) continue;
-
-      messages.push({
-        role: parsed.role,
-        content: text,
-      });
+      const type = parsed?.type;
+      if (type === 'turn.prompt') {
+        if (parsed.origin?.kind !== 'user') continue;
+        flushAssistant();
+        const text = (parsed.input || [])
+          .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+          .map((b: any) => b.text)
+          .join('\n');
+        if (text) messages.push({ role: 'user', content: text });
+      } else if (type === 'context.append_loop_event') {
+        const event = parsed?.event;
+        if (event?.type !== 'content.part') continue;
+        const part = event?.part;
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          openAssistant.push(part.text);
+        }
+      } else if (type === 'turn.ended') {
+        flushAssistant();
+      }
     } catch {
       /* skip */
     }
   }
+  flushAssistant();
 
   return messages;
 }
@@ -850,25 +862,25 @@ beforeAll(() => {
   };
 
   // Kimi
-  const kimiContextFile = fs
+  const kimiWireFile = fs
     .readdirSync(fixtures.kimi.root, { recursive: true })
     .map((f) => path.join(fixtures.kimi.root, f as string))
-    .find((f) => f.endsWith(`${path.sep}context.jsonl`) || f.endsWith('/context.jsonl'))!;
-  const kimiSessionDir = path.dirname(kimiContextFile);
+    .find((f) => f.endsWith(`${path.sep}wire.jsonl`) || f.endsWith('/wire.jsonl'))!;
+  const kimiSessionDir = path.dirname(path.dirname(kimiWireFile));
   const kimiSession: UnifiedSession = {
     id: path.basename(kimiSessionDir),
     source: 'kimi',
     cwd: '/home/user/project',
     repo: 'user/project',
-    lines: 6,
-    bytes: fs.statSync(kimiContextFile).size,
+    lines: 15,
+    bytes: fs.statSync(kimiWireFile).size,
     createdAt: now,
     updatedAt: now,
     originalPath: kimiSessionDir,
     summary: 'Fix auth bug',
-    model: 'kimi-k2.5',
+    model: 'kimi-code/kimi-for-coding',
   };
-  const kimiMsgs = parseKimiFixtureMessages(kimiContextFile);
+  const kimiMsgs = parseKimiFixtureMessages(kimiWireFile);
   contexts.kimi = {
     session: kimiSession,
     recentMessages: kimiMsgs,

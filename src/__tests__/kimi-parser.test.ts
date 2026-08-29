@@ -6,60 +6,139 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedSession } from '../types/index.js';
 
 const tmpHomes: string[] = [];
+const originalKimiCodeHome = process.env.KIMI_CODE_HOME;
 const originalKimiShareDir = process.env.KIMI_SHARE_DIR;
-
-function md5(value: string): string {
-  return createHash('md5').update(value, 'utf8').digest('hex');
-}
 
 function writeJsonl(filePath: string, rows: unknown[]): void {
   const content = rows.map((row) => JSON.stringify(row)).join('\n');
   fs.writeFileSync(filePath, `${content}\n`, 'utf8');
 }
 
-function writeRawContext(filePath: string, lines: string[]): void {
-  fs.writeFileSync(filePath, `${lines.join('\n')}\n`, 'utf8');
-}
-
-function createKimiSession(opts: {
-  homeDir: string;
-  shareDir?: string;
-  workDirPath: string;
-  sessionId: string;
-  messages: unknown[];
-  metadata?: Record<string, unknown>;
-  rawMetadata?: string;
-}): string {
-  const hashDir = md5(opts.workDirPath);
-  const shareDir = opts.shareDir ?? path.join(opts.homeDir, '.kimi');
-  const sessionDir = path.join(shareDir, 'sessions', hashDir, opts.sessionId);
-  fs.mkdirSync(sessionDir, { recursive: true });
-  writeJsonl(path.join(sessionDir, 'context.jsonl'), opts.messages);
-
-  if (opts.rawMetadata !== undefined) {
-    fs.writeFileSync(path.join(sessionDir, 'metadata.json'), opts.rawMetadata, 'utf8');
-  } else if (opts.metadata) {
-    fs.writeFileSync(path.join(sessionDir, 'metadata.json'), JSON.stringify(opts.metadata), 'utf8');
+function makeWire(opts: { userText?: string; includeToolCalls?: boolean; includeUsage?: boolean } = {}): unknown[] {
+  const rows: unknown[] = [
+    { type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 },
+    { type: 'profile.bind', modelAlias: 'kimi-code/kimi-for-coding', profileName: 'agent' },
+    {
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: opts.userText ?? 'Do the thing' }],
+      origin: { kind: 'user' },
+      time: 1786461111671,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', uuid: 'u1', turnId: '1', step: 1 },
+      time: 1786461111678,
+    },
+  ];
+  if (opts.includeToolCalls) {
+    rows.push({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        uuid: 'u2',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        part: { type: 'text', text: 'I will run the command.' },
+      },
+      time: 1786461111680,
+    });
+    rows.push({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.call',
+        uuid: 'u3',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        toolCallId: 'tc-001',
+        name: 'Bash',
+        args: { command: 'git status', cwd: '/home/user/project' },
+      },
+      time: 1786461111681,
+    });
+    rows.push({
+      type: 'context.append_loop_event',
+      event: { type: 'tool.result', parentUuid: 'u3', toolCallId: 'tc-001', result: { output: 'clean' } },
+      time: 1786461111682,
+    });
+    rows.push({
+      type: 'context.append_loop_event',
+      event: { type: 'step.end', uuid: 'u4', turnId: '1', step: 1, finishReason: 'tool_use' },
+      time: 1786461111683,
+    });
+  } else {
+    rows.push({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        uuid: 'u2',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        part: { type: 'text', text: 'Done.' },
+      },
+      time: 1786461111680,
+    });
   }
-
-  return sessionDir;
+  if (opts.includeUsage) {
+    rows.push({
+      type: 'usage.record',
+      model: 'kimi-code/kimi-for-coding',
+      usage: { inputOther: 100, output: 50, inputCacheRead: 10, inputCacheCreation: 0 },
+      usageScope: 'turn',
+      time: 1786461111684,
+    });
+  }
+  rows.push({ type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 500, time: 1786461111685 });
+  return rows;
 }
 
-function writeKimiState(sessionDir: string, state: Record<string, unknown>): void {
-  fs.writeFileSync(path.join(sessionDir, 'state.json'), JSON.stringify(state), 'utf8');
+/**
+ * Create a v2-layout Kimi session under the given share dir:
+ * sessions/wd_<name>_<hash>/session_<id>/ with state.json + agents/main/wire.jsonl.
+ */
+function createKimiV2Session(opts: {
+  shareDir: string;
+  sessionId: string;
+  workDir: string;
+  wireRows: unknown[];
+  state?: Record<string, unknown>;
+  wdDirName?: string;
+}): { sessionDir: string; agentsMainDir: string } {
+  const wdDirName = opts.wdDirName ?? `wd_test-${opts.sessionId.slice(-6)}_hash`;
+  const sessionDir = path.join(opts.shareDir, 'sessions', wdDirName, opts.sessionId);
+  const agentsMainDir = path.join(sessionDir, 'agents', 'main');
+  fs.mkdirSync(agentsMainDir, { recursive: true });
+  writeJsonl(path.join(agentsMainDir, 'wire.jsonl'), opts.wireRows);
+  fs.writeFileSync(
+    path.join(sessionDir, 'state.json'),
+    JSON.stringify(
+      {
+        id: opts.sessionId,
+        version: 2,
+        cwd: opts.workDir,
+        createdAt: 1786461111564,
+        updatedAt: 1786461111685,
+        archived: false,
+        agents: { main: { homedir: agentsMainDir, type: 'main' } },
+        custom: {},
+        ...(opts.state ?? {}),
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  return { sessionDir, agentsMainDir };
 }
 
-function writeKimiWire(sessionDir: string, rows: unknown[]): void {
-  writeJsonl(path.join(sessionDir, 'wire.jsonl'), rows);
-}
-
-function writeKimiConfigToShare(shareDir: string, workDirs: Array<{ path: string; kaos?: string }>): void {
+function writeSessionIndex(
+  shareDir: string,
+  entries: Array<{ sessionId: string; sessionDir: string; workDir: string }>,
+): void {
   fs.mkdirSync(shareDir, { recursive: true });
-  fs.writeFileSync(path.join(shareDir, 'kimi.json'), JSON.stringify({ work_dirs: workDirs }, null, 2), 'utf8');
-}
-
-function writeKimiConfig(homeDir: string, workDirs: Array<{ path: string; kaos?: string }>): void {
-  writeKimiConfigToShare(path.join(homeDir, '.kimi'), workDirs);
+  writeJsonl(path.join(shareDir, 'session_index.jsonl'), entries);
 }
 
 async function loadKimiParserWithHome(homeDir: string): Promise<typeof import('../parsers/kimi.js')> {
@@ -78,12 +157,18 @@ async function loadKimiParserWithHome(homeDir: string): Promise<typeof import('.
 }
 
 beforeEach(() => {
+  delete process.env.KIMI_CODE_HOME;
   delete process.env.KIMI_SHARE_DIR;
 });
 
 afterEach(() => {
   vi.doUnmock('os');
   vi.doUnmock('../utils/markdown.js');
+  if (originalKimiCodeHome === undefined) {
+    delete process.env.KIMI_CODE_HOME;
+  } else {
+    process.env.KIMI_CODE_HOME = originalKimiCodeHome;
+  }
   if (originalKimiShareDir === undefined) {
     delete process.env.KIMI_SHARE_DIR;
   } else {
@@ -96,34 +181,22 @@ afterEach(() => {
   tmpHomes.length = 0;
 });
 
-describe('kimi parser hardening', () => {
-  it('uses KIMI_SHARE_DIR as the primary runtime directory when set', async () => {
+describe('kimi parser v2', () => {
+  it('uses KIMI_CODE_HOME as the primary runtime directory when set', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-home-'));
     const shareDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-share-'));
     tmpHomes.push(home, shareDir);
-    process.env.KIMI_SHARE_DIR = shareDir;
+    process.env.KIMI_CODE_HOME = shareDir;
     const workDirPath = '/tmp/project-share-dir';
-    const sessionId = 'share-dir-session';
+    const sessionId = 'session_share-dir-session';
 
-    writeKimiConfig(home, [{ path: '/tmp/fallback-home-project' }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath: '/tmp/fallback-home-project',
-      sessionId: 'fallback-home-session',
-      messages: [{ role: 'user', content: 'Do not read from fallback home when KIMI_SHARE_DIR is set' }],
-    });
-
-    writeKimiConfigToShare(shareDir, [{ path: workDirPath }]);
-    createKimiSession({
-      homeDir: home,
+    const { sessionDir } = createKimiV2Session({
       shareDir,
-      workDirPath,
       sessionId,
-      messages: [
-        { role: 'user', content: 'Read from configured share dir' },
-        { role: 'assistant', content: 'Using KIMI_SHARE_DIR.' },
-      ],
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Read from configured share dir' }),
     });
+    writeSessionIndex(shareDir, [{ sessionId, sessionDir, workDir: workDirPath }]);
 
     const { parseKimiSessions } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
@@ -134,22 +207,43 @@ describe('kimi parser hardening', () => {
     expect(sessions[0].originalPath.startsWith(shareDir)).toBe(true);
   });
 
-  it('discovers sessions even when metadata.json is missing', async () => {
+  it('falls back to ~/.kimi-code when no env override is set', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirPath = '/tmp/project-no-metadata';
-    const sessionId = 'missing-metadata-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-default';
+    const sessionId = 'session_default-session';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath,
+    const { sessionDir } = createKimiV2Session({
+      shareDir,
       sessionId,
-      messages: [
-        { role: 'user', content: 'Fix parser discovery' },
-        { role: 'assistant', content: 'Done.' },
-      ],
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Discover from default share dir' }),
     });
+    writeSessionIndex(shareDir, [{ sessionId, sessionDir, workDir: workDirPath }]);
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].id).toBe(sessionId);
+    expect(sessions[0].cwd).toBe(workDirPath);
+  });
+
+  it('discovers sessions from the session index even when metadata is missing', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-no-metadata';
+    const sessionId = 'session_missing-metadata-session';
+
+    const { sessionDir } = createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Fix parser discovery' }),
+    });
+    writeSessionIndex(shareDir, [{ sessionId, sessionDir, workDir: workDirPath }]);
 
     const { parseKimiSessions } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
@@ -160,27 +254,18 @@ describe('kimi parser hardening', () => {
     expect(sessions[0].summary).toBe('Fix parser discovery');
   });
 
-  it('accepts nullable wire_mtime and numeric archived_at metadata values', async () => {
+  it('falls back to scanning sessions/wd_*/session_* when the session index is missing', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirPath = '/tmp/project-schema-compat';
-    const sessionId = 'schema-compat-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-no-index';
+    const sessionId = 'session_no-index-session';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath,
+    createKimiV2Session({
+      shareDir,
       sessionId,
-      messages: [
-        { role: 'user', content: 'Schema compatibility check' },
-        { role: 'assistant', content: 'Looks good.' },
-      ],
-      metadata: {
-        session_id: sessionId,
-        archived: false,
-        archived_at: 1735086302.21,
-        wire_mtime: null,
-      },
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Scan fallback discovery' }),
     });
 
     const { parseKimiSessions } = await loadKimiParserWithHome(home);
@@ -188,250 +273,188 @@ describe('kimi parser hardening', () => {
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0].id).toBe(sessionId);
+    expect(sessions[0].cwd).toBe(workDirPath);
   });
 
-  it('matches cwd deterministically when multiple work_dirs exist', async () => {
+  it('uses state.json cwd when available, ignoring workspaces mismatch', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirA = '/tmp/workdir-alpha';
-    const workDirB = '/tmp/workdir-beta';
-    const sessionId = 'hash-match-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-state-cwd';
+    const sessionId = 'session_state-cwd-session';
 
-    // Put A first to ensure buggy "first entry wins" behavior would fail this test.
-    writeKimiConfig(home, [{ path: workDirA }, { path: workDirB }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath: workDirB,
+    // index points at a stale workDir; state.json cwd must win
+    const { sessionDir } = createKimiV2Session({
+      shareDir,
       sessionId,
-      messages: [
-        { role: 'user', content: 'Use the correct repository cwd' },
-        { role: 'assistant', content: 'Acknowledged.' },
-      ],
-      metadata: {
-        session_id: sessionId,
-      },
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Use state cwd' }),
     });
+    writeSessionIndex(shareDir, [{ sessionId, sessionDir, workDir: '/tmp/stale-workdir' }]);
 
     const { parseKimiSessions } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
 
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].cwd).toBe(workDirB);
-    expect(sessions[0].cwd).not.toBe(workDirA);
+    expect(sessions[0].cwd).toBe(workDirPath);
   });
 
-  it('uses latest _usage snapshot but does not fabricate input/output token split', async () => {
+  it('resolves cwd from workspaces.json when state.json and index lack it', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirPath = '/tmp/project-token-usage';
-    const sessionId = 'token-usage-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-workspace-root';
+    const sessionId = 'session_workspace-cwd-session';
+    const wdDirName = 'wd_test-workspace-cwd_hash';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const sessionDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
+    createKimiV2Session({
+      shareDir,
       sessionId,
-      messages: [
-        { role: 'user', content: 'Track token count correctly' },
-        { role: 'assistant', content: [{ type: 'text', text: 'processing' }] },
-        { role: '_usage', token_count: 100 },
-        { role: '_usage', token_count: 250 },
-      ],
-      metadata: {
-        session_id: sessionId,
-      },
+      workDir: '',
+      wdDirName,
+      state: { cwd: undefined },
+      wireRows: makeWire({ userText: 'Resolve from workspaces' }),
     });
-
-    const { extractKimiContext } = await loadKimiParserWithHome(home);
-    const session: UnifiedSession = {
-      id: sessionId,
-      source: 'kimi',
-      cwd: workDirPath,
-      repo: '',
-      lines: 4,
-      bytes: fs.statSync(path.join(sessionDir, 'context.jsonl')).size,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      originalPath: sessionDir,
-      summary: 'Token test',
-    };
-
-    const context = await extractKimiContext(session);
-    expect(context.sessionNotes?.tokenUsage).toBeUndefined();
-  });
-
-  it('falls back safely when metadata is malformed and when work_dir hash has no match', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
-    tmpHomes.push(home);
-    const sessionId = 'malformed-metadata-session';
-    const unknownWorkDir = '/tmp/workdir-not-listed';
-
-    writeKimiConfig(home, [{ path: '/tmp/other-workdir' }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath: unknownWorkDir,
-      sessionId,
-      messages: [
-        { role: 'user', content: 'Keep parsing despite malformed metadata' },
-        { role: 'assistant', content: 'Will do.' },
-      ],
-      rawMetadata: '{ this-is-not-valid-json',
-    });
+    fs.writeFileSync(
+      path.join(shareDir, 'workspaces.json'),
+      JSON.stringify({
+        version: 1,
+        workspaces: { [wdDirName]: { root: workDirPath, name: 'project-workspace-root' } },
+        deleted_workspace_ids: [],
+      }),
+    );
 
     const { parseKimiSessions } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
 
     expect(sessions).toHaveLength(1);
-    expect(sessions[0].id).toBe(sessionId);
-    expect(sessions[0].cwd).toBe('');
+    expect(sessions[0].cwd).toBe(workDirPath);
   });
 
   it('excludes explicitly archived sessions but keeps non-archived ones', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
     const workDirPath = '/tmp/project-archive-behavior';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId: 'active-session',
-      messages: [
-        { role: 'user', content: 'Active session should remain visible' },
-        { role: 'assistant', content: 'Visible.' },
-      ],
-      metadata: {
-        session_id: 'active-session',
-        archived: false,
-      },
+    const active = createKimiV2Session({
+      shareDir,
+      sessionId: 'session_active-session',
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Active session should remain visible' }),
     });
-    createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId: 'archived-session',
-      messages: [
-        { role: 'user', content: 'Archived session should be hidden' },
-        { role: 'assistant', content: 'Hidden.' },
-      ],
-      metadata: {
-        session_id: 'archived-session',
-        archived: true,
-      },
+    const archived = createKimiV2Session({
+      shareDir,
+      sessionId: 'session_archived-session',
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Archived session should be hidden' }),
+      state: { archived: true },
     });
-
-    const { parseKimiSessions } = await loadKimiParserWithHome(home);
-    const sessions = await parseKimiSessions();
-
-    expect(sessions.map((s) => s.id)).toContain('active-session');
-    expect(sessions.map((s) => s.id)).not.toContain('archived-session');
-  });
-
-  it('uses current state.json archive, title, and wire_mtime fields when present', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
-    tmpHomes.push(home);
-    const workDirPath = '/tmp/project-state-json';
-    const wireMtime = 1_735_086_302.21;
-
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const activeDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId: 'state-active-session',
-      messages: [{ role: 'assistant', content: 'No user title source.' }],
-    });
-    writeKimiState(activeDir, {
-      custom_title: 'State title',
-      title_generated: true,
-      wire_mtime: wireMtime,
-      archived: false,
-    });
-
-    const archivedDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId: 'state-archived-session',
-      messages: [{ role: 'user', content: 'Archived state session' }],
-    });
-    writeKimiState(archivedDir, {
-      archived: true,
-      archived_at: wireMtime,
-    });
-
-    const { parseKimiSessions } = await loadKimiParserWithHome(home);
-    const sessions = await parseKimiSessions();
-
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].id).toBe('state-active-session');
-    expect(sessions[0].summary).toBe('State title');
-    expect(sessions[0].updatedAt.getTime()).toBe(new Date(wireMtime * 1000).getTime());
-  });
-
-  it('treats state.json metadata as primary and metadata.json as a legacy fallback', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
-    tmpHomes.push(home);
-    const workDirPath = '/tmp/project-state-primary';
-    const sessionId = 'state-primary-session';
-    const stateWireMtime = 1_735_086_500.5;
-
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const sessionDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId,
-      messages: [{ role: 'assistant', content: 'No user content.' }],
-      metadata: {
-        session_id: sessionId,
-        title: 'Legacy title',
-        archived: true,
-        wire_mtime: 1,
-      },
-    });
-    writeKimiState(sessionDir, {
-      title: 'State title wins',
-      archived: false,
-      wire_mtime: stateWireMtime,
-    });
-
-    const { parseKimiSessions } = await loadKimiParserWithHome(home);
-    const sessions = await parseKimiSessions();
-
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].summary).toBe('State title wins');
-    expect(sessions[0].updatedAt.getTime()).toBe(new Date(stateWireMtime * 1000).getTime());
-  });
-
-  it('derives repo and exposes optional wire/state/raw metadata during extraction', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
-    tmpHomes.push(home);
-    const workDirPath = '/Users/alice/example-repo';
-    const sessionId = 'wire-metadata-session';
-
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const sessionDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId,
-      messages: [
-        { role: 'user', content: 'Inspect wire metadata' },
-        { role: 'assistant', content: 'Wire metadata captured.' },
-      ],
-    });
-    writeKimiState(sessionDir, {
-      title: 'Wire metadata',
-      approval: { yolo: false },
-      additional_dirs: ['/tmp/extra'],
-    });
-    writeKimiWire(sessionDir, [
-      { type: 'metadata', protocol_version: '1.6' },
-      { message: { type: 'TurnBegin', payload: { user_input: 'Inspect wire metadata' } } },
-      { type: 'ToolCall', id: 'tool-call-1' },
+    writeSessionIndex(shareDir, [
+      { sessionId: 'session_active-session', sessionDir: active.sessionDir, workDir: workDirPath },
+      { sessionId: 'session_archived-session', sessionDir: archived.sessionDir, workDir: workDirPath },
     ]);
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+
+    expect(sessions.map((s) => s.id)).toContain('session_active-session');
+    expect(sessions.map((s) => s.id)).not.toContain('session_archived-session');
+  });
+
+  it('uses state.json title, updatedAt, and createdAt fields when present', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-state-json';
+    const sessionId = 'session_state-active-session';
+    const createdAtMs = 1786461111564;
+    const updatedAtMs = 1786556548825;
+
+    const wireRows: unknown[] = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'u1',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'u1',
+          part: { type: 'text', text: 'No user title source.' },
+        },
+        time: 1786461111680,
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 500, time: 1786461111685 },
+    ];
+    createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows,
+      state: {
+        title: 'State title',
+        createdAt: createdAtMs,
+        updatedAt: updatedAtMs,
+      },
+    });
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].summary).toBe('State title');
+    expect(sessions[0].createdAt.getTime()).toBe(createdAtMs);
+    expect(sessions[0].updatedAt.getTime()).toBe(updatedAtMs);
+  });
+
+  it('derives updatedAt from wire log mtime when state.json has no updatedAt', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-wire-mtime';
+    const sessionId = 'session_wire-mtime-session';
+
+    createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Use wire mtime' }),
+      state: { updatedAt: undefined, createdAt: undefined },
+    });
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+
+    expect(sessions).toHaveLength(1);
+    const wireMtime = fs.statSync(
+      path.join(shareDir, 'sessions', `wd_test-${sessionId.slice(-6)}_hash`, sessionId, 'agents', 'main', 'wire.jsonl'),
+    ).mtime;
+    expect(sessions[0].updatedAt.getTime()).toBe(wireMtime.getTime());
+  });
+
+  it('exposes model from profile.bind and wire/state metadata during extraction', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/Users/alice/example-repo';
+    const sessionId = 'session_wire-metadata-session';
+
+    const { sessionDir } = createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: makeWire({ includeToolCalls: true }),
+      state: { title: 'Wire metadata' },
+    });
+    writeSessionIndex(shareDir, [{ sessionId, sessionDir, workDir: workDirPath }]);
 
     const { parseKimiSessions, extractKimiContext } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
     const session = sessions[0];
     const context = await extractKimiContext(session);
 
+    expect(session.model).toBe('kimi-code/kimi-for-coding');
     expect(session.repo).toBe('alice/example-repo');
     expect(context.sessionNotes?.rawAccess).toMatchObject({
       kind: 'directory',
@@ -439,79 +462,114 @@ describe('kimi parser hardening', () => {
       redacted: true,
     });
     expect(context.sessionNotes?.sourceMetadata).toMatchObject({
-      contextPath: path.join(sessionDir, 'context.jsonl'),
+      shareDir,
+      wirePath: path.join(sessionDir, 'agents', 'main', 'wire.jsonl'),
       statePath: path.join(sessionDir, 'state.json'),
-      wirePath: path.join(sessionDir, 'wire.jsonl'),
-      wireProtocolVersion: '1.6',
-      wireRecordTypes: ['TurnBegin', 'ToolCall'],
+      wireProtocolVersion: '1.5',
+      wireRecordTypes: expect.arrayContaining([
+        'metadata',
+        'profile.bind',
+        'turn.prompt',
+        'turn.ended',
+        'content.part',
+        'tool.call',
+      ]),
     });
     expect(context.sessionNotes?.fidelityWarnings).toBeUndefined();
   });
 
-  it('extracts context despite malformed lines, non-object records, and malformed tool call entries', async () => {
+  it('extracts context despite malformed lines, non-object records, and tool calls with object args', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirPath = '/tmp/project-malformed-context';
-    const sessionId = 'malformed-context-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-malformed-wire';
+    const sessionId = 'session_malformed-wire-session';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const sessionDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
+    const rows: unknown[] = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 },
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'Please commit the change' }],
+        origin: { kind: 'user' },
+        time: 1786461111671,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'u2',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'u1',
+          part: { type: 'think', think: 'Need to run the shell command next step.' },
+        },
+        time: 1786461111680,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'u3',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'u1',
+          part: { type: 'text', text: 'I will run it.' },
+        },
+        time: 1786461111681,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          uuid: 'u4',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'u1',
+          toolCallId: 'tc-001',
+          name: 'Shell',
+          args: { command: 'git commit -m "feat: parser hardening"' },
+        },
+        time: 1786461111682,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', uuid: 'u5', turnId: '1', step: 1, finishReason: 'tool_use' },
+        time: 1786461111683,
+      },
+      {
+        type: 'usage.record',
+        model: 'kimi-code/kimi-for-coding',
+        usage: { inputOther: 100, output: 50 },
+        usageScope: 'turn',
+        time: 1786461111684,
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 500, time: 1786461111685 },
+    ];
+
+    createKimiV2Session({
+      shareDir,
       sessionId,
-      messages: [],
+      workDir: workDirPath,
+      wireRows: rows,
     });
-    writeRawContext(path.join(sessionDir, 'context.jsonl'), [
-      '{ this-is-not-json',
-      'null',
-      JSON.stringify({ role: '_system_prompt', content: 'Internal prompt should not appear.' }),
-      JSON.stringify({ role: 'user', content: [{ type: 'text', text: 'Please commit the change' }] }),
-      JSON.stringify({
-        role: 'assistant',
-        content: [
-          { type: 'think', think: 'Need to run the shell command next step.' },
-          { type: 'think', think: '  need to run the shell command next step.  ' },
-          { type: 'text', text: 'I will run it.' },
-        ],
-        tool_calls: [
-          {
-            type: 'function',
-            id: 'functions.Shell:22',
-            function: {
-              name: 'Shell',
-              arguments: '{"command":"git commit -m \\"feat: parser hardening\n\nBody line\\""}',
-            },
-          },
-          { type: 'function', id: 'broken-call' },
-          {
-            type: 'function',
-            id: 'functions.Strange:1',
-            function: {
-              name: 'StrangeTool',
-              arguments: '{"path":"src/example.ts"}',
-            },
-          },
-        ],
-      }),
-      JSON.stringify({ role: '_usage', token_count: 250 }),
-    ]);
+    const wirePath = path.join(
+      shareDir,
+      'sessions',
+      `wd_test-${sessionId.slice(-6)}_hash`,
+      sessionId,
+      'agents',
+      'main',
+      'wire.jsonl',
+    );
+    // Append malformed lines to exercise dropped-record counting
+    fs.appendFileSync(wirePath, '{ this-is-not-json\nnull\n', 'utf8');
 
-    const { extractKimiContext } = await loadKimiParserWithHome(home);
-    const session: UnifiedSession = {
-      id: sessionId,
-      source: 'kimi',
-      cwd: workDirPath,
-      repo: '',
-      lines: 6,
-      bytes: fs.statSync(path.join(sessionDir, 'context.jsonl')).size,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      originalPath: sessionDir,
-      summary: 'Malformed context test',
-    };
+    const { parseKimiSessions, extractKimiContext } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].lines).toBe(10);
 
-    const context = await extractKimiContext(session);
-
+    const context = await extractKimiContext(sessions[0]);
     expect(context.recentMessages).toEqual([
       { role: 'user', content: 'Please commit the change' },
       { role: 'assistant', content: 'I will run it.' },
@@ -519,106 +577,206 @@ describe('kimi parser hardening', () => {
     expect(context.toolSummaries.find((summary) => summary.name === 'Shell')?.samples[0]?.summary).toContain(
       'git commit -m',
     );
-    expect(context.toolSummaries.find((summary) => summary.name === 'StrangeTool')?.samples[0]?.summary).toContain(
-      'src/example.ts',
-    );
     expect(context.pendingTasks).toEqual(['Need to run the shell command next step.']);
     expect(context.sessionNotes?.tokenUsage).toBeUndefined();
     expect(context.sessionNotes?.rawAccess).toMatchObject({
       kind: 'directory',
-      path: sessionDir,
+      path: path.dirname(path.dirname(path.dirname(wirePath))),
       redacted: true,
     });
+    expect(context.sessionNotes?.sourceMetadata?.wireDroppedRecords).toBe(2);
+  });
+
+  it('reports a fidelity warning when the wire log records a full compaction', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-compaction';
+    const sessionId = 'session_compaction-session';
+
+    const rows: unknown[] = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 },
+      { type: 'full_compaction.begin', source: 'manual', time: 1786461112000 },
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'Continue after compaction' }],
+        origin: { kind: 'user' },
+        time: 1786461113000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'u1',
+          turnId: '2',
+          step: 1,
+          stepUuid: 'u1',
+          part: { type: 'text', text: 'Continuing.' },
+        },
+        time: 1786461113100,
+      },
+      { type: 'turn.ended', turnId: 2, reason: 'completed', durationMs: 500, time: 1786461113200 },
+    ];
+
+    createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: rows,
+    });
+
+    const { parseKimiSessions, extractKimiContext } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+    const context = await extractKimiContext(sessions[0]);
+
     expect(context.sessionNotes?.fidelityWarnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('wire.jsonl was not present'),
-        expect.stringContaining('malformed or unsupported record'),
-      ]),
+      expect.arrayContaining([expect.stringContaining('compaction')]),
     );
   });
 
-  it('reports total context lines and dropped record count from a single streaming pass', async () => {
+  it('skips task-origin and injection turn prompts when reconstructing conversation', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
     tmpHomes.push(home);
-    const workDirPath = '/tmp/project-single-pass-counts';
-    const sessionId = 'single-pass-counts-session';
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-origin-filter';
+    const sessionId = 'session_origin-filter-session';
 
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const sessionDir = createKimiSession({
-      homeDir: home,
-      workDirPath,
-      sessionId,
-      messages: [],
-    });
-    // Mix valid + invalid + non-object + missing-role rows to exercise both
-    // counters in a single pass.
-    writeRawContext(path.join(sessionDir, 'context.jsonl'), [
-      JSON.stringify({ role: 'user', content: 'first valid' }),
-      '{ this-is-not-json',
-      'null',
-      JSON.stringify({ role: 'assistant', content: 'second valid' }),
-      JSON.stringify({ no_role_field: true }),
-    ]);
-
-    const { extractKimiContext, parseKimiSessions } = await loadKimiParserWithHome(home);
-    const sessions = await parseKimiSessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].lines).toBe(5);
-
-    const context = await extractKimiContext(sessions[0]);
-    expect(context.sessionNotes?.sourceMetadata?.contextLines).toBe(5);
-    expect(context.sessionNotes?.sourceMetadata?.contextDroppedRecords).toBe(3);
-  });
-
-  it('discovers and extracts legacy flat context jsonl files without migrating them', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
-    tmpHomes.push(home);
-    const workDirPath = '/tmp/project-legacy-flat';
-    const sessionId = 'legacy-flat-session';
-
-    writeKimiConfig(home, [{ path: workDirPath }]);
-    const workDirHash = md5(workDirPath);
-    const workDirSessionsDir = path.join(home, '.kimi', 'sessions', workDirHash);
-    fs.mkdirSync(workDirSessionsDir, { recursive: true });
-    const contextPath = path.join(workDirSessionsDir, `${sessionId}.jsonl`);
-    writeJsonl(contextPath, [
-      { role: 'user', content: 'Read legacy flat session' },
+    const rows: unknown[] = [
+      { type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 },
       {
-        role: 'assistant',
-        content: 'Reading.',
-        tool_calls: [
-          {
-            type: 'function',
-            id: 'functions.Read:1',
-            function: { name: 'Read', arguments: '{"file_path":"src/legacy.ts"}' },
-          },
-        ],
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'Real user turn' }],
+        origin: { kind: 'user' },
+        time: 1786461111671,
       },
-    ]);
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: '<notification id="task:x:completed">done</notification>' }],
+        origin: { kind: 'task', taskId: 'x', status: 'completed' },
+        time: 1786461111800,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'injection' }],
+          origin: { kind: 'injection', variant: 'interruption' },
+        },
+        time: 1786461111850,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'u1',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'u1',
+          part: { type: 'text', text: 'Acknowledged.' },
+        },
+        time: 1786461111900,
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 500, time: 1786461112000 },
+    ];
+
+    createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: rows,
+    });
 
     const { parseKimiSessions, extractKimiContext } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+    const context = await extractKimiContext(sessions[0]);
+
+    expect(context.recentMessages).toEqual([
+      { role: 'user', content: 'Real user turn' },
+      { role: 'assistant', content: 'Acknowledged.' },
+    ]);
+  });
+
+  it('keeps legacy ~/.kimi md5-layout sessions discoverable via KIMI_SHARE_DIR', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi');
+    const workDirPath = '/tmp/project-legacy';
+    const sessionId = 'legacy-session-1';
+    const workDirHash = createHash('md5').update(workDirPath, 'utf8').digest('hex');
+    const hashDir = path.join(shareDir, 'sessions', workDirHash, sessionId);
+    fs.mkdirSync(hashDir, { recursive: true });
+    writeJsonl(path.join(hashDir, 'context.jsonl'), [
+      { role: 'user', content: 'Read legacy session' },
+      { role: 'assistant', content: 'Reading.' },
+    ]);
+    fs.writeFileSync(path.join(shareDir, 'kimi.json'), JSON.stringify({ work_dirs: [{ path: workDirPath }] }), 'utf8');
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
     const sessions = await parseKimiSessions();
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0].id).toBe(sessionId);
     expect(sessions[0].cwd).toBe(workDirPath);
-    expect(sessions[0].originalPath).toBe(contextPath);
+  });
 
-    const context = await extractKimiContext(sessions[0]);
-    expect(context.recentMessages).toEqual([
-      { role: 'user', content: 'Read legacy flat session' },
-      { role: 'assistant', content: 'Reading.' },
-    ]);
-    expect(context.toolSummaries.find((summary) => summary.name === 'Read')?.samples[0]?.summary).toBe(
-      'read src/legacy.ts',
+  it('reports empty sessions and unreadable dirs without crashing', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-empty';
+
+    // Session with no wire log at all
+    const emptyDir = path.join(shareDir, 'sessions', 'wd_empty_hash', 'session_empty-session');
+    fs.mkdirSync(path.join(emptyDir, 'agents', 'main'), { recursive: true });
+    fs.writeFileSync(
+      path.join(emptyDir, 'state.json'),
+      JSON.stringify({
+        id: 'session_empty-session',
+        version: 2,
+        cwd: workDirPath,
+        agents: { main: { homedir: path.join(emptyDir, 'agents', 'main'), type: 'main' } },
+      }),
     );
-    expect(context.sessionNotes?.rawAccess).toMatchObject({
-      kind: 'file',
-      path: contextPath,
-      redacted: true,
+    fs.writeFileSync(path.join(emptyDir, 'agents', 'main', 'wire.jsonl'), '', 'utf8');
+
+    const { parseKimiSessions } = await loadKimiParserWithHome(home);
+    const sessions = await parseKimiSessions();
+
+    expect(sessions).toHaveLength(0);
+  });
+
+  it('builds a session from raw UnifiedSession without re-scanning the index', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'kimi-parser-'));
+    tmpHomes.push(home);
+    const shareDir = path.join(home, '.kimi-code');
+    const workDirPath = '/tmp/project-direct-extract';
+    const sessionId = 'session_direct-extract-session';
+
+    const { sessionDir } = createKimiV2Session({
+      shareDir,
+      sessionId,
+      workDir: workDirPath,
+      wireRows: makeWire({ userText: 'Direct extraction' }),
     });
-    expect(context.sessionNotes?.fidelityWarnings).toEqual(
-      expect.arrayContaining([expect.stringContaining('legacy flat JSONL')]),
-    );
+
+    const { extractKimiContext } = await loadKimiParserWithHome(home);
+    const session: UnifiedSession = {
+      id: sessionId,
+      source: 'kimi',
+      cwd: workDirPath,
+      repo: '',
+      lines: 1,
+      bytes: fs.statSync(path.join(sessionDir, 'agents', 'main', 'wire.jsonl')).size,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      originalPath: sessionDir,
+      summary: 'Direct test',
+    };
+
+    const context = await extractKimiContext(session);
+    expect(context.recentMessages).toEqual([
+      { role: 'user', content: 'Direct extraction' },
+      { role: 'assistant', content: 'Done.' },
+    ]);
   });
 });

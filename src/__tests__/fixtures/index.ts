@@ -1,7 +1,6 @@
 /**
  * Test fixtures - sanitized session data for supported parsers
  */
-import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -998,105 +997,182 @@ export function createAntigravityFixture(): FixtureDir {
 }
 
 /**
- * Create a temporary directory with Kimi session fixtures
+ * Create a temporary directory with Kimi Code CLI v2 session fixtures
  *
- * Mirrors Kimi CLI's share-dir layout:
- *   ~/.kimi/kimi.json
- *   ~/.kimi/sessions/<md5(work_dir)>/<session_id>/{context.jsonl, metadata.json, wire.jsonl, state.json}
+ * Mirrors Kimi Code CLI (>= 0.39) share-dir layout:
+ *   ~/.kimi-code/session_index.jsonl
+ *   ~/.kimi-code/workspaces.json
+ *   ~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/
+ *     state.json
+ *     agents/main/wire.jsonl
  */
 export function createKimiFixture(): FixtureDir {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-kimi-'));
-  const kimiDir = path.join(root, '.kimi');
+  const kimiDir = path.join(root, '.kimi-code');
 
   const workDirPath = '/home/user/project';
-  const sessionId = 'test-kimi-session-1';
-  const workDirHash = createHash('md5').update(workDirPath, 'utf8').digest('hex');
-  const sessionDir = path.join(kimiDir, 'sessions', workDirHash, sessionId);
-  fs.mkdirSync(sessionDir, { recursive: true });
+  const sessionId = 'session_test-kimi-session-1';
+  const wdDirName = 'wd_test-project_abc123';
+  const sessionDir = path.join(kimiDir, 'sessions', wdDirName, sessionId);
+  const agentsMainDir = path.join(sessionDir, 'agents', 'main');
+  fs.mkdirSync(agentsMainDir, { recursive: true });
 
-  // ~/.kimi/kimi.json — work dir index used for resolving cwd from workdir hash
+  // session_index.jsonl — authoritative session index
   fs.writeFileSync(
-    path.join(kimiDir, 'kimi.json'),
-    JSON.stringify(
-      {
-        work_dirs: [{ path: workDirPath, kaos: 'local', last_session_id: sessionId }],
-      },
-      null,
-      2,
-    ),
+    path.join(kimiDir, 'session_index.jsonl'),
+    `${JSON.stringify({ sessionId, sessionDir, workDir: workDirPath })}\n`,
   );
 
-  // context.jsonl — includes string + block-array content plus special markers
-  const contextLines = [
+  // workspaces.json — wd dir name → workspace root
+  fs.writeFileSync(
+    path.join(kimiDir, 'workspaces.json'),
     JSON.stringify({
-      role: 'user',
-      content: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
-    }),
-    JSON.stringify({
-      role: 'assistant',
-      content: [
-        { type: 'think', think: 'Need to inspect login.ts and validate token flow first.' },
-        { type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' },
-      ],
-      tool_calls: [
-        {
-          type: 'function',
-          id: 'tc-001',
-          function: {
-            name: 'ReadFile',
-            arguments: JSON.stringify({ file_path: '/home/user/project/login.ts' }),
-          },
+      version: 1,
+      workspaces: {
+        [wdDirName]: {
+          root: workDirPath,
+          name: 'test-project',
+          created_at: '2026-08-11T15:11:30.058Z',
+          last_opened_at: '2026-08-12T07:56:32.341Z',
         },
-      ],
-    }),
-    JSON.stringify({ role: '_usage', token_count: 256 }),
-    JSON.stringify({ role: '_checkpoint', id: 0 }),
-    JSON.stringify({
-      role: 'user',
-      content: 'Great, please also add error handling',
-    }),
-    JSON.stringify({
-      role: 'assistant',
-      content: 'Done. I added try-catch blocks and proper error messages.',
-    }),
-  ];
-  fs.writeFileSync(path.join(sessionDir, 'context.jsonl'), contextLines.join('\n') + '\n');
-
-  // metadata.json — optional in Kimi, but included here for schema/compat coverage
-  fs.writeFileSync(
-    path.join(sessionDir, 'metadata.json'),
-    JSON.stringify(
-      {
-        session_id: sessionId,
-        title: 'Fix auth bug',
-        title_generated: false,
-        archived: false,
-        archived_at: null,
-        wire_mtime: null,
       },
-      null,
-      2,
-    ),
+      deleted_workspace_ids: [],
+    }),
   );
 
-  // wire.jsonl/state.json — present in real Kimi CLI session directories
-  fs.writeFileSync(
-    path.join(sessionDir, 'wire.jsonl'),
-    `${JSON.stringify({ timestamp: 1736935200, message: { type: 'TurnBegin', payload: { user_input: 'Fix the authentication bug in login.ts' } } })}\n`,
-  );
+  // state.json — v2 schema with agents.main.homedir
   fs.writeFileSync(
     path.join(sessionDir, 'state.json'),
     JSON.stringify(
       {
-        version: 1,
-        approval: { yolo: false, auto_approve_actions: [] },
-        dynamic_subagents: [],
-        additional_dirs: [],
+        id: sessionId,
+        version: 2,
+        cwd: workDirPath,
+        createdAt: 1786461111564,
+        updatedAt: 1786556548825,
+        archived: false,
+        agents: {
+          main: { homedir: agentsMainDir, type: 'main' },
+        },
+        custom: {},
+        lastPrompt: 'Fix the authentication bug in login.ts',
+        title: 'Fix auth bug',
+        isCustomTitle: false,
+        lastTurnReason: 'completed',
       },
       null,
       2,
     ),
   );
+
+  // agents/main/wire.jsonl — protocol 1.5 wire log with user turns,
+  // assistant text/think parts, tool calls, and usage records
+  const wireLines = [
+    JSON.stringify({ type: 'metadata', protocol_version: '1.5', created_at: 1786461111620 }),
+    JSON.stringify({
+      type: 'profile.bind',
+      modelAlias: 'kimi-code/kimi-for-coding',
+      profileName: 'agent',
+      thinkingEffort: 'on',
+    }),
+    JSON.stringify({
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: 'Fix the authentication bug in login.ts' }],
+      origin: { kind: 'user' },
+      time: 1786461111671,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', uuid: 'u1', turnId: '1', step: 1 },
+      time: 1786461111678,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        uuid: 'u2',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        part: { type: 'think', think: 'Need to inspect login.ts and validate token flow first.' },
+      },
+      time: 1786461111700,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        uuid: 'u3',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        part: { type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' },
+      },
+      time: 1786461111701,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.call',
+        uuid: 'u4',
+        turnId: '1',
+        step: 1,
+        stepUuid: 'u1',
+        toolCallId: 'tc-001',
+        name: 'ReadFile',
+        args: { file_path: '/home/user/project/login.ts' },
+      },
+      time: 1786461111702,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        parentUuid: 'u4',
+        toolCallId: 'tc-001',
+        result: { output: '// login.ts\n' },
+      },
+      time: 1786461111703,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: { type: 'step.end', uuid: 'u5', turnId: '1', step: 1, finishReason: 'tool_use' },
+      time: 1786461111704,
+    }),
+    JSON.stringify({
+      type: 'usage.record',
+      model: 'kimi-code/kimi-for-coding',
+      usage: { inputOther: 100, output: 50, inputCacheRead: 0, inputCacheCreation: 0 },
+      usageScope: 'turn',
+      time: 1786461111705,
+    }),
+    JSON.stringify({ type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 1000, time: 1786461111706 }),
+    JSON.stringify({
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: 'Great, please also add error handling' }],
+      origin: { kind: 'user' },
+      time: 1786461111710,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', uuid: 'u6', turnId: '2', step: 1 },
+      time: 1786461111718,
+    }),
+    JSON.stringify({
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        uuid: 'u7',
+        turnId: '2',
+        step: 1,
+        stepUuid: 'u6',
+        part: { type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' },
+      },
+      time: 1786461111720,
+    }),
+    JSON.stringify({ type: 'turn.ended', turnId: 2, reason: 'completed', durationMs: 800, time: 1786461111721 }),
+  ];
+  fs.writeFileSync(path.join(agentsMainDir, 'wire.jsonl'), wireLines.join('\n') + '\n');
 
   return {
     root,

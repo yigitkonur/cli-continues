@@ -1,59 +1,62 @@
-# Kimi CLI
+# Kimi Code CLI
 
 ## Raw storage
 
 - Documented fact:
-  - The official Kimi CLI repo creates sessions under `~/.kimi/sessions/<workdir-hash>/<session-id>/`.
-  - Each session directory has a `context.jsonl` history file and a `wire.jsonl` log file.
-  - `context.jsonl` is append-only and can also contain special sentinel records `_system_prompt`, `_usage`, and `_checkpoint`.
-  - `wire.jsonl` starts with a metadata line and then timestamped wire-message records.
+  - Kimi Code CLI v2 (>= 0.39) creates sessions under
+    `~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/`.
+  - Each session directory has `state.json` and `agents/main/wire.jsonl` (a
+    protocol-1.5 event log); there is no `context.jsonl` in the v2 layout.
+  - `session_index.jsonl` and `workspaces.json` are the authoritative
+    session/workspace registries.
 - Observed example:
-  - Local Kimi session directories match the `~/.kimi/sessions/<hash>/<session-id>/` pattern.
-  - On this machine, sampled `context.jsonl` files were zero bytes, while `wire.jsonl` files were non-empty and began with a metadata header plus `TurnBegin` records.
+  - Local session directories match the
+    `~/.kimi-code/sessions/wd_<name>_<hash>/session_<uuid>/` pattern and contain
+    `state.json` + `agents/main/wire.jsonl` (protocol 1.5).
 - Inference:
-  - `wire.jsonl` is important operational state, not just an optional side log.
-- Unresolved uncertainty:
-  - The exact conditions under which Kimi flushes full history into `context.jsonl` versus only writing `wire.jsonl` were not determined from the inspected sources.
+  - `wire.jsonl` is the primary conversation source, not an optional side log.
 
 ## Tool-call encoding
 
 - Documented fact:
-  - Official `kosong.message.Message` fields are `role`, `content`, `tool_calls`, `tool_call_id`, and `partial`.
-  - `tool_calls[]` items use `type: "function"`, `id`, and `function.{name,arguments}`.
-  - Thought blocks are serialized as content parts with `type: "think"` and `think`; optional `encrypted` also exists.
-  - `_usage` records store `token_count`.
+  - Tool calls are recorded as `tool.call` events inside
+    `context.append_loop_event`: `{toolCallId, name, args}`.
+  - `args` is a JSON object (e.g. `{command, cwd}` for `Bash`), not a string.
+  - Tool results are `tool.result` events with `result.output`.
+  - Think blocks are `content.part` events with `part.type === "think"` and a
+    `think` field.
+  - `usage.record` entries carry per-turn token totals.
 - Observed example:
-  - Local `wire.jsonl` records had a metadata header and timestamped message envelopes, but no local populated `context.jsonl` sample with tool calls was available.
-- Inference:
-  - The parser’s assumption that Kimi tool calls look like OpenAI-style `tool_calls[].function.name` is supported by the official message model.
+  - Local `wire.jsonl` had `tool.call`/`tool.result` pairs inside turns, with
+    `Bash`, `Read`, `Grep`, `Glob`, `Edit`, `Ask`, and `Agent` tools.
 
 ## Write, edit, delete, search, MCP, shell
 
 - Documented fact:
-  - Exact tool/function names are preserved in `tool_calls[].function.name`.
-  - Tool arguments are persisted as a JSON string in `tool_calls[].function.arguments`.
-- Unresolved uncertainty:
-  - No populated local `context.jsonl` example was available to enumerate actual built-in Kimi tool names in use.
+  - Exact tool/function names are preserved in `tool.call.name`.
+  - Tool arguments are stored as objects in `tool.call.args`.
+- Inference:
+  - The parser stringifies object args back into OpenAI-style
+    `tool_calls[].function.arguments` for the shared tool-summary pipeline.
 
 ## What `continues` abstracts away today
 
-- `src/parsers/kimi.ts` reads only `context.jsonl`.
-- Local evidence on this machine suggests that can miss real sessions when `context.jsonl` is empty but `wire.jsonl` is populated.
-- The parser also normalizes exact tool names and ignores `wire.jsonl` entirely.
+- `src/parsers/kimi.ts` reads `agents/main/wire.jsonl` (protocol 1.5) and
+  reconstructs user turns, assistant text/think blocks, and tool calls.
+- The parser normalizes exact tool names via the shared `SummaryCollector` and
+  does not surface `tool.result` output in the handoff.
 
 ## Direct-access recipe
 
 ```bash
-find ~/.kimi/sessions -name context.jsonl -o -name wire.jsonl | head -n 20
+find ~/.kimi-code/sessions -name wire.jsonl | head -n 20
 
-sed -n '1,8p' ~/.kimi/sessions/<hash>/<session-id>/wire.jsonl \
-  | jq -c '{keys:(keys|sort),type,messageKeys:(.message|keys? // []),messageType:(.message.type? // null)}'
+sed -n '1,8p' ~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl \
+  | jq -c '{keys:(keys|sort),type,eventType:(.event.type? // null)}'
 ```
 
 ## Sources
 
-- Accessed 2026-04-15: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/session.py
-- Accessed 2026-04-15: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/soul/context.py
-- Accessed 2026-04-15: https://github.com/MoonshotAI/kimi-cli/blob/main/src/kimi_cli/wire/file.py
-- Accessed 2026-04-15: https://github.com/MoonshotAI/kimi-cli/blob/main/packages/kosong/src/kosong/message.py
-- Observed locally on 2026-04-15: `~/.kimi/sessions/...`
+- Observed locally on 2026-08-28: kimi 0.39.1
+  `~/.kimi-code/sessions/wd_*/session_*/agents/main/wire.jsonl`
+- Official repo code: https://github.com/MoonshotAI/kimi-cli
