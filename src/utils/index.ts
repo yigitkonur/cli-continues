@@ -132,8 +132,10 @@ export async function buildIndex(force = false): Promise<UnifiedSession[]> {
   }
 
   // Parse all sessions from all sources in parallel — use allSettled so one
-  // broken parser doesn't crash the entire CLI
-  const results = await Promise.allSettled(Object.values(adapters).map((a) => a.parseSessions()));
+  // broken parser doesn't crash the entire CLI. Lightweight mode: the index
+  // only needs discovery metadata (id, cwd, timestamps, summary), not exact
+  // line counts or full-file timestamp scans.
+  const results = await Promise.allSettled(Object.values(adapters).map((a) => a.parseSessions({ lightweight: true })));
 
   const allSessions = results
     .filter((r): r is PromiseFulfilledResult<UnifiedSession[]> => r.status === 'fulfilled')

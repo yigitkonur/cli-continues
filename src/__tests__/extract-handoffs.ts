@@ -9,11 +9,13 @@ import {
   extractAmpContext,
   extractAntigravityContext,
   extractClaudeContext,
+  extractCommandCodeContext,
   extractClineContext,
   extractCodexContext,
   extractCopilotContext,
   extractCrushContext,
   extractCursorContext,
+  extractDevinContext,
   extractDroidContext,
   extractGeminiContext,
   extractKiloCodeContext,
@@ -22,14 +24,18 @@ import {
   extractOpenCodeContext,
   extractQwenCodeContext,
   extractRooCodeContext,
+  extractOmpContext,
+  extractPiContext,
   parseAmpSessions,
   parseAntigravitySessions,
   parseClaudeSessions,
+  parseCommandCodeSessions,
   parseClineSessions,
   parseCodexSessions,
   parseCopilotSessions,
   parseCrushSessions,
   parseCursorSessions,
+  parseDevinSessions,
   parseDroidSessions,
   parseGeminiSessions,
   parseKiloCodeSessions,
@@ -38,6 +44,8 @@ import {
   parseOpenCodeSessions,
   parseQwenCodeSessions,
   parseRooCodeSessions,
+  parseOmpSessions,
+  parsePiSessions,
 } from '../parsers/index.js';
 import type { SessionContext, SessionSource, UnifiedSession } from '../types/index.js';
 
@@ -61,6 +69,10 @@ const ALL_SOURCES: SessionSource[] = [
   'antigravity',
   'kimi',
   'qwen-code',
+  'pi',
+  'omp',
+  'devin',
+  'cmd',
 ];
 
 const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
@@ -80,6 +92,10 @@ const parsers: Record<SessionSource, () => Promise<UnifiedSession[]>> = {
   antigravity: parseAntigravitySessions,
   kimi: parseKimiSessions,
   'qwen-code': parseQwenCodeSessions,
+  pi: parsePiSessions,
+  omp: parseOmpSessions,
+  devin: parseDevinSessions,
+  cmd: parseCommandCodeSessions,
 };
 
 const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionContext>> = {
@@ -99,6 +115,10 @@ const extractors: Record<SessionSource, (s: UnifiedSession) => Promise<SessionCo
   antigravity: extractAntigravityContext,
   kimi: extractKimiContext,
   'qwen-code': extractQwenCodeContext,
+  pi: extractPiContext,
+  omp: extractOmpContext,
+  devin: extractDevinContext,
+  cmd: extractCommandCodeContext,
 };
 
 async function main() {

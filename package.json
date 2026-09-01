@@ -1,7 +1,7 @@
 {
   "name": "continues",
   "version": "4.1.1",
-  "description": "Never lose context. Resume any AI coding session across Claude Code, Codex, Copilot, Gemini CLI, Cursor, Amp, Cline, Roo Code, Kilo Code, Kiro, Crush, OpenCode, Droid & Antigravity.",
+  "description": "Never lose context. Resume any AI coding session across Claude Code, Codex, Copilot, Gemini CLI, Cursor, Amp, Cline, Roo Code, Kilo Code, Kiro, Crush, OpenCode, Droid, Antigravity, Pi, OMP, Devin & CommandCode.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -79,7 +79,7 @@
     "chalk": "^4.1.2",
     "commander": "^14.0.3",
     "ora": "^5.4.1",
-    "yaml": "^2.8.2",
+    "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -87,6 +87,6 @@
     "@types/node": "^25.1.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.10"
   }
 }

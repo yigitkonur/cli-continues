@@ -79,6 +79,28 @@ async function parseSessionInfo(filePath: string): Promise<{
         firstUserMessage = typeof msg.content === 'string' ? (msg.content as string) : '';
       }
 
+      // Newer rollouts carry user turns as response_item payloads; mirror the
+      // extraction filters used by `extractCodexContext` so discovery sees the
+      // same summary text and can stop scanning after the first real message.
+      if (!firstUserMessage && msg.type === 'response_item') {
+        const payload = msg.payload as Record<string, unknown> | undefined;
+        if (payload?.type === 'message' && payload.role === 'user') {
+          const parts = (payload.content ?? []) as Array<Record<string, unknown>>;
+          const text = parts
+            .filter((c) => c.type === 'input_text' && typeof c.text === 'string')
+            .map((c) => c.text as string)
+            .join('\n');
+          if (
+            text &&
+            !text.startsWith('<environment_context>') &&
+            !text.startsWith('<permissions') &&
+            !text.startsWith('# AGENTS.md')
+          ) {
+            firstUserMessage = text;
+          }
+        }
+      }
+
       if (meta && firstUserMessage) {
         return 'stop';
       }

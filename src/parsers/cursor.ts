@@ -3,10 +3,16 @@ import * as path from 'node:path';
 import type { VerbosityConfig } from '../config/index.js';
 import { getPreset } from '../config/index.js';
 import { logger } from '../logger.js';
-import type { ConversationMessage, SessionContext, SessionNotes, UnifiedSession } from '../types/index.js';
+import type {
+  ConversationMessage,
+  SessionContext,
+  SessionNotes,
+  SessionParseOptions,
+  UnifiedSession,
+} from '../types/index.js';
 import { CursorTranscriptLineSchema } from '../types/schemas.js';
 import { cleanUserQueryText, isRealUserMessage, isSystemContent } from '../utils/content.js';
-import { findFiles } from '../utils/fs-helpers.js';
+import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
@@ -332,7 +338,10 @@ async function resolveProjectCwd(projectDir: string, slug: string, cache: Map<st
 /**
  * Parse first few messages for summary
  */
-async function parseSessionInfo(filePath: string): Promise<{
+async function parseSessionInfo(
+  filePath: string,
+  options: SessionParseOptions = {},
+): Promise<{
   firstUserMessage: string;
   firstTimestamp?: Date;
   lineCount: number;
@@ -343,8 +352,10 @@ async function parseSessionInfo(filePath: string): Promise<{
   let firstTimestamp: Date | undefined;
   let model: string | undefined;
 
-  // Stream-count lines without full JSON parse (fast)
-  const stats = await getFileStats(filePath);
+  // Stream-count lines without full JSON parse (fast). Skipped in lightweight
+  // discovery: exact line counts are cosmetic metadata, and streaming entire
+  // transcripts dominates discovery time on machines with many sessions.
+  const stats = options.lightweight ? { lines: 0, bytes: fs.statSync(filePath).size } : await getFileStats(filePath);
 
   // Scan head for first user message. The 100-record cap is a discovery
   // optimization (avoids streaming megabyte transcripts twice — once here,
@@ -392,14 +403,14 @@ async function parseSessionInfo(filePath: string): Promise<{
 /**
  * Parse all Cursor sessions
  */
-export async function parseCursorSessions(): Promise<UnifiedSession[]> {
+export async function parseCursorSessions(options: SessionParseOptions = {}): Promise<UnifiedSession[]> {
   const files = await findTranscriptFiles();
   const sessionsById = new Map<string, UnifiedSession>();
   const projectCwdCache = new Map<string, string>();
 
-  for (const filePath of files) {
+  const parsed = await mapConcurrent(files, 16, async (filePath): Promise<UnifiedSession | null> => {
     try {
-      const { firstUserMessage, firstTimestamp, lineCount, bytes, model } = await parseSessionInfo(filePath);
+      const { firstUserMessage, firstTimestamp, lineCount, bytes, model } = await parseSessionInfo(filePath, options);
       // Do not gate on head-scan `messageCount`: a long session whose first
       // valid record sits past the 100-line head would be dropped here even
       // though `extractCursorContext()` reads the full file. The downstream
@@ -411,7 +422,7 @@ export async function parseCursorSessions(): Promise<UnifiedSession[]> {
       const summary = cleanSummary(firstUserMessage);
 
       const id = getSessionId(filePath);
-      const next: UnifiedSession = {
+      return {
         id,
         source: 'cursor',
         cwd,
@@ -424,23 +435,26 @@ export async function parseCursorSessions(): Promise<UnifiedSession[]> {
         summary: summary || undefined,
         model,
       };
-
-      // Discovery may surface the same logical session twice when a session
-      // dir contains both `<uuid>/transcript.jsonl` and `<uuid>.jsonl` (or a
-      // legacy `<uuid>/<uuid>.jsonl` left behind). Keep the most recently
-      // updated copy so the picker shows the canonical entry.
-      const existing = sessionsById.get(id);
-      if (!existing || existing.updatedAt.getTime() < next.updatedAt.getTime()) {
-        sessionsById.set(id, next);
-      }
     } catch (err) {
       logger.debug('cursor: skipping unparseable session', filePath, err);
-      // Skip files we can't parse
+      return null;
+    }
+  });
+
+  // Discovery may surface the same logical session twice when a session
+  // dir contains both `<uuid>/transcript.jsonl` and `<uuid>.jsonl` (or a
+  // legacy `<uuid>/<uuid>.jsonl` left behind). Keep the most recently
+  // updated copy so the picker shows the canonical entry.
+  for (const next of parsed) {
+    if (!next) continue;
+    const existing = sessionsById.get(next.id);
+    if (!existing || existing.updatedAt.getTime() < next.updatedAt.getTime()) {
+      sessionsById.set(next.id, next);
     }
   }
 
   return Array.from(sessionsById.values())
-    .filter((s) => s.bytes > 0 && s.lines > 0)
+    .filter((s) => s.bytes > 0 && (options.lightweight || s.lines > 0))
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 

@@ -100,7 +100,7 @@ describe('source-scoped session index', () => {
     const sessions = await getSessionsByCwd('/tmp/project');
 
     expect(sessions.map((session) => session.id)).toEqual(['claude-1', 'codex-1']);
-    expect(testState.parseClaude).toHaveBeenCalledWith();
-    expect(testState.parseCodex).toHaveBeenCalledWith();
+    expect(testState.parseClaude).toHaveBeenCalledWith({ lightweight: true });
+    expect(testState.parseCodex).toHaveBeenCalledWith({ lightweight: true });
   });
 });

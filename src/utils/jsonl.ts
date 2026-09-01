@@ -8,6 +8,15 @@ import { logger } from '../logger.js';
 
 const DEFAULT_MAX_LINE_CHARS = 16 * 1024 * 1024;
 
+// Default byte window for head scans. Session headers live in the first few
+// KB; the cap only matters for pathological records (e.g. megabyte pastes),
+// where the partial trailing line is skipped like any other invalid line.
+const HEAD_SCAN_MAX_BYTES = 512 * 1024;
+
+// Chunk size for head-scan reads. Small enough that callers which stop after
+// the first records never pull megabyte transcripts into memory.
+const HEAD_SCAN_CHUNK_BYTES = 64 * 1024;
+
 export interface JsonlReadOptions {
   /**
    * Maximum JSONL record size to buffer. Oversized records are skipped so
@@ -148,6 +157,10 @@ export async function readJsonlFile<T = unknown>(filePath: string, options?: Jso
  * Scan the first N lines of a JSONL file, calling `visitor` on each parsed line.
  * The visitor returns 'continue' to keep reading or 'stop' to abort early.
  * Useful for extracting metadata from session headers without reading the full file.
+ *
+ * Reads in fixed-size chunks and stops at the first of: visitor 'stop',
+ * maxLines visited, the byte window being exhausted, or EOF — so callers that
+ * find their metadata early never read deeper into the file.
  */
 export async function scanJsonlHead(
   filePath: string,
@@ -155,22 +168,81 @@ export async function scanJsonlHead(
   visitor: (parsed: unknown, lineIndex: number) => 'continue' | 'stop',
   options?: JsonlReadOptions,
 ): Promise<void> {
-  if (!fs.existsSync(filePath)) return;
+  if (maxLines <= 0) return;
 
-  await scanJsonlLines(
-    filePath,
-    (line, lineIndex) => {
-      if (lineIndex >= maxLines) return 'stop';
-      try {
-        const parsed = JSON.parse(line);
-        return visitor(parsed, lineIndex);
-      } catch {
-        logger.debug('jsonl: skipping invalid line at index', lineIndex, 'in', filePath);
+  const maxLineChars = options?.maxLineChars ?? DEFAULT_MAX_LINE_CHARS;
+  const maxBytes = options?.maxBytes ?? HEAD_SCAN_MAX_BYTES;
+  const decoder = new StringDecoder('utf8');
+  const buffer = Buffer.allocUnsafe(Math.min(HEAD_SCAN_CHUNK_BYTES, maxBytes));
+
+  let lineBuffer = '';
+  let lineIndex = 0;
+  let totalBytes = 0;
+  let atEof = false;
+  let stopped = false;
+
+  try {
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+      while (!stopped) {
+        const want = Math.min(buffer.length, maxBytes - totalBytes);
+        if (want <= 0) break;
+        const { bytesRead: chunkBytes } = await handle.read(buffer, 0, want, null);
+        if (chunkBytes === 0) {
+          atEof = true;
+          break;
+        }
+        totalBytes += chunkBytes;
+
+        const text = lineBuffer + decoder.write(buffer.subarray(0, chunkBytes));
+        let start = 0;
+        while (lineIndex < maxLines) {
+          const newlineIndex = text.indexOf('\n', start);
+          if (newlineIndex === -1) {
+            lineBuffer = text.slice(start);
+            break;
+          }
+          let line = text.slice(start, newlineIndex);
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          start = newlineIndex + 1;
+          lineBuffer = '';
+
+          if (line.length > maxLineChars) {
+            logger.debug('jsonl: skipping oversized line at index', lineIndex, 'in', filePath);
+            lineIndex++;
+            continue;
+          }
+          try {
+            const parsed: unknown = JSON.parse(line);
+            if (visitor(parsed, lineIndex) === 'stop') {
+              stopped = true;
+              break;
+            }
+          } catch {
+            logger.debug('jsonl: skipping invalid line at index', lineIndex, 'in', filePath);
+          }
+          lineIndex++;
+        }
+        if (stopped || lineIndex >= maxLines) break;
       }
-      return 'continue';
-    },
-    options,
-  );
+
+      // At true EOF, a trailing partial line (no final newline) is still a
+      // visitable record. A window cut mid-line is not: it stays unvisited.
+      if (!stopped && atEof && lineBuffer.length > 0 && lineBuffer.length <= maxLineChars) {
+        const line = lineBuffer.endsWith('\r') ? lineBuffer.slice(0, -1) : lineBuffer;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          visitor(parsed, lineIndex);
+        } catch {
+          logger.debug('jsonl: skipping invalid line at index', lineIndex, 'in', filePath);
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+  } catch (err) {
+    logger.debug('jsonl: failed to read head', filePath, err);
+  }
 }
 
 /**

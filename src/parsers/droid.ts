@@ -21,7 +21,7 @@ import type {
 } from '../types/schemas.js';
 import { DroidSettingsSchema } from '../types/schemas.js';
 import { isSystemContent } from '../utils/content.js';
-import { findFiles } from '../utils/fs-helpers.js';
+import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
 import { generateHandoffMarkdown } from '../utils/markdown.js';
 import { cleanSummary, extractRepoFromCwd, homeDir } from '../utils/parser-helpers.js';
@@ -36,6 +36,8 @@ import { truncate } from '../utils/tool-summarizer.js';
 const DROID_PROJECTS_DIR = path.join(homeDir(), '.factory', 'projects');
 const DROID_SESSIONS_DIR = path.join(homeDir(), '.factory', 'sessions');
 const DROID_SESSION_DIRS = [DROID_PROJECTS_DIR, DROID_SESSIONS_DIR];
+/** Files up to this size get exact line counts even in lightweight discovery. */
+const SMALL_FILE_EXACT_COUNT_BYTES = 8 * 1024;
 
 /**
  * Find all Droid session JSONL files.
@@ -115,7 +117,12 @@ async function parseSessionInfo(
             if (block.text.includes('<system-reminder>') && block.text.includes('fatal: not a git repository')) {
               cwdIsNotGitRepo = true;
             }
-            if (cleaned && !cleaned.startsWith('<') && !cleaned.startsWith('/') && !cleaned.includes('Session Handoff')) {
+            if (
+              cleaned &&
+              !cleaned.startsWith('<') &&
+              !cleaned.startsWith('/') &&
+              !cleaned.includes('Session Handoff')
+            ) {
               firstUserMessage = cleaned;
               break;
             }
@@ -128,7 +135,10 @@ async function parseSessionInfo(
   };
 
   if (options.lightweight) {
-    await scanJsonlHead(filePath, 100, visitor);
+    await scanJsonlHead(filePath, 100, (parsed) => {
+      visitor(parsed);
+      return sessionStart && firstUserMessage ? 'stop' : 'continue';
+    });
   } else {
     await scanJsonlFile(filePath, visitor);
   }
@@ -144,16 +154,23 @@ export async function parseDroidSessions(options: SessionParseOptions = {}): Pro
   const sessionsById = new Map<string, UnifiedSession>();
   const lightweight = options.lightweight === true;
 
-  for (const filePath of files) {
+  const parsed = await mapConcurrent(files, 16, async (filePath): Promise<UnifiedSession | null> => {
     try {
       const { sessionStart, firstUserMessage, firstTimestamp, lastTimestamp, cwdIsNotGitRepo } = await parseSessionInfo(
         filePath,
         options,
       );
-      if (!sessionStart) continue;
+      if (!sessionStart) return null;
 
       const fileStats = fs.statSync(filePath);
-      const stats = lightweight ? { lines: 0, bytes: fileStats.size } : await getFileStats(filePath);
+      // Exact line counts are only computed for small files: large transcripts
+      // skip counting in lightweight discovery, while tiny files (session
+      // stubs with a single session_start row) are cheap to measure exactly so
+      // they can still be filtered as empty.
+      const stats =
+        lightweight && fileStats.size > SMALL_FILE_EXACT_COUNT_BYTES
+          ? { lines: 0, bytes: fileStats.size }
+          : await getFileStats(filePath);
       const settings = readSettings(filePath);
 
       const workspaceSlug = path.basename(path.dirname(filePath));
@@ -161,10 +178,13 @@ export async function parseDroidSessions(options: SessionParseOptions = {}): Pro
 
       const summary = cleanSummary(firstUserMessage);
 
+      // Lightweight discovery stops at the first user message, so transcript
+      // timestamps only cover the session head; file mtime reflects the last
+      // write and keeps "newest first" ordering accurate.
       const createdAt = firstTimestamp ? new Date(firstTimestamp) : fileStats.birthtime;
-      const updatedAt = lastTimestamp ? new Date(lastTimestamp) : fileStats.mtime;
+      const updatedAt = lightweight ? fileStats.mtime : lastTimestamp ? new Date(lastTimestamp) : fileStats.mtime;
 
-      const nextSession: UnifiedSession = {
+      return {
         id: sessionStart.id,
         source: 'droid',
         cwd,
@@ -177,22 +197,25 @@ export async function parseDroidSessions(options: SessionParseOptions = {}): Pro
         summary: summary || sessionStart.sessionTitle || undefined,
         model: settings?.model,
       };
-
-      const existing = sessionsById.get(nextSession.id);
-      const existingTime = existing?.updatedAt.getTime() ?? 0;
-      const nextTime = nextSession.updatedAt.getTime();
-      const nextIsProjectTranscript = nextSession.originalPath.startsWith(DROID_PROJECTS_DIR);
-      if (!existing || existingTime < nextTime || (existingTime === nextTime && nextIsProjectTranscript)) {
-        sessionsById.set(nextSession.id, nextSession);
-      }
     } catch (err) {
       logger.debug('droid: skipping unparseable session', filePath, err);
-      // Skip files we can't parse
+      return null;
+    }
+  });
+
+  for (const nextSession of parsed) {
+    if (!nextSession) continue;
+    const existing = sessionsById.get(nextSession.id);
+    const existingTime = existing?.updatedAt.getTime() ?? 0;
+    const nextTime = nextSession.updatedAt.getTime();
+    const nextIsProjectTranscript = nextSession.originalPath.startsWith(DROID_PROJECTS_DIR);
+    if (!existing || existingTime < nextTime || (existingTime === nextTime && nextIsProjectTranscript)) {
+      sessionsById.set(nextSession.id, nextSession);
     }
   }
 
   return Array.from(sessionsById.values())
-    .filter((s) => lightweight || s.lines > 1)
+    .filter((s) => s.lines === 0 || s.lines > 1)
     .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 

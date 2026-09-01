@@ -18,6 +18,7 @@ import {
   createCopilotFixture,
   createCrushFixture,
   createCursorFixture,
+  createDevinFixture,
   createDroidFixture,
   createGeminiFixture,
   createKiloCodeFixture,
@@ -145,6 +146,60 @@ function parseCodexFixtureMessages(filePath: string): ConversationMessage[] {
       /* skip */
     }
   }
+  return messages;
+}
+
+function parseDevinFixtureMessages(dbPath: string, sessionId: string): ConversationMessage[] {
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+  const messages: ConversationMessage[] = [];
+
+  try {
+    const rows = db
+      .prepare(
+        'SELECT node_id, parent_node_id, chat_message, created_at FROM message_nodes WHERE session_id = ? ORDER BY node_id ASC',
+      )
+      .all(sessionId) as Array<{
+      node_id: number;
+      parent_node_id: number | null;
+      chat_message: string;
+      created_at: number;
+    }>;
+
+    const byId = new Map(rows.map((row) => [row.node_id, row]));
+    // Walk the main chain (tip = max node_id) root-first, like the parser does.
+    const tip = Math.max(...rows.map((row) => row.node_id));
+    const chain: typeof rows = [];
+    const visited = new Set<number>();
+    let cursor: number | undefined = tip;
+    while (cursor !== undefined && !visited.has(cursor)) {
+      visited.add(cursor);
+      const row = byId.get(cursor);
+      if (!row) break;
+      chain.unshift(row);
+      cursor = row.parent_node_id ?? undefined;
+    }
+
+    for (const row of chain) {
+      let chat: { role?: string; content?: string };
+      try {
+        chat = JSON.parse(row.chat_message);
+      } catch {
+        continue;
+      }
+      if (chat.role !== 'user' && chat.role !== 'assistant') continue;
+      const text = (chat.content ?? '').trim();
+      if (!text) continue;
+      messages.push({
+        role: chat.role,
+        content: text,
+        timestamp: new Date(row.created_at * 1000),
+      });
+    }
+  } finally {
+    db.close();
+  }
+
   return messages;
 }
 
@@ -460,6 +515,7 @@ beforeAll(() => {
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
   fixtures.crush = createCrushFixture();
+  fixtures.devin = createDevinFixture();
 
   // Build contexts from fixtures
   const now = new Date();
@@ -738,6 +794,31 @@ beforeAll(() => {
     markdown: generateHandoffMarkdown(crushSession, crushMsgs, [], [], []),
   };
 
+  // Devin (SQLite) — driven by the shared createDevinFixture()
+  const devinDbPath = path.join(fixtures.devin.root, 'sessions.db');
+  const devinSession: UnifiedSession = {
+    id: 'test-devin-session-1',
+    source: 'devin',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    lines: 8,
+    bytes: 0,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: devinDbPath,
+    summary: 'Fix auth bug',
+    model: 'claude-opus-4-6',
+  };
+  const devinMsgs = parseDevinFixtureMessages(devinDbPath, 'test-devin-session-1');
+  contexts.devin = {
+    session: devinSession,
+    recentMessages: devinMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(devinSession, devinMsgs, [], [], []),
+  };
+
   // Cline
   const clineFile = fs
     .readdirSync(fixtures.cline.root, { recursive: true })
@@ -906,6 +987,35 @@ beforeAll(() => {
     toolSummaries: [],
     markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
   };
+
+  // Pi-family CLIs share the same JSONL session format.
+  for (const source of ['pi', 'omp', 'cmd'] as const) {
+    const session: UnifiedSession = {
+      id: `test-${source}-session-1`,
+      source,
+      cwd: '/home/user/project',
+      repo: 'user/project',
+      lines: 2,
+      bytes: 500,
+      createdAt: now,
+      updatedAt: now,
+      originalPath: `/tmp/test-${source}-session.jsonl`,
+      summary: 'Fix auth bug',
+      model: 'claude-sonnet-4',
+    };
+    const messages: ConversationMessage[] = [
+      { role: 'user', content: 'Fix the authentication bug' },
+      { role: 'assistant', content: 'The token validation was missing.' },
+    ];
+    contexts[source] = {
+      session,
+      recentMessages: messages,
+      filesModified: [],
+      pendingTasks: [],
+      toolSummaries: [],
+      markdown: generateHandoffMarkdown(session, messages, [], [], []),
+    };
+  }
 });
 
 afterAll(() => {
@@ -1050,6 +1160,19 @@ describe('Low-Level Fixture Parsing', () => {
       expect(msg.content).not.toContain('tool_use');
       expect(msg.content).not.toContain('tool_result');
     }
+  });
+
+  it('Devin: extracts user and assistant text messages from the main chain', () => {
+    const msgs = contexts.devin.recentMessages;
+    expect(msgs.length).toBe(4);
+    expect(msgs[0].role).toBe('user');
+    expect(msgs[0].content).toContain('Fix the authentication bug');
+    expect(msgs[1].role).toBe('assistant');
+    expect(msgs[1].content).toContain('token validation was missing');
+    expect(msgs[2].role).toBe('user');
+    expect(msgs[2].content).toContain('error handling');
+    expect(msgs[3].role).toBe('assistant');
+    expect(msgs[3].content).toContain('try-catch');
   });
 });
 

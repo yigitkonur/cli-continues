@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+
+- **Devin CLI support** — discover, parse, and resume Devin CLI sessions from `~/.local/share/devin/cli/sessions.db` (plus the `cli-next` install channel; override with `DEVIN_CLI_HOME`), with native resume via `devin -r <id>`. Conversation extraction walks the `message_nodes` tree from `main_chain_id`, pairs tool results with their calls, and classifies tool activity (exec/read/edit/grep/glob/web fetch/search/subagent), bringing supported tools to 20 and cross-tool handoff paths to 380
+
+### Performance
+
+- **~7x faster index rebuild** — the unified session index now builds with lightweight discovery (head-scan metadata) instead of full-file parses: ~14.8s → ~2.1s cold on a machine with ~3,400 sessions; warm cache hits stay ~0.25s
+- **Parallel session discovery** — the sequential per-file loops in the Droid, Pi/OMP, Cursor, and CommandCode parsers now run with bounded concurrency (16), matching the Claude/Codex/Kiro parsers
+- **Faster JSONL head scans** — `scanJsonlHead` reads bounded 64KB chunks with a single file handle per scan instead of spawning a read stream per file, and stops as soon as the visitor has what it needs
+- **Codex summaries fixed** — discovery now recognizes user turns in `response_item` payloads (mirroring context extraction filters), so codex sessions stop scanning early and 783/900 previously "(no summary)" sessions now show real summaries
+- **Accurate lightweight ordering** — Droid, Pi/OMP, and CommandCode lightweight discovery uses file mtime for `updatedAt` (matching Claude), so active sessions sort correctly; empty session stubs are still filtered via exact line counts on small files only
+
+
+## [4.1.1] - 2026-08-05
+
+### Added
+
+- **Pi Coding Agent support** — discover, parse, and resume Pi sessions from `$PI_CODING_AGENT_SESSION_DIR` (default `~/.pi/agent/sessions/`), with native resume via `pi --session <id>`
+- **Oh My Pi support** — discover, parse, and resume OMP sessions from `~/.omp/agent/sessions/`, with native resume via `omp --resume <id>`
+- **CommandCode support** — discover, parse, and resume CommandCode sessions (legacy direct-message and Pi-style transcripts) from `~/.commandcode/projects/`, with native resume via `cmd --resume <id>`
+- **Cross-tool handoff** — Pi, OMP, and CommandCode now participate in any-to-any handoffs, bringing supported tools to 19 and cross-tool handoff paths to 342
+- **Parser tests and fixtures** — unit and e2e conversion coverage for Pi/OMP/CommandCode parsing
+
+### Dependencies
+
+- Upgrade `yaml` to `^2.8.3`
+- Upgrade `vitest` to `^4.1.10`
+
+
 ## [4.1.0] - 2026-03-02
 
 ### Session Origin Tracking

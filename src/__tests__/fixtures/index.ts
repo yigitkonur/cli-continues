@@ -594,6 +594,124 @@ export function createCrushFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary Devin CLI sessions.db SQLite fixture matching the schema
+ * the Devin parser reads (see src/parsers/devin.ts). Mirrors the real layout:
+ * a `sessions` row plus a `message_nodes` conversation tree whose
+ * `chat_message` blobs carry role/content/tool_calls.
+ */
+export function createDevinFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-devin-'));
+  const dbPath = path.join(root, 'sessions.db');
+
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbPath);
+
+  db.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      working_directory TEXT,
+      backend_type TEXT,
+      model TEXT,
+      agent_mode TEXT,
+      created_at INTEGER,
+      last_activity_at INTEGER,
+      title TEXT,
+      main_chain_id INTEGER,
+      shell_last_seen_index INTEGER,
+      cogs_json TEXT,
+      workspace_dirs TEXT,
+      hidden INTEGER,
+      metadata TEXT
+    );
+    CREATE TABLE message_nodes (
+      row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      node_id INTEGER,
+      parent_node_id INTEGER,
+      chat_message TEXT,
+      created_at INTEGER,
+      metadata TEXT
+    );
+  `);
+
+  // Unix-second epochs, matching the real Devin CLI.
+  const t0 = 1_734_000_000;
+  db.prepare(
+    `INSERT INTO sessions (
+       id, working_directory, backend_type, model, agent_mode, created_at,
+       last_activity_at, title, main_chain_id, shell_last_seen_index,
+       cogs_json, workspace_dirs, hidden, metadata
+     ) VALUES (?, ?, 'local', 'claude-opus-4-6', 'exec', ?, ?, ?, 8, 0, '[]', '[]', 0, '{}')`,
+  ).run('test-devin-session-1', '/home/user/project', t0, t0 + 40, 'Fix auth bug');
+
+  const insertNode = db.prepare(
+    `INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at, metadata)
+     VALUES (?, ?, ?, ?, ?, NULL)`,
+  );
+
+  const node = (nodeId: number, parentId: number | null, chat: Record<string, unknown>, createdAt: number): void => {
+    insertNode.run('test-devin-session-1', nodeId, parentId, JSON.stringify(chat), createdAt);
+  };
+
+  node(1, null, { message_id: 'm1', role: 'system', content: 'You are Devin, an interactive command line agent.' }, t0);
+  node(2, 1, { message_id: 'm2', role: 'user', content: 'Fix the authentication bug in login.ts' }, t0 + 10);
+  node(
+    3,
+    2,
+    {
+      message_id: 'm3',
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'tc-001',
+          name: 'read',
+          arguments: { file_path: '/home/user/project/login.ts' },
+          index: 0,
+          kind: 'function',
+        },
+      ],
+    },
+    t0 + 15,
+  );
+  node(4, 3, { message_id: 'm4', role: 'tool', content: 'export function login() { ... }' }, t0 + 16);
+  node(
+    5,
+    4,
+    {
+      message_id: 'm5',
+      role: 'assistant',
+      content: 'I found the issue in login.ts. The token validation was missing.',
+      tool_calls: [
+        {
+          id: 'tc-002',
+          name: 'edit',
+          arguments: { file_path: '/home/user/project/login.ts', old_str: 'old code', new_str: 'new code' },
+          index: 0,
+          kind: 'function',
+        },
+      ],
+    },
+    t0 + 20,
+  );
+  node(6, 5, { message_id: 'm6', role: 'tool', content: 'File edited successfully' }, t0 + 21);
+  node(7, 6, { message_id: 'm7', role: 'user', content: 'Great, please also add error handling' }, t0 + 30);
+  node(
+    8,
+    7,
+    { message_id: 'm8', role: 'assistant', content: 'Done. I added try-catch blocks and proper error messages.' },
+    t0 + 40,
+  );
+
+  db.close();
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create a temporary directory with Droid session fixtures
  */
 export function createDroidFixture(): FixtureDir {

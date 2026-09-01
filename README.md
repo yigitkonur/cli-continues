@@ -14,11 +14,11 @@ https://github.com/user-attachments/assets/6945f3a5-bd19-45ab-9702-6df8e165a734
 
 ## Supported tools
 
-16 AI coding agents, any-to-any handoff:
+20 AI coding agents, any-to-any handoff:
 
-**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code**
+**Claude Code** · **Codex** · **GitHub Copilot CLI** · **Gemini CLI** · **Cursor** · **Amp** · **Cline** · **Roo Code** · **Kilo Code** · **Kiro** · **Crush** · **OpenCode** · **Factory Droid** · **Antigravity** · **Kimi CLI** · **Qwen Code** · **Pi Coding Agent** · **Oh My Pi** · **Devin CLI** · **CommandCode**
 
-That's 240 cross-tool handoff paths. Pick any source, pick any destination — it works.
+That's 380 cross-tool handoff paths. Pick any source, pick any destination — it works.
 
 ## Install
 
@@ -30,7 +30,7 @@ npm install -g continues    # gives you `continues` and `cont`
 
 ## How it works
 
-1. **Discovery** — scans session directories for all 16 tools
+1. **Discovery** — scans session directories for all 20 tools
 2. **Parsing** — reads each tool's native format (JSONL, JSON, SQLite, YAML — they're all different)
 3. **Extraction** — pulls recent messages, file changes, tool activity, AI reasoning
 4. **Handoff** — generates a structured context doc and injects it into the target tool
@@ -46,7 +46,7 @@ Just run `continues`. It finds all your sessions, lets you pick one, and asks wh
 ```
 ┌  continues — pick up where you left off
 │
-│  Found 1842 sessions across 16 CLI tools
+│  Found 1842 sessions across 19 CLI tools
 │    claude: 723  codex: 72  cursor: 68  copilot: 39  ...
 │
 ◆  Select a session
@@ -76,9 +76,12 @@ continues kiro          # latest Kiro
 continues crush         # latest Crush
 continues kimi          # latest Kimi
 continues qwen-code     # latest Qwen Code
+continues pi            # latest Pi session
+continues omp           # latest Oh My Pi session
+continues cmd           # latest CommandCode session
 ```
 
-Works for all 16 tools. This uses **native resume** — same tool, full history, no context injection.
+Works for all 20 tools. This uses **native resume** — same tool, full history, no context injection.
 
 ### Cross-tool handoff
 
@@ -194,6 +197,9 @@ Every tool stores sessions differently — different formats, different schemas,
 | Antigravity | PB + brain artifacts + optional live RPC | `~/.gemini/antigravity/` |
 | Kimi CLI | JSONL + JSON | `~/.kimi/sessions/` |
 | Qwen Code | JSONL | `~/.qwen/projects/*/chats/` |
+| Pi Coding Agent | JSONL | `~/.pi/agent/sessions/` |
+| Oh My Pi | JSONL | `~/.omp/agent/sessions/` |
+| CommandCode | JSONL + metadata | `~/.commandcode/projects/` |
 
 All reads are **read-only** — `continues` never modifies your session files. Index cached at `~/.continues/sessions.jsonl` (5-min TTL, auto-refresh).
 
