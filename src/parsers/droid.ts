@@ -289,6 +289,25 @@ function extractPendingTasks(events: DroidEvent[]): string[] {
   const todosText = typeof lastTodo.todos === 'string' ? lastTodo.todos : lastTodo.todos?.todos || '';
   if (!todosText) return tasks;
 
+  if (Array.isArray(todosText)) {
+    for (const todo of todosText) {
+      if (
+        todo &&
+        ['pending', 'in_progress'].includes(todo.status) &&
+        typeof todo.content === 'string' &&
+        todo.content.trim()
+      ) {
+        tasks.push(todo.content.trim());
+
+        if (tasks.length >= 5) {
+          break;
+        }
+      }
+    }
+
+    return tasks;
+  }
+
   for (const line of todosText.split('\n')) {
     const match = line.match(/^\d+\.\s*\[(in_progress|pending)\]\s+(.+)/);
     if (match && tasks.length < 5) {
