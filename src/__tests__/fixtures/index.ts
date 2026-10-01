@@ -1202,6 +1202,188 @@ export function createQwenCodeFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary Grok Build home.
+ * Storage: $GROK_HOME/sessions/<encodeURIComponent(cwd)>/<session-id>/{summary.json,updates.jsonl}
+ * Callers that parse through the adapter must set GROK_HOME to `root`.
+ */
+export function createGrokFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-grok-'));
+  const cwd = '/home/user/project';
+  const sessionId = 'test-grok-session-1';
+  const sessionDir = path.join(root, 'sessions', encodeURIComponent(cwd), sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true });
+
+  const updates = [
+    JSON.stringify({
+      timestamp: 1736935201,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'user_message_chunk',
+          content: { type: 'text', text: 'Fix the authentication bug in login.ts' },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935202,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_thought_chunk',
+          content: { type: 'text', text: 'Need to inspect login.ts and validate token flow first.' },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935203,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'I found the issue in login.ts. The token validation was missing.' },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935204,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc-read',
+          title: 'read_file',
+          rawInput: JSON.stringify({ target_file: '/home/user/project/login.ts' }),
+          _meta: { 'x.ai/tool': { name: 'read_file' } },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935205,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-read',
+          status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'export function login() {}' } }],
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935206,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc-edit',
+          rawInput: JSON.stringify({
+            file_path: '/home/user/project/login.ts',
+            old_string: 'login()',
+            new_string: 'validateToken(token)',
+          }),
+          _meta: { 'x.ai/tool': { name: 'search_replace' } },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935207,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-edit',
+          status: 'completed',
+        },
+      },
+    }),
+    '{"timestamp":',
+    JSON.stringify({
+      timestamp: 1736935210,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'user_message_chunk',
+          content: { type: 'text', text: 'Great, please also add error handling' },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935215,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Done. I added try-catch blocks and proper error messages.' },
+        },
+      },
+    }),
+    JSON.stringify({
+      timestamp: 1736935216,
+      method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'plan',
+          entries: [
+            { content: 'Inspect login.ts', status: 'completed' },
+            { content: 'Add error handling', status: 'pending' },
+          ],
+        },
+      },
+    }),
+  ];
+  fs.writeFileSync(path.join(sessionDir, 'updates.jsonl'), `${updates.join('\n')}\n`);
+  fs.writeFileSync(
+    path.join(sessionDir, 'summary.json'),
+    JSON.stringify(
+      {
+        info: { id: sessionId, cwd },
+        session_summary: 'Fix auth bug',
+        generated_title: 'Fix auth bug',
+        created_at: '2026-01-15T10:00:01.000Z',
+        updated_at: '2026-01-15T10:05:00.000Z',
+        num_messages: 8,
+        num_chat_messages: 4,
+        current_model_id: 'grok-4.7',
+        head_branch: 'main',
+        head_commit: 'abc123def456',
+        git_remotes: ['git@github.com:user/project.git'],
+      },
+      null,
+      2,
+    ),
+  );
+  fs.writeFileSync(
+    path.join(sessionDir, 'usage.json'),
+    JSON.stringify({
+      sessionId,
+      session: {
+        inputTokens: 1200,
+        outputTokens: 300,
+        cachedReadTokens: 100,
+        cacheCreationTokens: 20,
+        reasoningTokens: 40,
+        primaryModelId: 'grok-4.7',
+      },
+    }),
+  );
+
+  return {
+    root,
+    cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+/**
  * Create OpenCode JSON-only fixture (legacy format)
  */
 export function createOpenCodeJsonFixture(): FixtureDir {

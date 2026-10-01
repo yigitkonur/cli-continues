@@ -20,6 +20,7 @@ import {
   createCursorFixture,
   createDroidFixture,
   createGeminiFixture,
+  createGrokFixture,
   createKiloCodeFixture,
   createKimiFixture,
   createKiroFixture,
@@ -402,6 +403,29 @@ function parseKimiFixtureMessages(filePath: string): ConversationMessage[] {
   return messages;
 }
 
+function parseGrokFixtureMessages(filePath: string): ConversationMessage[] {
+  const content = fs.readFileSync(filePath, 'utf8');
+  const messages: ConversationMessage[] = [];
+
+  for (const line of content.trim().split('\n')) {
+    try {
+      const parsed = JSON.parse(line) as {
+        params?: { update?: { sessionUpdate?: string; content?: { text?: string } } };
+      };
+      const update = parsed.params?.update;
+      const kind = update?.sessionUpdate;
+      const text = update?.content?.text;
+      if (!text) continue;
+      if (kind === 'user_message_chunk') messages.push({ role: 'user', content: text });
+      if (kind === 'agent_message_chunk') messages.push({ role: 'assistant', content: text });
+    } catch {
+      /* skip malformed fixture lines */
+    }
+  }
+
+  return messages;
+}
+
 function parseQwenCodeFixtureMessages(filePath: string): ConversationMessage[] {
   const content = fs.readFileSync(filePath, 'utf8');
   const lines = content.trim().split('\n');
@@ -459,6 +483,7 @@ beforeAll(() => {
   fixtures['kilo-code'] = createKiloCodeFixture();
   fixtures.antigravity = createAntigravityFixture();
   fixtures['qwen-code'] = createQwenCodeFixture();
+  fixtures.grok = createGrokFixture();
   fixtures.crush = createCrushFixture();
 
   // Build contexts from fixtures
@@ -905,6 +930,36 @@ beforeAll(() => {
     pendingTasks: [],
     toolSummaries: [],
     markdown: generateHandoffMarkdown(qwenCodeSession, qwenCodeMsgs, [], [], []),
+  };
+
+  // Grok Build
+  const grokFile = fs
+    .readdirSync(fixtures.grok.root, { recursive: true })
+    .map((file) => path.join(fixtures.grok.root, file as string))
+    .find((file) => file.endsWith(`${path.sep}updates.jsonl`) || file.endsWith('/updates.jsonl'));
+  if (!grokFile) throw new Error('grok fixture is missing updates.jsonl');
+  const grokSession: UnifiedSession = {
+    id: 'test-grok-session-1',
+    source: 'grok',
+    cwd: '/home/user/project',
+    repo: 'user/project',
+    branch: 'main',
+    lines: 4,
+    bytes: fs.statSync(grokFile).size,
+    createdAt: now,
+    updatedAt: now,
+    originalPath: path.dirname(grokFile),
+    summary: 'Fix auth bug',
+    model: 'grok-4.7',
+  };
+  const grokMsgs = parseGrokFixtureMessages(grokFile);
+  contexts.grok = {
+    session: grokSession,
+    recentMessages: grokMsgs,
+    filesModified: [],
+    pendingTasks: [],
+    toolSummaries: [],
+    markdown: generateHandoffMarkdown(grokSession, grokMsgs, [], [], []),
   };
 });
 

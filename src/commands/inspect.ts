@@ -27,6 +27,7 @@ function getSessionFormat(source: string, session?: UnifiedSession): SessionForm
     case 'codex':
     case 'droid':
     case 'cursor':
+    case 'grok':
       return 'jsonl';
     case 'antigravity': {
       // Antigravity normally stores sessions as protobuf-backed binary

@@ -117,6 +117,23 @@ describe('cross-tool forwarding', () => {
     expect(resolved.passthroughArgs).toEqual([]);
   });
 
+  it('maps grok auto-approve, plan, and model flags onto the grok CLI', () => {
+    const resolved = resolveCrossToolForwarding('grok', {
+      rawArgs: ['--yolo', '--model', 'grok-4.7', '--cd', '/tmp/work'],
+    });
+
+    expect(resolved.mappedArgs).toEqual(['--always-approve', '--model', 'grok-4.7', '--cwd', '/tmp/work']);
+    expect(resolved.passthroughArgs).toEqual([]);
+  });
+
+  it('maps grok plan forwarding into permission-mode plan', () => {
+    const resolved = resolveCrossToolForwarding('grok', {
+      rawArgs: ['--plan'],
+    });
+
+    expect(resolved.mappedArgs).toEqual(['--permission-mode', 'plan']);
+  });
+
   it('maps qwen-code allow-all forwarding into approval-mode yolo', () => {
     const resolved = resolveCrossToolForwarding('qwen-code', {
       rawArgs: ['--allow-all'],
@@ -149,6 +166,7 @@ describe('cross-tool forwarding', () => {
     expect(getDefaultHandoffInitArgs('kiro')).toEqual([]);
     expect(getDefaultHandoffInitArgs('crush')).toEqual([]);
     expect(getDefaultHandoffInitArgs('qwen-code')).toEqual([]);
+    expect(getDefaultHandoffInitArgs('grok')).toEqual([]);
 
     expect(getDefaultHandoffInitArgs('codex')).toEqual([
       '-c',

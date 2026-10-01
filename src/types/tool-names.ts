@@ -21,6 +21,7 @@ export const TOOL_NAMES = Object.freeze([
   'antigravity',
   'kimi',
   'qwen-code',
+  'grok',
 ] as const);
 
 /** Source CLI tool — derived from TOOL_NAMES, never defined manually */
@@ -58,6 +59,7 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   'Create',
   'create',
   'create_file',
+  'write',
 ]);
 
 /** File edit/patch tools */
@@ -72,6 +74,7 @@ export const EDIT_TOOLS: ReadonlySet<string> = new Set([
   'replace',
   'mcp__morph__edit_file',
   'morph___edit_file',
+  'search_replace',
 ]);
 
 /** Search/grep tools */
@@ -94,22 +97,28 @@ export const GLOB_TOOLS: ReadonlySet<string> = new Set([
   'LS',
   'FindFiles',
   'ReadFolder',
+  'list_dir',
 ]);
 
 /** Web search tools */
-export const SEARCH_TOOLS: ReadonlySet<string> = new Set(['WebSearch', 'web_search', 'web_search_call']);
+export const SEARCH_TOOLS: ReadonlySet<string> = new Set([
+  'WebSearch',
+  'web_search',
+  'web_search_call',
+  'x_keyword_search',
+]);
 
 /** Web fetch tools */
 export const FETCH_TOOLS: ReadonlySet<string> = new Set(['WebFetch', 'web_fetch']);
 
 /** Subagent/task tools */
-export const TASK_TOOLS: ReadonlySet<string> = new Set(['Task', 'task', 'Agent']);
+export const TASK_TOOLS: ReadonlySet<string> = new Set(['Task', 'task', 'Agent', 'spawn_subagent']);
 
 /** Task output tools */
 export const TASK_OUTPUT_TOOLS: ReadonlySet<string> = new Set(['TaskOutput']);
 
 /** User interaction tools */
-export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'request_user_input']);
+export const ASK_TOOLS: ReadonlySet<string> = new Set(['AskUserQuestion', 'request_user_input', 'ask_user_question']);
 
 /** Tools to skip — internal bookkeeping, no useful handoff context */
 export const SKIP_TOOLS: ReadonlySet<string> = new Set([

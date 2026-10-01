@@ -26,6 +26,7 @@ import { extractCrushContext, parseCrushSessions } from './crush.js';
 import { extractCursorContext, parseCursorSessions } from './cursor.js';
 import { extractDroidContext, parseDroidSessions } from './droid.js';
 import { extractGeminiContext, parseGeminiSessions } from './gemini.js';
+import { extractGrokContext, parseGrokSessions } from './grok.js';
 import { extractKimiContext, parseKimiSessions } from './kimi.js';
 import { extractKiroContext, parseKiroSessions } from './kiro.js';
 import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
@@ -938,6 +939,56 @@ register({
   resumeCommandDisplay: (s) => `qwen --resume ${s.id}`,
   mapHandoffFlags: mapGeminiFlags,
 });
+
+// ── Grok Build ───────────────────────────────────────────────────────
+register({
+  name: 'grok',
+  label: 'Grok Build',
+  color: chalk.hex('#C084FC'),
+  storagePath: '~/.grok/sessions/',
+  envVar: 'GROK_HOME',
+  binaryName: 'grok',
+  parseSessions: parseGrokSessions,
+  supportsCwdLookup: true,
+  extractContext: extractGrokContext,
+  nativeResumeArgs: (s) => ['--resume', s.id],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: (s) => `grok --resume ${s.id}`,
+  mapHandoffFlags: mapGrokFlags,
+});
+
+function mapGrokFlags(context: ForwardFlagMapContext): ForwardMapResult {
+  const args: string[] = [];
+  const autoOccurrences = collectAutoApproveOccurrences(context);
+  const planOccurrences = normalizePlanOccurrences(context);
+  const permissionMode = context.latestString('permissionMode');
+
+  if (autoOccurrences.length > 0) {
+    context.consume(...autoOccurrences, ...planOccurrences, ...context.all('permissionMode'));
+    args.push('--always-approve');
+  } else if (permissionMode) {
+    context.consumeKeys('permissionMode');
+    context.consume(...planOccurrences);
+    args.push('--permission-mode', permissionMode);
+  } else if (planOccurrences.length > 0) {
+    context.consume(...planOccurrences);
+    args.push('--permission-mode', 'plan');
+  }
+
+  const model = context.latestString('model');
+  if (model) {
+    context.consumeKeys('model');
+    args.push('--model', model);
+  }
+
+  const cwd = context.latestString('cd', 'workspace');
+  if (cwd) {
+    context.consumeKeys('cd', 'workspace');
+    args.push('--cwd', cwd);
+  }
+
+  return { mappedArgs: args, warnings: [] };
+}
 
 // ── Completeness assertion ──────────────────────────────────────────
 // Runs at module load — if a new tool is added to TOOL_NAMES but not
