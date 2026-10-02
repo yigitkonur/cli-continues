@@ -38,9 +38,9 @@ describe('buildWindowsSafePrompt', () => {
     expect(prompt.length).toBeLessThan(300);
   });
 
-  it('should reference .continues-handoff.md', () => {
+  it('should reference the per-session handoff file', () => {
     const prompt = buildWindowsSafePrompt(stubSession('claude'));
-    expect(prompt).toContain('.continues-handoff.md');
+    expect(prompt).toContain('.continues-handoff-test-id.md');
   });
 
   it('should include the source tool name', () => {

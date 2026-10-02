@@ -3,7 +3,7 @@ dist/
 *.tgz
 .DS_Store
 .continues/
-.continues-handoff.md
+.continues-handoff*.md
 .agent-workspace/
 stress-test-output.log
 .battle-test/
@@ -37,7 +37,7 @@ credentials.json
 service-account.json
 
 # AI agent session artifacts
-.continues-handoff.md
+.continues-handoff*.md
 .claude-session*
 .cursor-session*
 .aider*

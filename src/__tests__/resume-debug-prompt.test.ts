@@ -78,7 +78,7 @@ describe('crossToolResume debug prompt mode', () => {
     expect(output).toContain("I'm continuing a coding session from **Claude Code**");
     expect(output).toContain('# Session Handoff Context');
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(cwd, '.continues-handoff.md'))).toBe(true);
+    expect(fs.existsSync(path.join(cwd, '.continues-handoff-resume-debug-test.md'))).toBe(true);
   });
 
   it('prints the reference handoff prompt and does not launch the target CLI', async () => {
@@ -89,9 +89,25 @@ describe('crossToolResume debug prompt mode', () => {
 
     const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain('# 🔄 Session Handoff');
-    expect(output).toContain('.continues-handoff.md');
-    expect(output).toContain('Read `.continues-handoff.md` first, then continue the work.');
+    expect(output).toContain('.continues-handoff-resume-debug-test.md');
+    expect(output).toContain('Read `.continues-handoff-resume-debug-test.md` first, then continue the work.');
     expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('writes one handoff file per session so handoffs in the same directory do not overwrite each other', async () => {
+    const a = { ...makeSession(cwd), id: 'session-a' };
+    const b = { ...makeSession(cwd), id: 'session-b' };
+    extractContextMock.mockResolvedValueOnce({ ...makeContext(a), markdown: 'context A' });
+    extractContextMock.mockResolvedValueOnce({ ...makeContext(b), markdown: 'context B' });
+
+    await crossToolResume(a, 'codex', 'reference', undefined, { debugPrompt: true } as never);
+    await crossToolResume(b, 'codex', 'reference', undefined, { debugPrompt: true } as never);
+
+    expect(fs.readFileSync(path.join(cwd, '.continues-handoff-session-a.md'), 'utf8')).toBe('context A');
+    expect(fs.readFileSync(path.join(cwd, '.continues-handoff-session-b.md'), 'utf8')).toBe('context B');
+    const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(output).toContain('.continues-handoff-session-a.md');
+    expect(output).toContain('.continues-handoff-session-b.md');
   });
 
   it('rejects invalid runtime targets before extracting context or writing handoff files', async () => {
@@ -102,6 +118,6 @@ describe('crossToolResume debug prompt mode', () => {
     expect(extractContextMock).not.toHaveBeenCalled();
     expect(saveContextMock).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(fs.existsSync(path.join(cwd, '.continues-handoff.md'))).toBe(false);
+    expect(fs.existsSync(path.join(cwd, '.continues-handoff-resume-debug-test.md'))).toBe(false);
   });
 });

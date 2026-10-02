@@ -53,7 +53,7 @@ CLI (src/cli.ts) → Registry (src/parsers/registry.ts) → Index (src/utils/ind
 
 7. **Markdown Generator** (`src/utils/markdown.ts`): `generateHandoffMarkdown()` takes parsed session data and produces the structured handoff document with overview table, tool activity, key decisions, recent conversation, files modified, and pending tasks.
 
-8. **Resume** (`src/utils/resume.ts`): Handles both native resume (same tool) and cross-tool handoff. Uses the adapter registry for CLI binary names and argument patterns. For cross-tool: extracts context, saves `.continues-handoff.md` to project dir, then spawns the target CLI with the inline or reference prompt.
+8. **Resume** (`src/utils/resume.ts`): Handles both native resume (same tool) and cross-tool handoff. Uses the adapter registry for CLI binary names and argument patterns. For cross-tool: extracts context, saves `.continues-handoff-<session-id>.md` to project dir, then spawns the target CLI with the inline or reference prompt.
 
 ### Types
 

@@ -127,6 +127,13 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
 }
 
 /**
+ * Handoff file name, per session so concurrent handoffs in one directory don't overwrite each other
+ */
+export function handoffFileName(session: UnifiedSession): string {
+  return `.continues-handoff-${session.id.replace(/[^\w.-]/g, '_')}.md`;
+}
+
+/**
  * Resume a session in a different tool (cross-tool)
  */
 export async function crossToolResume(
@@ -143,7 +150,7 @@ export async function crossToolResume(
   const cwd = session.cwd || process.cwd();
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
-  const localPath = path.join(cwd, '.continues-handoff.md');
+  const localPath = path.join(cwd, handoffFileName(session));
   let handoffWritten = false;
   try {
     fs.writeFileSync(localPath, context.markdown);
@@ -155,7 +162,7 @@ export async function crossToolResume(
   // Also save to global directory as backup
   saveContext(context);
 
-  // On Windows the prompt references .continues-handoff.md — the write must succeed
+  // On Windows the prompt references the handoff file — the write must succeed
   if (IS_WINDOWS && !handoffWritten) {
     throw new Error(
       `Failed to write handoff file to ${localPath}. Cross-tool resume on Windows requires this file. Check directory permissions.`,
@@ -200,21 +207,22 @@ function buildInlinePrompt(context: SessionContext, session: UnifiedSession): st
  */
 function buildReferencePrompt(session: UnifiedSession): string {
   const sourceLabel = getSourceLabels()[session.source] || session.source;
+  const file = handoffFileName(session);
 
   return [
     `# 🔄 Session Handoff`,
     ``,
-    `Picking up a coding session from **${sourceLabel}**. The full context is in \`.continues-handoff.md\`.`,
+    `Picking up a coding session from **${sourceLabel}**. The full context is in \`${file}\`.`,
     ``,
     `| Detail | Value |`,
     `|--------|-------|`,
     `| Previous tool | ${sourceLabel} |`,
     `| Working directory | \`${session.cwd}\` |`,
     session.originalPath ? `| Original session file | \`${safePath(session.originalPath)}\` |` : '',
-    `| Context file | \`.continues-handoff.md\` |`,
+    `| Context file | \`${file}\` |`,
     session.summary ? `| Last task | ${session.summary.slice(0, 80)} |` : '',
     ``,
-    `Read \`.continues-handoff.md\` first, then continue the work.`,
+    `Read \`${file}\` first, then continue the work.`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -228,11 +236,11 @@ function buildReferencePrompt(session: UnifiedSession): string {
  * metacharacters (`|`, `&`, `>`, `<`, `^`, `%`, `!`, backticks, `"`).
  * Additionally, `cmd.exe` has an 8191-character command-line limit.
  *
- * Since `.continues-handoff.md` is already written to the project directory,
+ * Since the handoff file is already written to the project directory,
  * this prompt simply instructs the target tool to read that file.
  */
 export function buildWindowsSafePrompt(session: UnifiedSession): string {
-  return `Continuing a coding session from ${session.source}. Read the file .continues-handoff.md in the current directory for full context and continue where it left off.`;
+  return `Continuing a coding session from ${session.source}. Read the file ${handoffFileName(session)} in the current directory for full context and continue where it left off.`;
 }
 
 /**
