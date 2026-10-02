@@ -49,4 +49,12 @@ describe('matchesCwd', () => {
   it('root target returns false', () => {
     expect(matchesCwd('/Users/me/project', '/')).toBe(false);
   });
+
+  const itWindows = process.platform === 'win32' ? it : it.skip;
+
+  itWindows('Windows: ignores case and separator differences', () => {
+    expect(matchesCwd('C:\\Users\\me\\Project', 'C:\\Users\\me\\project')).toBe(true);
+    expect(matchesCwd('C:/Users/me/Project/src', 'C:\\Users\\me\\project\\')).toBe(true);
+    expect(matchesCwd('C:\\Users\\me\\project-v2', 'c:/users/me/project')).toBe(false);
+  });
 });

@@ -13,6 +13,7 @@ import type {
   UnifiedSession,
 } from '../types/index.js';
 import type { CodexMessage, CodexSessionMeta } from '../types/schemas.js';
+import { isSystemContent } from '../utils/content.js';
 import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, mapConcurrent } from '../utils/fs-helpers.js';
 import { getFileStats, readJsonlFile, scanJsonlFile, scanJsonlHead } from '../utils/jsonl.js';
@@ -77,6 +78,22 @@ async function parseSessionInfo(filePath: string): Promise<{
 
       if (!firstUserMessage && msg.type === 'message' && (msg as Record<string, unknown>).role === 'user') {
         firstUserMessage = typeof msg.content === 'string' ? (msg.content as string) : '';
+      }
+
+      // Newer Codex no longer writes user_message events; the prompt only lives in response_item
+      if (!firstUserMessage && msg.type === 'response_item') {
+        const payload = msg.payload as {
+          type?: string;
+          role?: string;
+          content?: Array<{ type?: string; text?: string }>;
+        };
+        if (payload?.type === 'message' && payload.role === 'user') {
+          const text = (payload.content || [])
+            .filter((c) => c.type === 'input_text' && c.text)
+            .map((c) => c.text)
+            .join('\n');
+          if (!isSystemContent(text)) firstUserMessage = text;
+        }
       }
 
       if (meta && firstUserMessage) {

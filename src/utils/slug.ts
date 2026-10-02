@@ -76,8 +76,10 @@ export function cwdFromSlug(slug: string): string {
  */
 export function matchesCwd(sessionCwd: string, targetDir: string): boolean {
   if (!sessionCwd || !targetDir) return false;
-  const normTarget = targetDir.replace(/\/+$/, '');
+  // Windows paths are case-insensitive and tools record either separator
+  const norm = (p: string) => (IS_WINDOWS ? p.replace(/\\/g, '/').toLowerCase() : p).replace(/\/+$/, '');
+  const normTarget = norm(targetDir);
   if (normTarget === '') return false; // guard against root '/'
-  const normSession = sessionCwd.replace(/\/+$/, '');
+  const normSession = norm(sessionCwd);
   return normSession === normTarget || normSession.startsWith(normTarget + '/');
 }

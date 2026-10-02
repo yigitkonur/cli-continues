@@ -1,5 +1,6 @@
 import { emitKeypressEvents } from 'node:readline';
 import chalk from 'chalk';
+import { IS_WINDOWS } from '../utils/platform.js';
 
 type RotatingBannerLine = () => string;
 type KeyPress = { name?: string; ctrl?: boolean };
@@ -165,7 +166,9 @@ async function showRotatingBannerLine(): Promise<boolean> {
     const teardownInput = (): void => {
       if (timeout) clearTimeout(timeout);
       stdin.off('keypress', onKeyPress);
-      if (rawModeEnabled) {
+      // On Windows, turning raw mode back off here leaves later clack prompts
+      // receiving no input; clack's own block() skips it on Windows too.
+      if (rawModeEnabled && !IS_WINDOWS) {
         stdin.setRawMode(false);
         rawModeEnabled = false;
       }

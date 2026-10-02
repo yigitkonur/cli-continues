@@ -11,7 +11,6 @@ import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
-import { SHELL_OPTION } from '../utils/platform.js';
 
 const REPO = 'yigitkonur/cli-continues';
 
@@ -42,7 +41,6 @@ function isGhInstalled(): boolean {
     encoding: 'utf-8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 3000,
-    ...SHELL_OPTION,
   });
   return !result.error && result.status === 0;
 }
@@ -52,7 +50,6 @@ function starRepo(): boolean {
     encoding: 'utf-8',
     stdio: ['ignore', 'ignore', 'ignore'],
     timeout: 10000,
-    ...SHELL_OPTION,
   });
   return !result.error && result.status === 0;
 }

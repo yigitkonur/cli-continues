@@ -36,6 +36,30 @@ afterEach(() => {
 });
 
 describe('codex parser hardening', () => {
+  it('takes the summary from response_item user messages when no user_message event exists', async () => {
+    const home = makeCodexHome();
+    const userItem = (...texts: string[]) => ({
+      timestamp: '2026-10-03T00:00:01.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: texts.map((text) => ({ type: 'input_text', text })) },
+    });
+
+    writeRollout(home, path.join('sessions', '2026', '10', '03'), 'rollout-2026-10-03T00-00-00-new-format-id.jsonl', [
+      { timestamp: '2026-10-03T00:00:00.000Z', type: 'session_meta', payload: { id: 'new-format-id', cwd: '/tmp/p' } },
+      { timestamp: '2026-10-03T00:00:00.500Z', type: 'event_msg', payload: { type: 'task_started' } },
+      userItem(
+        '# AGENTS.md instructions\n\n<INSTRUCTIONS>x</INSTRUCTIONS>',
+        '<environment_context>\n</environment_context>',
+      ),
+      userItem('detach the worker from the web app'),
+    ]);
+
+    const { parseCodexSessions } = await loadCodexParser(home);
+    const [session] = await parseCodexSessions();
+
+    expect(session?.summary).toBe('detach the worker from the web app');
+  });
+
   it('discovers sessions from both active and archived session trees', async () => {
     const home = makeCodexHome();
 
