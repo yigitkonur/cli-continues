@@ -97,6 +97,8 @@ continues resume abc123 --in codex --debug-prompt
 
 `continues` maps common flags (model, sandbox, auto-approve, extra dirs) to the target tool's equivalent. Anything it doesn't recognize gets passed through as-is.
 
+To always launch a tool with extra flags (native resume and handoffs alike), set `CONTINUES_<TOOL>_ARGS`, e.g. `CONTINUES_CLAUDE_ARGS="--dangerously-skip-permissions"` or `CONTINUES_QWEN_CODE_ARGS="--yolo"`.
+
 `--debug-prompt` is for handoff inspection and testing. It writes the handoff file as usual, then prints the exact prompt that would be passed to the target agent and exits without launching it.
 
 ### Scripting & CI

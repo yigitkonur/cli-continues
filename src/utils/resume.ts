@@ -24,6 +24,16 @@ export interface HandoffContextOptions {
   debugPrompt?: boolean;
 }
 
+/**
+ * User default args for every launch of a tool, from CONTINUES_<TOOL>_ARGS
+ * (e.g. CONTINUES_CLAUDE_ARGS="--dangerously-skip-permissions").
+ */
+export function configuredToolArgs(tool: SessionSource): string[] {
+  // ponytail: whitespace split, no quoting; add a shell-words parser if someone needs spaces inside an arg
+  const raw = process.env[`CONTINUES_${tool.toUpperCase().replace(/-/g, '_')}_ARGS`]?.trim();
+  return raw ? raw.split(/\s+/) : [];
+}
+
 export function getToolBinaryCandidates(tool: SessionSource): string[] {
   const adapter = adapters[tool];
   if (!adapter) return [];
@@ -123,7 +133,7 @@ export async function nativeResume(session: UnifiedSession): Promise<void> {
   const adapter = adapters[session.source];
   if (!adapter) throw new UnknownSourceError(session.source);
   const binaryName = await requireToolBinaryName(session.source);
-  await runCommand(binaryName, adapter.nativeResumeArgs(session), cwd);
+  await runCommand(binaryName, [...adapter.nativeResumeArgs(session), ...configuredToolArgs(session.source)], cwd);
 }
 
 /**
@@ -177,7 +187,11 @@ export async function crossToolResume(
   const binaryName = await requireToolBinaryName(target);
   const resolved = resolveCrossToolForwarding(target, forwarding);
   const defaultInitArgs = getDefaultHandoffInitArgs(target, resolved.extraArgs);
-  await runCommand(binaryName, [...defaultInitArgs, ...resolved.extraArgs, ...adapter.crossToolArgs(prompt, cwd)], cwd);
+  await runCommand(
+    binaryName,
+    [...defaultInitArgs, ...configuredToolArgs(target), ...resolved.extraArgs, ...adapter.crossToolArgs(prompt, cwd)],
+    cwd,
+  );
 }
 
 /**
