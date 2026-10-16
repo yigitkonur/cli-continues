@@ -19,5 +19,7 @@ export { extractKimiContext, parseKimiSessions } from './kimi.js';
 export { extractKiroContext, parseKiroSessions } from './kiro.js';
 export { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 export { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
+export { extractMistralVibeContext, parseMistralVibeSessions } from './mistral-vibe.js';
+export { extractVscodeCopilotContext, parseVscodeCopilotSessions } from './vscode-copilot.js';
 export type { ToolAdapter } from './registry.js';
 export { ALL_TOOLS, adapters, SOURCE_HELP } from './registry.js';

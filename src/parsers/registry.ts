@@ -30,6 +30,8 @@ import { extractKimiContext, parseKimiSessions } from './kimi.js';
 import { extractKiroContext, parseKiroSessions } from './kiro.js';
 import { extractOpenCodeContext, parseOpenCodeSessions } from './opencode.js';
 import { extractQwenCodeContext, parseQwenCodeSessions } from './qwen-code.js';
+import { extractMistralVibeContext, parseMistralVibeSessions } from './mistral-vibe.js';
+import { extractVscodeCopilotContext, parseVscodeCopilotSessions } from './vscode-copilot.js';
 
 /**
  * Adapter interface — single contract for all supported CLI tools.
@@ -937,6 +939,36 @@ register({
   crossToolArgs: (prompt) => [prompt],
   resumeCommandDisplay: (s) => `qwen --resume ${s.id}`,
   mapHandoffFlags: mapGeminiFlags,
+});
+
+// ── Mistral Vibe ─────────────────────────────────────────────────────
+register({
+  name: 'mistral-vibe',
+  label: 'Mistral Vibe',
+  color: chalk.hex('#FF7000'),
+  storagePath: '~/.vibe/logs/session/',
+  envVar: 'VIBE_HOME',
+  binaryName: 'vibe',
+  parseSessions: parseMistralVibeSessions,
+  extractContext: extractMistralVibeContext,
+  nativeResumeArgs: () => [],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: () => 'vibe',
+});
+
+// ── VS Code Copilot Chat ─────────────────────────────────────────────
+register({
+  name: 'vscode-copilot',
+  label: 'VS Code Copilot',
+  color: chalk.hex('#24A0ED'),
+  storagePath: '~/Library/Application Support/Code/User/workspaceStorage/ (Linux: ~/.config/Code/User/workspaceStorage/, Windows: %APPDATA%/Code/User/workspaceStorage/)',
+  envVar: 'VSCODE_COPILOT_HOME',
+  binaryName: 'code',
+  parseSessions: parseVscodeCopilotSessions,
+  extractContext: extractVscodeCopilotContext,
+  nativeResumeArgs: () => [],
+  crossToolArgs: (prompt) => [prompt],
+  resumeCommandDisplay: () => 'code',
 });
 
 // ── Completeness assertion ──────────────────────────────────────────

@@ -34,7 +34,7 @@ All five steps are required. Missing any one is a bug. See `CLAUDE.md` for detai
 ## Dependencies
 
 - **`@clack/prompts`** — all interactive TUI prompts and spinners. Do not use `readline` or `inquirer`.
-- **`chalk`** — terminal color. Chalk v4 is installed (CommonJS compat import); do not upgrade to v5+ (ESM-only).
+- **`chalk`** — terminal color.
 - **`commander`** — CLI argument parsing.
 - **`ora`** — non-interactive spinners.
 - **`yaml`** — YAML parsing for Copilot sessions.

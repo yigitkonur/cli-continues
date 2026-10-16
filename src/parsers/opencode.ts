@@ -669,62 +669,62 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
 
     const { db, close } = handle;
     try {
-      const rows = db
-        .prepare(
-          'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',
-        )
-        .all() as SqliteSessionRow[];
-
-      // Build project lookup
       const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
       const projectMap = new Map(projectRows.map((p: SqliteProjectRow) => [p.id, p.worktree]));
 
-      for (const row of rows) {
-        const cwd = row.directory || projectMap.get(row.project_id) || '';
+      for (const table of ['session_v2', 'session'] as const) {
+        if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) continue;
+        const rows = db
+          .prepare(
+            `SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM ${table} ORDER BY time_updated DESC`,
+          )
+          .all() as SqliteSessionRow[];
 
-        // Count messages for this session
-        const msgCount = db.prepare('SELECT COUNT(*) as cnt FROM message WHERE session_id = ?').get(row.id) as
-          | { cnt: number }
-          | undefined;
-
-        // Get first user message for summary if no title
-        let summary = row.title || '';
-        if (!summary || summary.startsWith('New session')) {
-          const firstMsg = db
+        for (const row of rows) {
+          const cwd = row.directory || projectMap.get(row.project_id) || '';
+          const msgCount = db
             .prepare(
-              'SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE \'%"role":"user"%\' AND p.data LIKE \'%"type":"text"%\' ORDER BY m.time_created ASC LIMIT 1',
+              `SELECT COUNT(*) as cnt FROM ${table === 'session_v2' ? 'session_message' : 'message'} WHERE session_id = ?`,
             )
-            .get(row.id) as { id: string; data: string } | undefined;
+            .get(row.id) as { cnt: number } | undefined;
 
-          if (firstMsg) {
-            try {
-              const partData = JSON.parse(firstMsg.data);
-              if (partData.text) {
-                summary = partData.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
+          let summary = row.title || '';
+          if (table === 'session' && (!summary || summary.startsWith('New session'))) {
+            const firstMsg = db
+              .prepare(
+                'SELECT m.id, p.data FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ? AND m.data LIKE \'%"role":"user"%\' AND p.data LIKE \'%"type":"text"%\' ORDER BY m.time_created ASC LIMIT 1',
+              )
+              .get(row.id) as { id: string; data: string } | undefined;
+
+            if (firstMsg) {
+              try {
+                const partData = JSON.parse(firstMsg.data);
+                if (partData.text) {
+                  summary = partData.text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 50);
+                }
+              } catch (err) {
+                logger.debug('opencode: failed to parse SQLite first-message part', row.id, err);
               }
-            } catch (err) {
-              logger.debug('opencode: failed to parse SQLite first-message part', row.id, err);
             }
           }
-        }
 
-        const nextSession: UnifiedSession = {
-          id: row.id,
-          source: 'opencode',
-          cwd,
-          repo: extractRepoFromCwd(cwd),
-          lines: msgCount?.cnt ?? 0,
-          bytes: 0, // SQLite doesn't have per-session file size
-          createdAt: new Date(row.time_created),
-          updatedAt: new Date(row.time_updated),
-          originalPath: dbPath,
-          summary: summary?.slice(0, 60) || row.slug || undefined,
-          model: undefined,
-        };
+          const nextSession: UnifiedSession = {
+            id: row.id,
+            source: 'opencode',
+            cwd,
+            repo: extractRepoFromCwd(cwd),
+            lines: msgCount?.cnt ?? 0,
+            bytes: 0,
+            createdAt: new Date(row.time_created),
+            updatedAt: new Date(row.time_updated),
+            originalPath: dbPath,
+            summary: summary?.slice(0, 60) || row.slug || undefined,
+          };
 
-        const existing = sessionsById.get(nextSession.id);
-        if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
-          sessionsById.set(nextSession.id, nextSession);
+          const existing = sessionsById.get(nextSession.id);
+          if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
+            sessionsById.set(nextSession.id, nextSession);
+          }
         }
       }
     } catch (err) {
@@ -939,9 +939,14 @@ function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): Op
   return extractOpenCodeToolDataFromJson(sessionId, config);
 }
 
-function addSessionEditSummaryFromSqlite(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
+function addSessionEditSummaryFromSqlite(
+  sessionId: string,
+  db: SqliteDatabase,
+  collector: SummaryCollector,
+  table: 'session' | 'session_v2' = 'session',
+): boolean {
   const sessionRow = db
-    .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session WHERE id = ?')
+    .prepare(`SELECT summary_additions, summary_deletions, summary_files FROM ${table} WHERE id = ?`)
     .get(sessionId) as
     | {
         summary_additions: number | null;
@@ -1299,6 +1304,113 @@ function extractPendingTasksFromSqlite(sessionId: string): string[] {
   return [];
 }
 
+function extractV2Data(
+  session: UnifiedSession,
+  config: VerbosityConfig,
+): { messages: ConversationMessage[]; toolData: OpenCodeToolData; notes: SessionNotes } | null {
+  for (const dbPath of new Set([session.originalPath, ...getOpenCodeDbPaths()])) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'").get()) continue;
+      const row = db.prepare('SELECT project_id, slug, version FROM session_v2 WHERE id = ?').get(session.id) as
+        | { project_id: string; slug: string; version: string }
+        | undefined;
+      if (!row) continue;
+
+      const rows = db
+        .prepare(
+          "SELECT type, time_created, data FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant') ORDER BY seq ASC, time_created ASC",
+        )
+        .all(session.id) as Array<{ type: 'user' | 'assistant'; time_created: number; data: string }>;
+      if (
+        rows.length === 0 &&
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session'").get() &&
+        db.prepare('SELECT id FROM session WHERE id = ?').get(session.id)
+      )
+        continue;
+
+      const collector = new SummaryCollector(config);
+      addSessionEditSummaryFromSqlite(session.id, db, collector, 'session_v2');
+      const messages: ConversationMessage[] = [];
+      const notes: SessionNotes = {
+        sourceMetadata: {
+          ...(row.slug ? { slug: row.slug } : {}),
+          ...(row.version ? { version: row.version } : {}),
+          ...(row.project_id ? { projectId: row.project_id } : {}),
+        },
+      };
+      let firstCreated: number | undefined;
+      let lastCreated: number | undefined;
+
+      for (const messageRow of rows) {
+        let data: unknown;
+        try {
+          data = JSON.parse(messageRow.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse V2 message', session.id, err);
+          continue;
+        }
+        if (!isRecord(data)) continue;
+        const created = messageRow.time_created;
+        firstCreated ??= created;
+        lastCreated = created;
+        const model = getRecordValue(data, 'model');
+        if (messageRow.type === 'assistant' && typeof model.id === 'string' && !notes.model) {
+          notes.model = model.id;
+        }
+        const tokenResult = OpenCodeTokenUsageSchema.safeParse(data.tokens);
+        if (messageRow.type === 'assistant' && tokenResult.success) addTokenUsage(notes, tokenResult.data);
+
+        const content: string[] = [];
+        const toolCalls: NonNullable<ConversationMessage['toolCalls']> = [];
+        for (const part of Array.isArray(data.content) ? data.content : []) {
+          if (!isRecord(part)) continue;
+          const state = getRecordValue(part, 'state');
+          const output = Array.isArray(state.content)
+            ? state.content
+                .map((item) => (isRecord(item) && typeof item.text === 'string' ? item.text : ''))
+                .filter(Boolean)
+                .join('\n')
+            : state.content;
+          const normalized =
+            part.type === 'tool' ? { ...part, tool: part.name, callID: part.id, state: { ...state, output } } : part;
+          const rendered = renderHighValuePart(normalized);
+          if (rendered.content) content.push(rendered.content);
+          if (rendered.toolCall) toolCalls.push(rendered.toolCall);
+          if (part.type === 'tool') summarizeOpenCodeToolPart(normalized, collector);
+          if (part.type === 'reasoning') {
+            const reasoning = notes.reasoning ?? [];
+            addReasoningHighlight(part, reasoning, 10);
+            if (reasoning.length > 0) notes.reasoning = reasoning;
+          }
+        }
+        const text = content.join('\n').trim();
+        if (text) {
+          messages.push({
+            role: messageRow.type,
+            content: text,
+            timestamp: new Date(created),
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          });
+        }
+      }
+      if (firstCreated !== undefined && lastCreated !== undefined) notes.activeTimeMs = lastCreated - firstCreated;
+      return {
+        messages,
+        toolData: { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() },
+        notes,
+      };
+    } catch (err) {
+      logger.debug('opencode: failed to extract V2 session', dbPath, session.id, err);
+    } finally {
+      close();
+    }
+  }
+  return null;
+}
+
 /**
  * Extract context from an OpenCode session for cross-tool continuation
  */
@@ -1307,11 +1419,12 @@ export async function extractOpenCodeContext(
   config?: VerbosityConfig,
 ): Promise<SessionContext> {
   const resolvedConfig = config ?? getPreset('standard');
-  const recentMessages = readAllMessages(session.id);
-  const toolData = extractOpenCodeToolData(session.id, resolvedConfig);
+  const v2 = extractV2Data(session, resolvedConfig);
+  const recentMessages = v2?.messages ?? readAllMessages(session.id);
+  const toolData = v2?.toolData ?? extractOpenCodeToolData(session.id, resolvedConfig);
   const filesModified = toolData.filesModified;
   const pendingTasks = extractPendingTasksFromSqlite(session.id);
-  const sessionNotes = extractOpenCodeSessionNotes(session.id);
+  const sessionNotes = v2?.notes ?? extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
   const timeline = buildOpenCodeTimeline(trimmed, resolvedConfig.handoff.timelineWindow);

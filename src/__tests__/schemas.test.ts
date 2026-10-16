@@ -42,8 +42,8 @@ import { EDIT_TOOLS, READ_TOOLS, SHELL_TOOLS, TOOL_NAMES, WRITE_TOOLS } from '..
 // ── tool-names.ts ────────────────────────────────────────────────────────────
 
 describe('TOOL_NAMES', () => {
-  it('contains exactly 16 tools', () => {
-    expect(TOOL_NAMES).toHaveLength(16);
+  it('contains exactly 18 tools', () => {
+    expect(TOOL_NAMES).toHaveLength(18);
   });
 
   it('includes all known tools', () => {
@@ -64,6 +64,8 @@ describe('TOOL_NAMES', () => {
       'antigravity',
       'kimi',
       'qwen-code',
+      'mistral-vibe',
+      'vscode-copilot',
     ];
     expect([...TOOL_NAMES]).toEqual(expected);
   });

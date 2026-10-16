@@ -324,6 +324,155 @@ afterEach(() => {
 });
 
 describe('OpenCode parser', () => {
+  it('supports a V2-only database with an empty session', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-v2-only-'));
+    const dbPath = path.join(root, 'opencode.db');
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT);
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY, project_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT,
+        summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER,
+        time_created INTEGER, time_updated INTEGER
+      );
+      CREATE TABLE session_message (
+        id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT
+      );
+    `);
+    db.prepare('INSERT INTO project VALUES (?, ?)').run('proj_v2', '/home/user/project');
+    db.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'ses_empty',
+      'proj_v2',
+      'empty',
+      '/home/user/project',
+      'New session',
+      '2.0',
+      0,
+      0,
+      0,
+      Date.now(),
+      Date.now(),
+    );
+    db.close();
+
+    try {
+      process.env.OPENCODE_DB = dbPath;
+      const { parseOpenCodeSessions, extractOpenCodeContext } = await importOpenCodeParser();
+      const [session] = await parseOpenCodeSessions();
+      expect(session.id).toBe('ses_empty');
+      const context = await extractOpenCodeContext(session);
+      expect(context.recentMessages).toEqual([]);
+      expect(context.sessionNotes?.sourceMetadata).toMatchObject({ slug: 'empty', version: '2.0' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('discovers V2 sessions after the legacy database stops updating and extracts their context', async () => {
+    const fixture = createOpenCodeSqliteFixture('opencode.db', { sessionId: 'ses_legacy' });
+    const db = new DatabaseSync(fixture.dbPath);
+    const updated = Date.parse('2026-10-16T12:00:00.000Z');
+    db.prepare('UPDATE session SET time_updated = ? WHERE id = ?').run(
+      Date.parse('2026-10-05T08:45:00.000Z'),
+      'ses_legacy',
+    );
+    db.exec(`
+      CREATE TABLE session_v2 (
+        id TEXT PRIMARY KEY, project_id TEXT, slug TEXT, directory TEXT, title TEXT, version TEXT,
+        summary_additions INTEGER, summary_deletions INTEGER, summary_files INTEGER,
+        time_created INTEGER, time_updated INTEGER
+      );
+      CREATE TABLE session_message (
+        id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT
+      );
+    `);
+    const insert = db.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    insert.run(
+      'ses_legacy',
+      'proj_test',
+      'legacy',
+      '/home/user/project',
+      'Legacy migrated',
+      '2.0',
+      0,
+      0,
+      0,
+      updated - 10_000,
+      updated - 5_000,
+    );
+    insert.run(
+      'ses_v2',
+      'proj_test',
+      'new',
+      '/home/user/project',
+      'Recent session',
+      '2.0',
+      3,
+      1,
+      1,
+      updated - 3_000,
+      updated,
+    );
+    const insertMessage = db.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)');
+    insertMessage.run(
+      'v2_user',
+      'ses_v2',
+      'user',
+      1,
+      updated - 2_000,
+      JSON.stringify({
+        content: [{ type: 'text', text: 'Fix new login flow' }],
+      }),
+    );
+    insertMessage.run(
+      'v2_assistant',
+      'ses_v2',
+      'assistant',
+      2,
+      updated - 1_000,
+      JSON.stringify({
+        model: { id: 'test-model' },
+        tokens: { input: 12, output: 8 },
+        content: [
+          { type: 'text', text: 'Updated the flow.' },
+          {
+            type: 'tool',
+            id: 'call_v2',
+            name: 'read',
+            state: {
+              status: 'completed',
+              input: { filePath: 'src/login.ts' },
+              content: [{ type: 'text', text: 'File found.' }],
+            },
+          },
+        ],
+      }),
+    );
+    db.close();
+
+    try {
+      process.env.OPENCODE_DB = fixture.dbPath;
+      const { parseOpenCodeSessions, extractOpenCodeContext } = await importOpenCodeParser();
+      const sessions = await parseOpenCodeSessions();
+
+      expect(sessions.map((session) => session.id)).toEqual(['ses_v2', 'ses_legacy']);
+      expect(sessions[0]).toMatchObject({ updatedAt: new Date(updated), lines: 2, summary: 'Recent session' });
+      const context = await extractOpenCodeContext(sessions[0]);
+      expect(context.recentMessages.map((message) => message.role)).toEqual(['user', 'assistant']);
+      expect(context.recentMessages[0].content).toContain('Fix new login flow');
+      expect(context.recentMessages[1].toolCalls).toMatchObject([
+        { id: 'call_v2', name: 'read', arguments: { filePath: 'src/login.ts' }, result: 'File found.' },
+      ]);
+      expect(context.toolSummaries.map((summary) => summary.name)).toContain('read');
+      expect(context.sessionNotes?.model).toBe('test-model');
+      expect(context.markdown).toContain('Fix new login flow');
+      const legacyContext = await extractOpenCodeContext(sessions[1]);
+      expect(legacyContext.recentMessages).toHaveLength(2);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('discovers channel-specific SQLite DB filenames when OPENCODE_DB is unset', async () => {
     const fixture = createOpenCodeChannelSqliteFixture('opencode-preview.db', {
       sessionId: 'ses_channel',

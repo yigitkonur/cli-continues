@@ -97,7 +97,7 @@ async function loadClineParser(
           readOptions?: Parameters<typeof actual.readFile>[1],
         ) => {
           options.onReadFile?.(String(filePath));
-          return actual.readFile(filePath, readOptions);
+          return readOptions === undefined ? actual.readFile(filePath) : actual.readFile(filePath, readOptions);
         },
       };
     });
