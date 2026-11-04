@@ -646,17 +646,23 @@ function countSessionLines(sessionId: string): number {
 }
 
 /**
- * Parse all OpenCode sessions - v2 SQLite first, then legacy SQLite, then JSON fallback
+ * Parse all OpenCode sessions - per-DB routing: v2 and legacy SQLite sessions are merged,
+ * then JSON fallback when neither stage finds anything
  */
 export async function parseOpenCodeSessions(): Promise<UnifiedSession[]> {
-  // OpenCode 2.x live storage first (session_v2)
   if (hasSqliteDb()) {
-    const v2Sessions = parseSessionsFromV2Sqlite();
-    if (v2Sessions.length > 0) return v2Sessions;
+    // Each DB is routed by hasV2Tables: v2 DBs via parseSessionsFromV2Sqlite, legacy-only
+    // DBs via parseSessionsFromSqlite. Merge both stages so one DB type cannot hide the other.
+    const sessionsById = new Map<string, UnifiedSession>();
+    for (const session of [...parseSessionsFromV2Sqlite(), ...parseSessionsFromSqlite()]) {
+      const existing = sessionsById.get(session.id);
+      if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+        sessionsById.set(session.id, session);
+      }
+    }
 
-    // OpenCode 1.x tables (frozen legacy DBs)
-    const sessions = parseSessionsFromSqlite();
-    if (sessions.length > 0) return sessions;
+    const merged = Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    if (merged.length > 0) return merged;
   }
 
   // Fallback to JSON files (older OpenCode versions)
@@ -760,7 +766,7 @@ function parseSessionsFromV2Sqlite(): UnifiedSession[] {
 }
 
 /**
- * Parse sessions from SQLite database
+ * Parse sessions from SQLite database (legacy 1.x tables; v2 DBs are routed to parseSessionsFromV2Sqlite)
  */
 function parseSessionsFromSqlite(): UnifiedSession[] {
   const sessionsById = new Map<string, UnifiedSession>();
@@ -771,6 +777,9 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
 
     const { db, close } = handle;
     try {
+      // Per-DB routing: v2 DBs are read by parseSessionsFromV2Sqlite instead.
+      if (hasV2Tables(db)) continue;
+
       const rows = db
         .prepare(
           'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',

@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parseOpenCodeSessions } from '../parsers/opencode.js';
@@ -87,5 +88,45 @@ describe('parseOpenCodeSessions (legacy fallback)', () => {
       vi.unstubAllEnvs();
       legacy.cleanup();
     }
+  });
+});
+
+describe('parseOpenCodeSessions (mixed v2 + legacy DBs)', () => {
+  let v2Fixture: FixtureDir;
+  let legacyFixture: FixtureDir;
+  let dataHome: string;
+
+  beforeAll(() => {
+    v2Fixture = createOpenCodeV2SqliteFixture();
+    legacyFixture = createOpenCodeSqliteFixture();
+    // Multi-DB discovery layout: $XDG_DATA_HOME/opencode/opencode.db + opencode-*.db
+    dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'test-opencode-datahome-'));
+    fs.mkdirSync(path.join(dataHome, 'opencode'), { recursive: true });
+    fs.copyFileSync(path.join(v2Fixture.root, 'opencode.db'), path.join(dataHome, 'opencode', 'opencode.db'));
+    fs.copyFileSync(path.join(legacyFixture.root, 'opencode.db'), path.join(dataHome, 'opencode', 'opencode-beta.db'));
+    vi.stubEnv('XDG_DATA_HOME', dataHome);
+    vi.stubEnv('OPENCODE_DB', ''); // empty string is falsy, so multi-DB discovery runs
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    v2Fixture.cleanup();
+    legacyFixture.cleanup();
+    fs.rmSync(dataHome, { recursive: true, force: true });
+  });
+
+  it('merges sessions from v2 and legacy-only DBs', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const ids = sessions.map((s) => s.id);
+    expect(ids).toContain('ses_v2_root');
+    expect(ids).toContain('ses_v2_child');
+    expect(ids).toContain('ses_test1');
+  });
+
+  it('orders merged sessions by time_updated descending', async () => {
+    const sessions = await parseOpenCodeSessions();
+    expect(sessions).toHaveLength(3);
+    expect(sessions[0]!.updatedAt.getTime()).toBeGreaterThanOrEqual(sessions[1]!.updatedAt.getTime());
+    expect(sessions[1]!.updatedAt.getTime()).toBeGreaterThanOrEqual(sessions[2]!.updatedAt.getTime());
   });
 });
