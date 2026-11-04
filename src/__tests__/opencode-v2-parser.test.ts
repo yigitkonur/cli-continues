@@ -322,8 +322,21 @@ describe('extractOpenCodeToolData (v2)', () => {
     const md = context.markdown;
     expect(md).toContain('## Tool Activity');
     expect(md).toContain('ls');
-    // edit diff found via state.metadata.diff
     expect(md).toContain('login.ts');
+
+    // Pin the state.metadata.diff fallback: every assertion below is derived
+    // from the patch text and must fail if the metadata diff/patch lookup in
+    // summarizeOpenCodeToolPart's edit branch is removed
+    const editTool = context.toolSummaries.find((s) => s.name === 'edit')!;
+    const editSample = editTool.samples[0]!;
+    expect(editSample.summary).toBe('patch: login.ts');
+    expect(editSample.data).toMatchObject({
+      category: 'edit',
+      filePath: '/home/user/project/login.ts',
+      diffStats: { added: 1, removed: 1 },
+    });
+    expect(md).toContain('(+1 -1 lines)'); // diffStats tag rendered from the patch
+    expect(md).toContain('@@ -1 +1 @@'); // diff body rendered from the patch
   });
 
   it('counts session-level diff stats from session_v2 summary columns', async () => {
