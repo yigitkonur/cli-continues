@@ -1442,6 +1442,69 @@ function addReasoningHighlight(partData: Record<string, unknown>, reasoning: str
   if (firstLine) reasoning.push(truncate(firstLine, 200));
 }
 
+const V2_FIDELITY_WARNING =
+  'Excluded auto-generated rows from conversation: synthetic, system, idle, agent-switched, model-switched.';
+
+/**
+ * Extract session notes from OpenCode v2 SQLite storage (session_v2 + session_message)
+ */
+function extractSessionNotesFromV2Sqlite(sessionId: string): SessionNotes | undefined {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rowResult = SqliteV2SessionRowSchema.safeParse(
+        db.prepare('SELECT * FROM session_v2 WHERE id = ?').get(sessionId),
+      );
+      if (!rowResult.success) continue;
+      const row = rowResult.data;
+
+      const notes: SessionNotes = {
+        tokenUsage: { input: row.tokens_input ?? 0, output: row.tokens_output ?? 0 },
+        activeTimeMs: row.time_updated - row.time_created,
+        sourceMetadata: {
+          ...(row.slug ? { slug: row.slug } : {}),
+          ...(row.version ? { version: row.version } : {}),
+          ...(row.project_id ? { projectId: row.project_id } : {}),
+          ...(row.parent_id ? { parentId: row.parent_id } : {}),
+        },
+        rawAccess: { kind: 'sqlite', path: dbPath },
+        fidelityWarnings: [V2_FIDELITY_WARNING],
+      };
+
+      if (row.tokens_reasoning && row.tokens_reasoning > 0) notes.thinkingTokens = row.tokens_reasoning;
+      if (row.tokens_cache_read || row.tokens_cache_write) {
+        notes.cacheTokens = { read: row.tokens_cache_read ?? 0, creation: row.tokens_cache_write ?? 0 };
+      }
+
+      const firstAssistant = db
+        .prepare(
+          "SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq ASC LIMIT 1",
+        )
+        .get(sessionId) as { data: string } | undefined;
+      if (firstAssistant) {
+        try {
+          const dataResult = V2MessageDataSchema.safeParse(JSON.parse(firstAssistant.data));
+          if (dataResult.success && dataResult.data.model?.id) notes.model = dataResult.data.model.id;
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 notes assistant data', dbPath, sessionId, err);
+        }
+      }
+
+      return notes;
+    } catch (err) {
+      logger.debug('opencode: failed to extract v2 session notes', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return undefined;
+}
+
 function extractSessionNotesFromSqlite(sessionId: string): SessionNotes | undefined {
   for (const dbPath of getOpenCodeDbPaths()) {
     const handle = openDb(dbPath);
@@ -1610,6 +1673,60 @@ function extractOpenCodeSessionNotes(sessionId: string): SessionNotes | undefine
   return extractSessionNotesFromSqlite(sessionId) ?? extractSessionNotesFromJson(sessionId);
 }
 
+/**
+ * Extract pending tasks from the latest v2 `todowrite` tool part's `state.input.todos`
+ */
+function extractPendingTasksFromV2Sqlite(sessionId: string): string[] {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC")
+        .all(sessionId) as Array<{ data: string }>;
+
+      for (const row of rows) {
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 pending-tasks message data', dbPath, sessionId, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+
+        // Latest todowrite call wins: within the newest assistant row, the last
+        // todowrite part carries the most current todo state.
+        let todos: unknown[] | undefined;
+        for (const rawPart of dataResult.data.content ?? []) {
+          if (rawPart.type !== 'tool') continue;
+          const name = rawPart.name ?? rawPart.tool;
+          if (name !== 'todowrite') continue;
+          const state = isRecord(rawPart.state) ? rawPart.state : {};
+          const input = getRecordValue(state, 'input');
+          todos = Array.isArray(input.todos) ? input.todos : [];
+        }
+        if (!todos) continue;
+        return todos
+          .filter((t): t is Record<string, unknown> => isRecord(t) && t.status !== 'completed')
+          .map((t) => `[${typeof t.priority === 'string' ? t.priority : 'medium'}] ${String(t.content ?? '')}`)
+          .filter((line) => line.length > 0);
+      }
+      return [];
+    } catch (err) {
+      logger.debug('opencode: failed to extract v2 pending tasks', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return [];
+}
+
 function extractPendingTasksFromSqlite(sessionId: string): string[] {
   for (const dbPath of getOpenCodeDbPaths()) {
     const handle = openDb(dbPath);
@@ -1642,8 +1759,10 @@ export async function extractOpenCodeContext(
   const recentMessages = readAllMessages(session.id);
   const toolData = extractOpenCodeToolData(session.id, resolvedConfig);
   const filesModified = toolData.filesModified;
-  const pendingTasks = extractPendingTasksFromSqlite(session.id);
-  const sessionNotes = extractOpenCodeSessionNotes(session.id);
+  // Staged read cascade: v2 first, then legacy (SQLite → JSON) as fallback.
+  const v2Tasks = extractPendingTasksFromV2Sqlite(session.id);
+  const pendingTasks = v2Tasks.length > 0 ? v2Tasks : extractPendingTasksFromSqlite(session.id);
+  const sessionNotes = extractSessionNotesFromV2Sqlite(session.id) ?? extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
   const timeline = buildOpenCodeTimeline(trimmed, resolvedConfig.handoff.timelineWindow);

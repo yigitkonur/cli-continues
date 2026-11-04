@@ -234,8 +234,7 @@ describe('readMessagesFromV2Sqlite via extractOpenCodeContext', () => {
     expect(context.recentMessages.some((m) => m.content.includes('Continue if you have next steps'))).toBe(false);
   });
 
-  // enabled in Task 7 (pending-tasks extraction from v2 todowrite calls)
-  it.skip('extracts pending tasks from the latest todowrite call', async () => {
+  it('extracts pending tasks from the latest todowrite call', async () => {
     const context = await extractRootContext();
     expect(context.pendingTasks).toEqual(['[high] Add tests']);
   });
@@ -346,5 +345,49 @@ describe('extractOpenCodeToolData (v2)', () => {
       .find((sample) => sample.summary.includes('2 file(s) changed'));
     expect(editSummary).toBeDefined();
     expect(editSummary?.summary).toBe('2 file(s) changed (+12 -3)');
+  });
+});
+
+describe('v2 session notes and pending tasks', () => {
+  let fixture: FixtureDir;
+
+  beforeAll(() => {
+    fixture = createOpenCodeV2SqliteFixture();
+    vi.stubEnv('OPENCODE_DB', path.join(fixture.root, 'opencode.db'));
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    fixture.cleanup();
+  });
+
+  it('populates token usage, model, and fidelity metadata from session_v2', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    const context = await extractOpenCodeContext(root);
+    const notes = context.sessionNotes!;
+
+    expect(notes.tokenUsage).toEqual({ input: 1000, output: 200 });
+    expect(notes.thinkingTokens).toBe(50);
+    expect(notes.cacheTokens).toEqual({ read: 4000, creation: 100 });
+    expect(notes.model).toBe('test-model');
+    expect(notes.sourceMetadata).toMatchObject({ slug: 'test-session', projectId: 'proj_v2' });
+    expect(notes.rawAccess).toEqual({ kind: 'sqlite', path: path.join(fixture.root, 'opencode.db') });
+    expect(notes.fidelityWarnings?.join(' ')).toContain('synthetic');
+  });
+
+  it('tags subtask sessions with parentId', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const child = sessions.find((s) => s.id === 'ses_v2_child')!;
+    const context = await extractOpenCodeContext(child);
+    expect(context.sessionNotes?.sourceMetadata).toMatchObject({ parentId: 'ses_v2_root' });
+  });
+
+  it('extracts pending tasks from todowrite input', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    const context = await extractOpenCodeContext(root);
+    expect(context.pendingTasks).toEqual(['[high] Add tests']);
+    expect(context.markdown).toContain('## Pending Tasks');
   });
 });
