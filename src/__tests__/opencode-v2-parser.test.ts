@@ -292,3 +292,46 @@ describe('readMessagesFromV2Sqlite event-row policy', () => {
     }
   });
 });
+
+describe('extractOpenCodeToolData (v2)', () => {
+  let fixture: FixtureDir;
+
+  beforeAll(() => {
+    fixture = createOpenCodeV2SqliteFixture();
+    vi.stubEnv('OPENCODE_DB', path.join(fixture.root, 'opencode.db'));
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    fixture.cleanup();
+  });
+
+  async function extractRootContext() {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    return extractOpenCodeContext(root);
+  }
+
+  it('summarizes tool activity and tracks modified files', async () => {
+    const context = await extractRootContext();
+
+    const names = context.toolSummaries.map((s) => s.name);
+    expect(names).toContain('bash');
+    expect(context.filesModified).toContain('/home/user/project/login.ts');
+
+    const md = context.markdown;
+    expect(md).toContain('## Tool Activity');
+    expect(md).toContain('ls');
+    // edit diff found via state.metadata.diff
+    expect(md).toContain('login.ts');
+  });
+
+  it('counts session-level diff stats from session_v2 summary columns', async () => {
+    const context = await extractRootContext();
+    const editSummary = context.toolSummaries
+      .flatMap((s) => s.samples)
+      .find((sample) => sample.summary.includes('2 file(s) changed'));
+    expect(editSummary).toBeDefined();
+    expect(editSummary?.summary).toBe('2 file(s) changed (+12 -3)');
+  });
+});

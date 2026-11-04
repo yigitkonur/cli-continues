@@ -496,7 +496,9 @@ function summarizeOpenCodeToolPart(partData: Record<string, unknown>, collector:
     case 'edit':
     case 'apply_patch': {
       const patchText =
-        firstString(input, ['patchText', 'patch', 'diff']) || firstString(partData, ['patch', 'diff', 'text']);
+        firstString(input, ['patchText', 'patch', 'diff']) ||
+        firstString(metadata, ['diff', 'patch']) ||
+        firstString(partData, ['patch', 'diff', 'text']);
       const files = patchText ? trackPatchFiles(patchText, collector) : [];
       const filePath = firstString(input, ['filePath', 'path']) || files[0] || '(multiple)';
       const diffStats = patchText ? countDiffStats(patchText) : undefined;
@@ -1188,6 +1190,12 @@ function readMessagesFromJson(sessionId: string): ConversationMessage[] {
  */
 function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
   if (hasSqliteDb()) {
+    // OpenCode 2.x first
+    const v2Data = extractToolDataFromV2Sqlite(sessionId, config);
+    if (v2Data.summaries.length > 0 || v2Data.filesModified.length > 0) {
+      return v2Data;
+    }
+
     const sqliteData = extractOpenCodeToolDataFromSqlite(sessionId, config);
     if (sqliteData.summaries.length > 0 || sqliteData.filesModified.length > 0) {
       return sqliteData;
@@ -1195,6 +1203,72 @@ function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): Op
   }
 
   return extractOpenCodeToolDataFromJson(sessionId, config);
+}
+
+function addV2SessionEditSummary(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
+  const row = db
+    .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session_v2 WHERE id = ?')
+    .get(sessionId) as
+    | { summary_additions: number | null; summary_deletions: number | null; summary_files: number | null }
+    | undefined;
+  if (!row) return false;
+  const added = row.summary_additions ?? 0;
+  const removed = row.summary_deletions ?? 0;
+  const files = row.summary_files ?? 0;
+  if (files > 0 || added > 0 || removed > 0) {
+    collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
+      data: { category: 'edit', filePath: `(${files} files)`, diffStats: { added, removed } },
+    });
+  }
+
+  return true;
+}
+
+function extractToolDataFromV2Sqlite(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const collector = new SummaryCollector(config);
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const foundSession = addV2SessionEditSummary(sessionId, db, collector);
+
+      // Event-row policy: only assistant rows carry tool activity; excluded
+      // event types (synthetic, system, idle, ...) never contribute summaries.
+      const rows = db
+        .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq ASC")
+        .all(sessionId) as Array<{ data: string }>;
+
+      for (const row of rows) {
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 tool-summary message data', sessionId, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+        for (const rawPart of dataResult.data.content ?? []) {
+          const normalized = normalizeV2Part(rawPart);
+          if (!normalized) continue;
+          summarizeOpenCodeToolPart(normalized, collector);
+        }
+      }
+
+      if (foundSession || rows.length > 0) {
+        return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
+      }
+    } catch (err) {
+      logger.debug('opencode: v2 tool summary query failed', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return { summaries: [], filesModified: [] };
 }
 
 function addSessionEditSummaryFromSqlite(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
