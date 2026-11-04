@@ -391,3 +391,44 @@ describe('v2 session notes and pending tasks', () => {
     expect(context.markdown).toContain('## Pending Tasks');
   });
 });
+
+describe('pending tasks across multiple v2 DBs', () => {
+  let emptyV2Fixture: FixtureDir;
+  let v2WithSession: FixtureDir;
+  let dataHome: string;
+
+  beforeAll(() => {
+    // First DB in discovery order is a v2 DB that LACKS the target session;
+    // the session (with its todowrite call) lives only in the non-first channel DB.
+    emptyV2Fixture = createOpenCodeV2SqliteFixture();
+    v2WithSession = createOpenCodeV2SqliteFixture();
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req('node:sqlite');
+    const stripDb = new DatabaseSync(path.join(emptyV2Fixture.root, 'opencode.db'));
+    stripDb.exec('DELETE FROM session_message; DELETE FROM session_v2;');
+    stripDb.close();
+
+    // Multi-DB discovery layout: $XDG_DATA_HOME/opencode/opencode.db + opencode-*.db
+    dataHome = fs.mkdtempSync(path.join(os.tmpdir(), 'test-opencode-datahome-'));
+    fs.mkdirSync(path.join(dataHome, 'opencode'), { recursive: true });
+    fs.copyFileSync(path.join(emptyV2Fixture.root, 'opencode.db'), path.join(dataHome, 'opencode', 'opencode.db'));
+    fs.copyFileSync(path.join(v2WithSession.root, 'opencode.db'), path.join(dataHome, 'opencode', 'opencode-beta.db'));
+    vi.stubEnv('XDG_DATA_HOME', dataHome);
+    vi.stubEnv('OPENCODE_DB', ''); // empty string is falsy, so multi-DB discovery runs
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    emptyV2Fixture.cleanup();
+    v2WithSession.cleanup();
+    fs.rmSync(dataHome, { recursive: true, force: true });
+  });
+
+  it('extracts pending tasks from a session living in a non-first v2 DB', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    expect(root).toBeDefined();
+    const context = await extractOpenCodeContext(root);
+    expect(context.pendingTasks).toEqual(['[high] Add tests']);
+  });
+});

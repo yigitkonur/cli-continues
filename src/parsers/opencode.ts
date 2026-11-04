@@ -1687,6 +1687,7 @@ function extractPendingTasksFromV2Sqlite(sessionId: string): string[] {
       const rows = db
         .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC")
         .all(sessionId) as Array<{ data: string }>;
+      if (rows.length === 0) continue;
 
       for (const row of rows) {
         let rawData: unknown;
