@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { parseOpenCodeSessions } from '../parsers/opencode.js';
+import { normalizeV2Part, parseOpenCodeSessions } from '../parsers/opencode.js';
 import type { FixtureDir } from './fixtures/index.js';
 import { createOpenCodeSqliteFixture, createOpenCodeV2SqliteFixture } from './fixtures/index.js';
 
@@ -128,5 +128,58 @@ describe('parseOpenCodeSessions (mixed v2 + legacy DBs)', () => {
     expect(sessions).toHaveLength(3);
     expect(sessions[0]!.updatedAt.getTime()).toBeGreaterThanOrEqual(sessions[1]!.updatedAt.getTime());
     expect(sessions[1]!.updatedAt.getTime()).toBeGreaterThanOrEqual(sessions[2]!.updatedAt.getTime());
+  });
+});
+
+describe('normalizeV2Part', () => {
+  it('maps v2 tool part fields to v1 shape', () => {
+    const normalized = normalizeV2Part({
+      type: 'tool',
+      id: 'shell_1',
+      name: 'shell',
+      state: {
+        status: 'completed',
+        input: { command: 'ls' },
+        content: [{ type: 'text', text: 'login.ts' }],
+        metadata: { exit: 0 },
+      },
+    });
+    expect(normalized).toMatchObject({
+      type: 'tool',
+      tool: 'bash', // shell → bash
+      callID: 'shell_1',
+      state: {
+        status: 'completed',
+        input: { command: 'ls' },
+        output: 'login.ts',
+        metadata: { exit: 0 },
+      },
+    });
+  });
+
+  it('accepts legacy field names unchanged', () => {
+    const normalized = normalizeV2Part({
+      type: 'tool',
+      callID: 'bash_1',
+      tool: 'bash',
+      state: { status: 'completed', input: { command: 'ls' }, output: 'x' },
+    });
+    expect(normalized).toMatchObject({ tool: 'bash', callID: 'bash_1', state: { output: 'x' } });
+  });
+
+  it('maps webfetch/websearch names and keeps unknown tools', () => {
+    expect(normalizeV2Part({ type: 'tool', name: 'webfetch', state: {} })).toMatchObject({ tool: 'web_fetch' });
+    expect(normalizeV2Part({ type: 'tool', name: 'websearch', state: {} })).toMatchObject({ tool: 'web_search' });
+    expect(normalizeV2Part({ type: 'tool', name: 'question', state: {} })).toMatchObject({ tool: 'question' });
+  });
+
+  it('passes text and reasoning parts through and drops unknown types', () => {
+    expect(normalizeV2Part({ type: 'text', text: 'hello' })).toMatchObject({ type: 'text', text: 'hello' });
+    expect(normalizeV2Part({ type: 'reasoning', text: 'thinking' })).toMatchObject({
+      type: 'reasoning',
+      text: 'thinking',
+    });
+    expect(normalizeV2Part({ type: 'step-start' })).toBeNull();
+    expect(normalizeV2Part({ type: 'step-finish' })).toBeNull();
   });
 });

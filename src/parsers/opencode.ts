@@ -22,6 +22,7 @@ import type {
   SqliteProjectRow,
   SqliteSessionRow,
   SqliteV2SessionRow,
+  V2ContentPart,
 } from '../types/schemas.js';
 import {
   OpenCodeMessageSchema,
@@ -263,6 +264,48 @@ function renderHighValuePart(partData: Record<string, unknown>): {
     default:
       return {};
   }
+}
+
+const V2_TOOL_NAME_MAP: Record<string, string> = {
+  shell: 'bash',
+  webfetch: 'web_fetch',
+  websearch: 'web_search',
+};
+
+const V2_DROPPED_PART_TYPES = new Set(['step-start', 'step-finish']);
+
+/**
+ * Normalize an OpenCode v2 content part (session_message.data.content[] item)
+ * into the v1 part shape consumed by renderHighValuePart/summarizeOpenCodeToolPart.
+ * Accepts both v2 (`name`/`id`/`state.content`) and legacy (`tool`/`callID`/`state.output`)
+ * field names — both eras occur inside one session.
+ */
+export function normalizeV2Part(part: V2ContentPart): Record<string, unknown> | null {
+  if (V2_DROPPED_PART_TYPES.has(part.type)) return null;
+
+  if (part.type !== 'tool') {
+    return { ...part };
+  }
+
+  const rawName = part.name ?? part.tool ?? 'tool';
+  const tool = V2_TOOL_NAME_MAP[rawName] ?? rawName;
+  const callID = part.callID ?? part.id;
+
+  const state = isRecord(part.state) ? { ...part.state } : {};
+  if (state.output === undefined && state.error === undefined && Array.isArray(state.content)) {
+    const text = state.content
+      .filter((block): block is { type: string; text: string } => isRecord(block) && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n');
+    if (text) state.output = text;
+  }
+
+  return {
+    type: 'tool',
+    tool,
+    ...(callID ? { callID } : {}),
+    state,
+  };
 }
 
 interface OpenCodeToolData {
