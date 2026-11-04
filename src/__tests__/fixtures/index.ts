@@ -483,6 +483,128 @@ export function createOpenCodeSqliteFixture(): FixtureDir {
 }
 
 /**
+ * Create a temporary SQLite database with OpenCode v2 session fixtures
+ * (session_v2 + session_message schema, as of OpenCode 2.2.5).
+ */
+export function createOpenCodeV2SqliteFixture(): FixtureDir {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'test-opencode-v2-'));
+  const dbPath = path.join(root, 'opencode.db');
+
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(dbPath);
+
+  db.exec(`
+    CREATE TABLE project (
+      id TEXT PRIMARY KEY,
+      worktree TEXT NOT NULL,
+      vcs TEXT,
+      name TEXT,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL
+    );
+    CREATE TABLE session_v2 (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      workspace_id TEXT,
+      parent_id TEXT,
+      slug TEXT NOT NULL,
+      directory TEXT NOT NULL,
+      path TEXT,
+      title TEXT,
+      version TEXT NOT NULL,
+      summary_additions INTEGER,
+      summary_deletions INTEGER,
+      summary_files INTEGER,
+      summary_diffs TEXT,
+      metadata TEXT,
+      cost REAL NOT NULL DEFAULT 0,
+      tokens_input INTEGER NOT NULL DEFAULT 0,
+      tokens_output INTEGER NOT NULL DEFAULT 0,
+      tokens_reasoning INTEGER NOT NULL DEFAULT 0,
+      tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+      tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+      agent TEXT,
+      model TEXT,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL,
+      time_archived INTEGER,
+      FOREIGN KEY (project_id) REFERENCES project(id)
+    );
+    CREATE TABLE session_message (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES session_v2(id)
+    );
+  `);
+
+  const now = Date.now();
+
+  db.prepare('INSERT INTO project VALUES (?, ?, ?, ?, ?, ?)').run(
+    'proj_v2', '/home/user/project', 'git', 'project', now - 20000, now,
+  );
+
+  const insertSession = db.prepare(
+    'INSERT INTO session_v2 (id, project_id, parent_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, model, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  insertSession.run(
+    'ses_v2_root', 'proj_v2', null, 'test-session', '/home/user/project', 'Fix v2 auth bug', '2.2.5',
+    12, 3, 2, 0.42, 1000, 200, 50, 4000, 100,
+    JSON.stringify({ id: 'test-model', providerID: 'test', variant: 'max' }),
+    now - 5000, now,
+  );
+  insertSession.run(
+    'ses_v2_child', 'proj_v2', 'ses_v2_root', 'subtask', '/home/user/project', 'Subtask', '2.2.5',
+    null, null, null, 0, 0, 0, 0, 0, 0,
+    JSON.stringify({ id: 'test-model', providerID: 'test' }),
+    now - 3000, now - 2000,
+  );
+
+  let seq = 0;
+  const insertMessage = db.prepare(
+    'INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  insertMessage.run(
+    'msg_v2_user1', 'ses_v2_root', 'user', seq++, now - 4000, now - 4000,
+    JSON.stringify({ text: 'Fix the auth bug in login.ts', time: { created: now - 4000 } }),
+  );
+  insertMessage.run(
+    'msg_v2_assistant1', 'ses_v2_root', 'assistant', seq++, now - 3500, now - 3400,
+    JSON.stringify({
+      agent: 'build',
+      model: { providerID: 'test', id: 'test-model', variant: 'max' },
+      content: [
+        { type: 'reasoning', text: 'I should inspect login.ts first.' },
+        { type: 'tool', id: 'shell_1', name: 'shell', state: { status: 'completed', input: { command: 'ls' }, content: [{ type: 'text', text: 'login.ts' }], metadata: { exit: 0 } } },
+        { type: 'tool', id: 'read_1', name: 'read', state: { status: 'completed', input: { path: '/home/user/project/login.ts' }, content: [{ type: 'text', text: 'export function login() {}' }], metadata: {} } },
+        { type: 'tool', id: 'edit_1', name: 'edit', state: { status: 'completed', input: { path: '/home/user/project/login.ts', oldString: 'a', newString: 'b' }, metadata: { diff: '--- a/login.ts\n+++ b/login.ts\n@@ -1 +1 @@\n-a\n+b\n' } } },
+        { type: 'tool', id: 'todowrite_1', name: 'todowrite', state: { status: 'completed', input: { todos: [{ content: 'Add tests', priority: 'high', status: 'pending' }, { content: 'Done thing', priority: 'low', status: 'completed' }] } } },
+        { type: 'text', text: 'Fixed the auth bug.' },
+      ],
+    }),
+  );
+  insertMessage.run(
+    'msg_v2_compact1', 'ses_v2_root', 'compaction', seq++, now - 3000, now - 3000,
+    JSON.stringify({ status: 'completed', reason: 'auto', summary: 'Discussed auth flow.', recent: '' }),
+  );
+  insertMessage.run(
+    'msg_v2_synth1', 'ses_v2_root', 'synthetic', seq++, now - 2500, now - 2500,
+    JSON.stringify({ text: 'Continue if you have next steps.', time: { created: now - 2500 } }),
+  );
+  insertMessage.run(
+    'msg_v2_user2', 'ses_v2_child', 'user', seq++, now - 2000, now - 2000,
+    JSON.stringify({ text: 'Subtask prompt', time: { created: now - 2000 } }),
+  );
+
+  db.close();
+  return { root, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+/**
  * Create a temporary `.crush/crush.db` SQLite fixture matching the schema the
  * Crush parser introspects (see src/parsers/crush.ts). The fixture lives under
  * `<root>/project/.crush/crush.db` so cwd-ancestor discovery resolves the
