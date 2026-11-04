@@ -29,7 +29,9 @@ import {
   OpenCodePartSchema,
   OpenCodeProjectSchema,
   OpenCodeSessionSchema,
+  SqliteV2MessageRowSchema,
   SqliteV2SessionRowSchema,
+  V2MessageDataSchema,
 } from '../types/schemas.js';
 import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
@@ -939,14 +941,116 @@ async function parseSessionsFromJson(): Promise<UnifiedSession[]> {
  * Read all messages from an OpenCode session - SQLite first, then JSON fallback
  */
 function readAllMessages(sessionId: string): ConversationMessage[] {
-  // Try SQLite first
+  // OpenCode 2.x first
   if (hasSqliteDb()) {
+    const v2Msgs = readMessagesFromV2Sqlite(sessionId);
+    if (v2Msgs.length > 0) return v2Msgs;
+
     const msgs = readMessagesFromSqlite(sessionId);
     if (msgs.length > 0) return msgs;
   }
 
-  // Fallback to JSON files
   return readMessagesFromJson(sessionId);
+}
+
+/**
+ * Read conversation messages from OpenCode v2 SQLite tables (session_message).
+ *
+ * Event-row policy (prompt-injection defense): only `user`/`assistant` rows become
+ * conversation messages, `compaction` becomes a meta system message, and all other
+ * row types (`synthetic`, `system`, `idle`, `agent-switched`, `model-switched`, ...)
+ * are excluded entirely — their content never reaches the target CLI.
+ */
+function readMessagesFromV2Sqlite(sessionId: string): ConversationMessage[] {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare(
+          'SELECT id, session_id, type, seq, time_created, time_updated, data FROM session_message WHERE session_id = ? ORDER BY seq ASC',
+        )
+        .all(sessionId) as unknown[];
+      if (rows.length === 0) continue;
+
+      const messages: ConversationMessage[] = [];
+      for (const raw of rows) {
+        const rowResult = SqliteV2MessageRowSchema.safeParse(raw);
+        if (!rowResult.success) continue;
+        const row = rowResult.data;
+
+        if (row.type === 'compaction') {
+          let summary = '';
+          try {
+            summary = (JSON.parse(row.data) as { summary?: string }).summary ?? '';
+          } catch (err) {
+            logger.debug('opencode: failed to parse v2 compaction data', row.id, err);
+          }
+          if (summary) {
+            messages.push({
+              role: 'system',
+              content: `[compacted context] ${summary}`,
+              timestamp: new Date(row.time_created),
+              sourceId: row.id,
+              isMeta: true,
+            });
+          }
+          continue;
+        }
+
+        // Anti prompt-injection: auto-generated steering rows never reach the target CLI.
+        if (row.type !== 'user' && row.type !== 'assistant') continue;
+
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 message data', row.id, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+        const data = dataResult.data;
+
+        const contentParts: string[] = [];
+        const toolCalls: NonNullable<ConversationMessage['toolCalls']> = [];
+
+        if (row.type === 'user') {
+          if (data.text) contentParts.push(data.text);
+        } else {
+          for (const rawPart of data.content ?? []) {
+            const normalized = normalizeV2Part(rawPart);
+            if (!normalized) continue;
+            const rendered = renderHighValuePart(normalized);
+            if (rendered.content) contentParts.push(rendered.content);
+            if (rendered.toolCall) toolCalls.push(rendered.toolCall);
+          }
+        }
+
+        const content = contentParts.join('\n').trim();
+        if (content) {
+          messages.push({
+            role: row.type === 'user' ? 'user' : 'assistant',
+            content,
+            timestamp: new Date(row.time_created),
+            sourceId: row.id,
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          });
+        }
+      }
+
+      return messages;
+    } catch (err) {
+      logger.debug('opencode: v2 message query failed', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return [];
 }
 
 /**

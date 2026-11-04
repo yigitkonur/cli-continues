@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { normalizeV2Part, parseOpenCodeSessions } from '../parsers/opencode.js';
+import { extractOpenCodeContext, normalizeV2Part, parseOpenCodeSessions } from '../parsers/opencode.js';
 import type { FixtureDir } from './fixtures/index.js';
 import { createOpenCodeSqliteFixture, createOpenCodeV2SqliteFixture } from './fixtures/index.js';
 
@@ -181,5 +181,114 @@ describe('normalizeV2Part', () => {
     });
     expect(normalizeV2Part({ type: 'step-start' })).toBeNull();
     expect(normalizeV2Part({ type: 'step-finish' })).toBeNull();
+  });
+});
+
+describe('readMessagesFromV2Sqlite via extractOpenCodeContext', () => {
+  let fixture: FixtureDir;
+
+  beforeAll(() => {
+    fixture = createOpenCodeV2SqliteFixture();
+    vi.stubEnv('OPENCODE_DB', path.join(fixture.root, 'opencode.db'));
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    fixture.cleanup();
+  });
+
+  async function extractRootContext() {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    return extractOpenCodeContext(root);
+  }
+
+  it('extracts user and assistant messages with tool calls', async () => {
+    const context = await extractRootContext();
+    const roles = context.recentMessages.map((m) => m.role);
+    expect(roles).toContain('user');
+    expect(roles).toContain('assistant');
+
+    const assistant = context.recentMessages.find((m) => m.role === 'assistant')!;
+    expect(assistant.content).toContain('Fixed the auth bug.');
+    expect(assistant.content).toContain('[reasoning]');
+    const toolNames = (assistant.toolCalls ?? []).map((t) => t.name);
+    expect(toolNames).toEqual(['bash', 'read', 'edit', 'todowrite']);
+  });
+
+  it('renders shell results and keeps v2 `path` inputs', async () => {
+    const context = await extractRootContext();
+    const assistant = context.recentMessages.find((m) => m.role === 'assistant')!;
+    const bash = assistant.toolCalls!.find((t) => t.name === 'bash')!;
+    expect(bash.result).toContain('login.ts');
+    const read = assistant.toolCalls!.find((t) => t.name === 'read')!;
+    expect(read.arguments).toMatchObject({ path: '/home/user/project/login.ts' });
+  });
+
+  it('includes compaction as meta system message and excludes synthetic rows', async () => {
+    const context = await extractRootContext();
+    const meta = context.recentMessages.filter((m) => m.isMeta);
+    expect(
+      meta.some((m) => m.role === 'system' && m.content.includes('[compacted context] Discussed auth flow.')),
+    ).toBe(true);
+    expect(context.recentMessages.some((m) => m.content.includes('Continue if you have next steps'))).toBe(false);
+  });
+
+  // enabled in Task 7 (pending-tasks extraction from v2 todowrite calls)
+  it.skip('extracts pending tasks from the latest todowrite call', async () => {
+    const context = await extractRootContext();
+    expect(context.pendingTasks).toEqual(['[high] Add tests']);
+  });
+});
+
+describe('readMessagesFromV2Sqlite event-row policy', () => {
+  let fixture: FixtureDir;
+  const markers = [
+    'SECRET_SYSTEM_PROMPT_MARKER',
+    'SECRET_IDLE_MARKER',
+    'SECRET_AGENT_SWITCH_MARKER',
+    'SECRET_MODEL_SWITCH_MARKER',
+    'SECRET_UNKNOWN_TYPE_MARKER',
+  ];
+
+  beforeAll(() => {
+    fixture = createOpenCodeV2SqliteFixture();
+    // Seed event rows that must never reach the conversation or handoff
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req('node:sqlite');
+    const db = new DatabaseSync(path.join(fixture.root, 'opencode.db'));
+    const insert = db.prepare(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const now = Date.now();
+    const eventRows: Array<[string, string, string]> = [
+      ['msg_v2_sys1', 'system', markers[0]!],
+      ['msg_v2_idle1', 'idle', markers[1]!],
+      ['msg_v2_agent1', 'agent-switched', markers[2]!],
+      ['msg_v2_model1', 'model-switched', markers[3]!],
+      ['msg_v2_unknown1', 'totally-unknown', markers[4]!],
+    ];
+    for (const [id, type, text] of eventRows) {
+      insert.run(id, 'ses_v2_root', type, 100, now, now, JSON.stringify({ text }));
+    }
+    db.close();
+    vi.stubEnv('OPENCODE_DB', path.join(fixture.root, 'opencode.db'));
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    fixture.cleanup();
+  });
+
+  it('never lets excluded event rows reach the conversation or handoff', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root')!;
+    const context = await extractOpenCodeContext(root);
+
+    const allContent = context.recentMessages.map((m) => m.content).join('\n');
+    for (const marker of markers) {
+      expect(allContent).not.toContain(marker);
+      expect(context.markdown).not.toContain(marker);
+    }
   });
 });
