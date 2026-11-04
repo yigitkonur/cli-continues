@@ -736,7 +736,7 @@ register({
   name: 'opencode',
   label: 'OpenCode',
   color: chalk.yellow,
-  storagePath: '~/.local/share/opencode/storage/',
+  storagePath: '~/.local/share/opencode/opencode.db',
   envVar: 'XDG_DATA_HOME',
   binaryName: 'opencode',
   parseSessions: parseOpenCodeSessions,

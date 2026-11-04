@@ -43,7 +43,7 @@ CLI (src/cli.ts) → Registry (src/parsers/registry.ts) → Index (src/utils/ind
    - `codex.ts` — JSONL files under `~/.codex/sessions/`, streamed with `readline`
    - `copilot.ts` — YAML workspace + JSONL events under `~/.copilot/session-state/`
    - `gemini.ts` — JSON files under `~/.gemini/tmp/*/chats/`
-   - `opencode.ts` — SQLite DB at `~/.local/share/opencode/opencode.db` (via `node:sqlite`), with JSON file fallback
+   - `opencode.ts` — SQLite DB at `~/.local/share/opencode/opencode.db` (via `node:sqlite`): reads 2.x `session_v2`/`session_message` tables first, falls back to legacy 1.x `session`/`message`/`part` tables, then JSON files under `storage/`
    - `droid.ts` — JSONL + companion `.settings.json` under `~/.factory/sessions/<workspace-slug>/`
    - `cursor.ts` — JSONL agent transcripts under `~/.cursor/projects/*/agent-transcripts/`
 
