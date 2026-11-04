@@ -21,12 +21,14 @@ import type {
   SqlitePartRow,
   SqliteProjectRow,
   SqliteSessionRow,
+  SqliteV2SessionRow,
 } from '../types/schemas.js';
 import {
   OpenCodeMessageSchema,
   OpenCodePartSchema,
   OpenCodeProjectSchema,
   OpenCodeSessionSchema,
+  SqliteV2SessionRowSchema,
 } from '../types/schemas.js';
 import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
@@ -644,17 +646,117 @@ function countSessionLines(sessionId: string): number {
 }
 
 /**
- * Parse all OpenCode sessions - SQLite first, then JSON fallback
+ * Parse all OpenCode sessions - v2 SQLite first, then legacy SQLite, then JSON fallback
  */
 export async function parseOpenCodeSessions(): Promise<UnifiedSession[]> {
-  // Try SQLite database first (newer OpenCode versions)
+  // OpenCode 2.x live storage first (session_v2)
   if (hasSqliteDb()) {
+    const v2Sessions = parseSessionsFromV2Sqlite();
+    if (v2Sessions.length > 0) return v2Sessions;
+
+    // OpenCode 1.x tables (frozen legacy DBs)
     const sessions = parseSessionsFromSqlite();
     if (sessions.length > 0) return sessions;
   }
 
   // Fallback to JSON files (older OpenCode versions)
   return parseSessionsFromJson();
+}
+
+/** True when the DB carries OpenCode v2 tables (2.x live storage). */
+function hasV2Tables(db: SqliteDatabase): boolean {
+  try {
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_v2'").get();
+    return row !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse sessions from OpenCode v2 SQLite tables (session_v2 / session_message)
+ */
+function parseSessionsFromV2Sqlite(): UnifiedSession[] {
+  const sessionsById = new Map<string, UnifiedSession>();
+
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare(
+          'SELECT id, project_id, parent_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, model, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, time_created, time_updated FROM session_v2 ORDER BY time_updated DESC',
+        )
+        .all() as unknown[];
+
+      const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
+      const projectMap = new Map(projectRows.map((p: SqliteProjectRow) => [p.id, p.worktree]));
+
+      for (const raw of rows) {
+        const parsed = SqliteV2SessionRowSchema.safeParse(raw);
+        if (!parsed.success) continue;
+        const row: SqliteV2SessionRow = parsed.data;
+
+        const cwd = row.directory || projectMap.get(row.project_id) || '';
+        const msgCount = db
+          .prepare('SELECT COUNT(*) as cnt FROM session_message WHERE session_id = ? AND type IN (?, ?)')
+          .get(row.id, 'user', 'assistant') as { cnt: number } | undefined;
+
+        let summary = row.title ?? '';
+        if (!summary || summary.startsWith('New session')) {
+          const firstMsg = db
+            .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq ASC LIMIT 1")
+            .get(row.id) as { data: string } | undefined;
+          if (firstMsg) {
+            try {
+              const text = (JSON.parse(firstMsg.data) as { text?: string }).text;
+              if (text) summary = text.replace(/\s+/g, ' ').trim().slice(0, 50);
+            } catch (err) {
+              logger.debug('opencode: failed to parse v2 first-user-message data', row.id, err);
+            }
+          }
+        }
+
+        let model: string | undefined;
+        if (row.model) {
+          try {
+            const modelData = JSON.parse(row.model) as { id?: string };
+            model = modelData.id;
+          } catch {
+            model = undefined;
+          }
+        }
+
+        const nextSession: UnifiedSession = {
+          id: row.id,
+          source: 'opencode',
+          cwd,
+          repo: extractRepoFromCwd(cwd),
+          lines: msgCount?.cnt ?? 0,
+          bytes: 0,
+          createdAt: new Date(row.time_created),
+          updatedAt: new Date(row.time_updated),
+          originalPath: dbPath,
+          summary: summary?.slice(0, 60) || row.slug || undefined,
+          ...(model ? { model } : {}),
+        };
+
+        const existing = sessionsById.get(nextSession.id);
+        if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
+          sessionsById.set(nextSession.id, nextSession);
+        }
+      }
+    } catch (err) {
+      logger.debug('opencode: v2 session query failed', dbPath, err);
+    } finally {
+      close();
+    }
+  }
+
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 /**
