@@ -70,10 +70,39 @@ describe('parseOpenCodeSessions (v2)', () => {
     expect(sessions[0]!.updatedAt.getTime()).toBeGreaterThanOrEqual(sessions[1]!.updatedAt.getTime());
   });
 
-  it('falls back to first user message when title is empty', async () => {
+  it('prefers session title over first user message when title is set', async () => {
     const sessions = await parseOpenCodeSessions();
     const child = sessions.find((s) => s.id === 'ses_v2_child');
-    expect(child?.summary).toBe('Subtask'); // fixture title wins; no crash on missing fields
+    expect(child?.summary).toBe('Subtask'); // fixture title wins over 'Subtask prompt'; no crash on missing fields
+  });
+});
+
+describe('parseOpenCodeSessions (v2 title fallback)', () => {
+  let fixture: FixtureDir;
+
+  beforeAll(() => {
+    fixture = createOpenCodeV2SqliteFixture();
+    // Force the title-fallback branch in parseSessionsFromV2Sqlite: an empty
+    // title is treated as absent there (row.title ?? '' then !summary).
+    const req = createRequire(import.meta.url);
+    const { DatabaseSync } = req('node:sqlite');
+    const db = new DatabaseSync(path.join(fixture.root, 'opencode.db'));
+    db.prepare("UPDATE session_v2 SET title = '' WHERE id = 'ses_v2_root'").run();
+    db.close();
+    vi.stubEnv('OPENCODE_DB', path.join(fixture.root, 'opencode.db'));
+  });
+
+  afterAll(() => {
+    vi.unstubAllEnvs();
+    fixture.cleanup();
+  });
+
+  it('falls back to first user message when title is empty', async () => {
+    const sessions = await parseOpenCodeSessions();
+    const root = sessions.find((s) => s.id === 'ses_v2_root');
+    // Expected string derived from the fallback code (opencode.ts): the first
+    // user message text, whitespace-collapsed and capped at 50 chars.
+    expect(root?.summary).toBe('Fix the auth bug in login.ts');
   });
 });
 
@@ -285,6 +314,9 @@ describe('readMessagesFromV2Sqlite event-row policy', () => {
     const context = await extractOpenCodeContext(root);
 
     const allContent = context.recentMessages.map((m) => m.content).join('\n');
+    // Positive guard: extraction must yield the real conversation, so the
+    // not.toContain checks below cannot pass vacuously on zero messages.
+    expect(allContent).toContain('Fixed the auth bug.');
     for (const marker of markers) {
       expect(allContent).not.toContain(marker);
       expect(context.markdown).not.toContain(marker);
