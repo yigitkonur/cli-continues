@@ -21,12 +21,17 @@ import type {
   SqlitePartRow,
   SqliteProjectRow,
   SqliteSessionRow,
+  SqliteV2SessionRow,
+  V2ContentPart,
 } from '../types/schemas.js';
 import {
   OpenCodeMessageSchema,
   OpenCodePartSchema,
   OpenCodeProjectSchema,
   OpenCodeSessionSchema,
+  SqliteV2MessageRowSchema,
+  SqliteV2SessionRowSchema,
+  V2MessageDataSchema,
 } from '../types/schemas.js';
 import { countDiffStats, extractStdoutTail } from '../utils/diff.js';
 import { findFiles, listSubdirectories } from '../utils/fs-helpers.js';
@@ -263,6 +268,48 @@ function renderHighValuePart(partData: Record<string, unknown>): {
   }
 }
 
+const V2_TOOL_NAME_MAP: Record<string, string> = {
+  shell: 'bash',
+  webfetch: 'web_fetch',
+  websearch: 'web_search',
+};
+
+const V2_DROPPED_PART_TYPES = new Set(['step-start', 'step-finish']);
+
+/**
+ * Normalize an OpenCode v2 content part (session_message.data.content[] item)
+ * into the v1 part shape consumed by renderHighValuePart/summarizeOpenCodeToolPart.
+ * Accepts both v2 (`name`/`id`/`state.content`) and legacy (`tool`/`callID`/`state.output`)
+ * field names — both eras occur inside one session.
+ */
+export function normalizeV2Part(part: V2ContentPart): Record<string, unknown> | null {
+  if (V2_DROPPED_PART_TYPES.has(part.type)) return null;
+
+  if (part.type !== 'tool') {
+    return { ...part };
+  }
+
+  const rawName = part.name ?? part.tool ?? 'tool';
+  const tool = V2_TOOL_NAME_MAP[rawName] ?? rawName;
+  const callID = part.callID ?? part.id;
+
+  const state = isRecord(part.state) ? { ...part.state } : {};
+  if (state.output === undefined && state.error === undefined && Array.isArray(state.content)) {
+    const text = state.content
+      .filter((block): block is { type: string; text: string } => isRecord(block) && typeof block.text === 'string')
+      .map((block) => block.text)
+      .join('\n');
+    if (text) state.output = text;
+  }
+
+  return {
+    type: 'tool',
+    tool,
+    ...(callID ? { callID } : {}),
+    state,
+  };
+}
+
 interface OpenCodeToolData {
   summaries: ToolUsageSummary[];
   filesModified: string[];
@@ -449,7 +496,9 @@ function summarizeOpenCodeToolPart(partData: Record<string, unknown>, collector:
     case 'edit':
     case 'apply_patch': {
       const patchText =
-        firstString(input, ['patchText', 'patch', 'diff']) || firstString(partData, ['patch', 'diff', 'text']);
+        firstString(input, ['patchText', 'patch', 'diff']) ||
+        firstString(metadata, ['diff', 'patch']) ||
+        firstString(partData, ['patch', 'diff', 'text']);
       const files = patchText ? trackPatchFiles(patchText, collector) : [];
       const filePath = firstString(input, ['filePath', 'path']) || files[0] || '(multiple)';
       const diffStats = patchText ? countDiffStats(patchText) : undefined;
@@ -644,21 +693,127 @@ function countSessionLines(sessionId: string): number {
 }
 
 /**
- * Parse all OpenCode sessions - SQLite first, then JSON fallback
+ * Parse all OpenCode sessions - per-DB routing: v2 and legacy SQLite sessions are merged,
+ * then JSON fallback when neither stage finds anything
  */
 export async function parseOpenCodeSessions(): Promise<UnifiedSession[]> {
-  // Try SQLite database first (newer OpenCode versions)
   if (hasSqliteDb()) {
-    const sessions = parseSessionsFromSqlite();
-    if (sessions.length > 0) return sessions;
+    // Each DB is routed by hasV2Tables: v2 DBs via parseSessionsFromV2Sqlite, legacy-only
+    // DBs via parseSessionsFromSqlite. Merge both stages so one DB type cannot hide the other.
+    const sessionsById = new Map<string, UnifiedSession>();
+    for (const session of [...parseSessionsFromV2Sqlite(), ...parseSessionsFromSqlite()]) {
+      const existing = sessionsById.get(session.id);
+      if (!existing || existing.updatedAt.getTime() < session.updatedAt.getTime()) {
+        sessionsById.set(session.id, session);
+      }
+    }
+
+    const merged = Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    if (merged.length > 0) return merged;
   }
 
   // Fallback to JSON files (older OpenCode versions)
   return parseSessionsFromJson();
 }
 
+/** True when the DB carries OpenCode v2 tables (2.x live storage). */
+function hasV2Tables(db: SqliteDatabase): boolean {
+  try {
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_v2'").get();
+    return row !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Parse sessions from SQLite database
+ * Parse sessions from OpenCode v2 SQLite tables (session_v2 / session_message)
+ */
+function parseSessionsFromV2Sqlite(): UnifiedSession[] {
+  const sessionsById = new Map<string, UnifiedSession>();
+
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare(
+          'SELECT id, project_id, parent_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, model, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write, time_created, time_updated FROM session_v2 ORDER BY time_updated DESC',
+        )
+        .all() as unknown[];
+
+      const projectRows = db.prepare('SELECT id, worktree FROM project').all() as SqliteProjectRow[];
+      const projectMap = new Map(projectRows.map((p: SqliteProjectRow) => [p.id, p.worktree]));
+
+      for (const raw of rows) {
+        const parsed = SqliteV2SessionRowSchema.safeParse(raw);
+        if (!parsed.success) continue;
+        const row: SqliteV2SessionRow = parsed.data;
+
+        const cwd = row.directory || projectMap.get(row.project_id) || '';
+        const msgCount = db
+          .prepare('SELECT COUNT(*) as cnt FROM session_message WHERE session_id = ? AND type IN (?, ?)')
+          .get(row.id, 'user', 'assistant') as { cnt: number } | undefined;
+
+        let summary = row.title ?? '';
+        if (!summary || summary.startsWith('New session')) {
+          const firstMsg = db
+            .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'user' ORDER BY seq ASC LIMIT 1")
+            .get(row.id) as { data: string } | undefined;
+          if (firstMsg) {
+            try {
+              const text = (JSON.parse(firstMsg.data) as { text?: string }).text;
+              if (text) summary = text.replace(/\s+/g, ' ').trim().slice(0, 50);
+            } catch (err) {
+              logger.debug('opencode: failed to parse v2 first-user-message data', row.id, err);
+            }
+          }
+        }
+
+        let model: string | undefined;
+        if (row.model) {
+          try {
+            const modelData = JSON.parse(row.model) as { id?: string };
+            model = modelData.id;
+          } catch {
+            model = undefined;
+          }
+        }
+
+        const nextSession: UnifiedSession = {
+          id: row.id,
+          source: 'opencode',
+          cwd,
+          repo: extractRepoFromCwd(cwd),
+          lines: msgCount?.cnt ?? 0,
+          bytes: 0,
+          createdAt: new Date(row.time_created),
+          updatedAt: new Date(row.time_updated),
+          originalPath: dbPath,
+          summary: summary?.slice(0, 60) || row.slug || undefined,
+          ...(model ? { model } : {}),
+        };
+
+        const existing = sessionsById.get(nextSession.id);
+        if (!existing || existing.updatedAt.getTime() < nextSession.updatedAt.getTime()) {
+          sessionsById.set(nextSession.id, nextSession);
+        }
+      }
+    } catch (err) {
+      logger.debug('opencode: v2 session query failed', dbPath, err);
+    } finally {
+      close();
+    }
+  }
+
+  return Array.from(sessionsById.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+/**
+ * Parse sessions from SQLite database (legacy 1.x tables; v2 DBs are routed to parseSessionsFromV2Sqlite)
  */
 function parseSessionsFromSqlite(): UnifiedSession[] {
   const sessionsById = new Map<string, UnifiedSession>();
@@ -669,6 +824,9 @@ function parseSessionsFromSqlite(): UnifiedSession[] {
 
     const { db, close } = handle;
     try {
+      // Per-DB routing: v2 DBs are read by parseSessionsFromV2Sqlite instead.
+      if (hasV2Tables(db)) continue;
+
       const rows = db
         .prepare(
           'SELECT id, project_id, slug, directory, title, version, summary_additions, summary_deletions, summary_files, time_created, time_updated FROM session ORDER BY time_updated DESC',
@@ -785,14 +943,116 @@ async function parseSessionsFromJson(): Promise<UnifiedSession[]> {
  * Read all messages from an OpenCode session - SQLite first, then JSON fallback
  */
 function readAllMessages(sessionId: string): ConversationMessage[] {
-  // Try SQLite first
+  // OpenCode 2.x first
   if (hasSqliteDb()) {
+    const v2Msgs = readMessagesFromV2Sqlite(sessionId);
+    if (v2Msgs.length > 0) return v2Msgs;
+
     const msgs = readMessagesFromSqlite(sessionId);
     if (msgs.length > 0) return msgs;
   }
 
-  // Fallback to JSON files
   return readMessagesFromJson(sessionId);
+}
+
+/**
+ * Read conversation messages from OpenCode v2 SQLite tables (session_message).
+ *
+ * Event-row policy (prompt-injection defense): only `user`/`assistant` rows become
+ * conversation messages, `compaction` becomes a meta system message, and all other
+ * row types (`synthetic`, `system`, `idle`, `agent-switched`, `model-switched`, ...)
+ * are excluded entirely — their content never reaches the target CLI.
+ */
+function readMessagesFromV2Sqlite(sessionId: string): ConversationMessage[] {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare(
+          'SELECT id, session_id, type, seq, time_created, time_updated, data FROM session_message WHERE session_id = ? ORDER BY seq ASC',
+        )
+        .all(sessionId) as unknown[];
+      if (rows.length === 0) continue;
+
+      const messages: ConversationMessage[] = [];
+      for (const raw of rows) {
+        const rowResult = SqliteV2MessageRowSchema.safeParse(raw);
+        if (!rowResult.success) continue;
+        const row = rowResult.data;
+
+        if (row.type === 'compaction') {
+          let summary = '';
+          try {
+            summary = (JSON.parse(row.data) as { summary?: string }).summary ?? '';
+          } catch (err) {
+            logger.debug('opencode: failed to parse v2 compaction data', row.id, err);
+          }
+          if (summary) {
+            messages.push({
+              role: 'system',
+              content: `[compacted context] ${summary}`,
+              timestamp: new Date(row.time_created),
+              sourceId: row.id,
+              isMeta: true,
+            });
+          }
+          continue;
+        }
+
+        // Anti prompt-injection: auto-generated steering rows never reach the target CLI.
+        if (row.type !== 'user' && row.type !== 'assistant') continue;
+
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 message data', row.id, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+        const data = dataResult.data;
+
+        const contentParts: string[] = [];
+        const toolCalls: NonNullable<ConversationMessage['toolCalls']> = [];
+
+        if (row.type === 'user') {
+          if (data.text) contentParts.push(data.text);
+        } else {
+          for (const rawPart of data.content ?? []) {
+            const normalized = normalizeV2Part(rawPart);
+            if (!normalized) continue;
+            const rendered = renderHighValuePart(normalized);
+            if (rendered.content) contentParts.push(rendered.content);
+            if (rendered.toolCall) toolCalls.push(rendered.toolCall);
+          }
+        }
+
+        const content = contentParts.join('\n').trim();
+        if (content) {
+          messages.push({
+            role: row.type === 'user' ? 'user' : 'assistant',
+            content,
+            timestamp: new Date(row.time_created),
+            sourceId: row.id,
+            ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          });
+        }
+      }
+
+      return messages;
+    } catch (err) {
+      logger.debug('opencode: v2 message query failed', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return [];
 }
 
 /**
@@ -930,6 +1190,12 @@ function readMessagesFromJson(sessionId: string): ConversationMessage[] {
  */
 function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
   if (hasSqliteDb()) {
+    // OpenCode 2.x first
+    const v2Data = extractToolDataFromV2Sqlite(sessionId, config);
+    if (v2Data.summaries.length > 0 || v2Data.filesModified.length > 0) {
+      return v2Data;
+    }
+
     const sqliteData = extractOpenCodeToolDataFromSqlite(sessionId, config);
     if (sqliteData.summaries.length > 0 || sqliteData.filesModified.length > 0) {
       return sqliteData;
@@ -937,6 +1203,72 @@ function extractOpenCodeToolData(sessionId: string, config: VerbosityConfig): Op
   }
 
   return extractOpenCodeToolDataFromJson(sessionId, config);
+}
+
+function addV2SessionEditSummary(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
+  const row = db
+    .prepare('SELECT summary_additions, summary_deletions, summary_files FROM session_v2 WHERE id = ?')
+    .get(sessionId) as
+    | { summary_additions: number | null; summary_deletions: number | null; summary_files: number | null }
+    | undefined;
+  if (!row) return false;
+  const added = row.summary_additions ?? 0;
+  const removed = row.summary_deletions ?? 0;
+  const files = row.summary_files ?? 0;
+  if (files > 0 || added > 0 || removed > 0) {
+    collector.add('Edit', `${files} file(s) changed (+${added} -${removed})`, {
+      data: { category: 'edit', filePath: `(${files} files)`, diffStats: { added, removed } },
+    });
+  }
+
+  return true;
+}
+
+function extractToolDataFromV2Sqlite(sessionId: string, config: VerbosityConfig): OpenCodeToolData {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const collector = new SummaryCollector(config);
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const foundSession = addV2SessionEditSummary(sessionId, db, collector);
+
+      // Event-row policy: only assistant rows carry tool activity; excluded
+      // event types (synthetic, system, idle, ...) never contribute summaries.
+      const rows = db
+        .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq ASC")
+        .all(sessionId) as Array<{ data: string }>;
+
+      for (const row of rows) {
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 tool-summary message data', sessionId, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+        for (const rawPart of dataResult.data.content ?? []) {
+          const normalized = normalizeV2Part(rawPart);
+          if (!normalized) continue;
+          summarizeOpenCodeToolPart(normalized, collector);
+        }
+      }
+
+      if (foundSession || rows.length > 0) {
+        return { summaries: collector.getSummaries(), filesModified: collector.getFilesModified() };
+      }
+    } catch (err) {
+      logger.debug('opencode: v2 tool summary query failed', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return { summaries: [], filesModified: [] };
 }
 
 function addSessionEditSummaryFromSqlite(sessionId: string, db: SqliteDatabase, collector: SummaryCollector): boolean {
@@ -1110,6 +1442,69 @@ function addReasoningHighlight(partData: Record<string, unknown>, reasoning: str
   if (firstLine) reasoning.push(truncate(firstLine, 200));
 }
 
+const V2_FIDELITY_WARNING =
+  'Excluded auto-generated rows from conversation: synthetic, system, idle, agent-switched, model-switched.';
+
+/**
+ * Extract session notes from OpenCode v2 SQLite storage (session_v2 + session_message)
+ */
+function extractSessionNotesFromV2Sqlite(sessionId: string): SessionNotes | undefined {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rowResult = SqliteV2SessionRowSchema.safeParse(
+        db.prepare('SELECT * FROM session_v2 WHERE id = ?').get(sessionId),
+      );
+      if (!rowResult.success) continue;
+      const row = rowResult.data;
+
+      const notes: SessionNotes = {
+        tokenUsage: { input: row.tokens_input ?? 0, output: row.tokens_output ?? 0 },
+        activeTimeMs: row.time_updated - row.time_created,
+        sourceMetadata: {
+          ...(row.slug ? { slug: row.slug } : {}),
+          ...(row.version ? { version: row.version } : {}),
+          ...(row.project_id ? { projectId: row.project_id } : {}),
+          ...(row.parent_id ? { parentId: row.parent_id } : {}),
+        },
+        rawAccess: { kind: 'sqlite', path: dbPath },
+        fidelityWarnings: [V2_FIDELITY_WARNING],
+      };
+
+      if (row.tokens_reasoning && row.tokens_reasoning > 0) notes.thinkingTokens = row.tokens_reasoning;
+      if (row.tokens_cache_read || row.tokens_cache_write) {
+        notes.cacheTokens = { read: row.tokens_cache_read ?? 0, creation: row.tokens_cache_write ?? 0 };
+      }
+
+      const firstAssistant = db
+        .prepare(
+          "SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq ASC LIMIT 1",
+        )
+        .get(sessionId) as { data: string } | undefined;
+      if (firstAssistant) {
+        try {
+          const dataResult = V2MessageDataSchema.safeParse(JSON.parse(firstAssistant.data));
+          if (dataResult.success && dataResult.data.model?.id) notes.model = dataResult.data.model.id;
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 notes assistant data', dbPath, sessionId, err);
+        }
+      }
+
+      return notes;
+    } catch (err) {
+      logger.debug('opencode: failed to extract v2 session notes', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return undefined;
+}
+
 function extractSessionNotesFromSqlite(sessionId: string): SessionNotes | undefined {
   for (const dbPath of getOpenCodeDbPaths()) {
     const handle = openDb(dbPath);
@@ -1278,6 +1673,61 @@ function extractOpenCodeSessionNotes(sessionId: string): SessionNotes | undefine
   return extractSessionNotesFromSqlite(sessionId) ?? extractSessionNotesFromJson(sessionId);
 }
 
+/**
+ * Extract pending tasks from the latest v2 `todowrite` tool part's `state.input.todos`
+ */
+function extractPendingTasksFromV2Sqlite(sessionId: string): string[] {
+  for (const dbPath of getOpenCodeDbPaths()) {
+    const handle = openDb(dbPath);
+    if (!handle) continue;
+    const { db, close } = handle;
+    try {
+      if (!hasV2Tables(db)) continue;
+
+      const rows = db
+        .prepare("SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC")
+        .all(sessionId) as Array<{ data: string }>;
+      if (rows.length === 0) continue;
+
+      for (const row of rows) {
+        let rawData: unknown;
+        try {
+          rawData = JSON.parse(row.data);
+        } catch (err) {
+          logger.debug('opencode: failed to parse v2 pending-tasks message data', dbPath, sessionId, err);
+          continue;
+        }
+        const dataResult = V2MessageDataSchema.safeParse(rawData);
+        if (!dataResult.success) continue;
+
+        // Latest todowrite call wins: within the newest assistant row, the last
+        // todowrite part carries the most current todo state.
+        let todos: unknown[] | undefined;
+        for (const rawPart of dataResult.data.content ?? []) {
+          if (rawPart.type !== 'tool') continue;
+          const name = rawPart.name ?? rawPart.tool;
+          if (name !== 'todowrite') continue;
+          const state = isRecord(rawPart.state) ? rawPart.state : {};
+          const input = getRecordValue(state, 'input');
+          todos = Array.isArray(input.todos) ? input.todos : [];
+        }
+        if (!todos) continue;
+        return todos
+          .filter((t): t is Record<string, unknown> => isRecord(t) && t.status !== 'completed')
+          .map((t) => `[${typeof t.priority === 'string' ? t.priority : 'medium'}] ${String(t.content ?? '')}`)
+          .filter((line) => line.length > 0);
+      }
+      return [];
+    } catch (err) {
+      logger.debug('opencode: failed to extract v2 pending tasks', dbPath, sessionId, err);
+    } finally {
+      close();
+    }
+  }
+
+  return [];
+}
+
 function extractPendingTasksFromSqlite(sessionId: string): string[] {
   for (const dbPath of getOpenCodeDbPaths()) {
     const handle = openDb(dbPath);
@@ -1310,8 +1760,10 @@ export async function extractOpenCodeContext(
   const recentMessages = readAllMessages(session.id);
   const toolData = extractOpenCodeToolData(session.id, resolvedConfig);
   const filesModified = toolData.filesModified;
-  const pendingTasks = extractPendingTasksFromSqlite(session.id);
-  const sessionNotes = extractOpenCodeSessionNotes(session.id);
+  // Staged read cascade: v2 first, then legacy (SQLite → JSON) as fallback.
+  const v2Tasks = extractPendingTasksFromV2Sqlite(session.id);
+  const pendingTasks = v2Tasks.length > 0 ? v2Tasks : extractPendingTasksFromSqlite(session.id);
+  const sessionNotes = extractSessionNotesFromV2Sqlite(session.id) ?? extractOpenCodeSessionNotes(session.id);
 
   const trimmed = trimMessages(recentMessages, resolvedConfig.recentMessages);
   const timeline = buildOpenCodeTimeline(trimmed, resolvedConfig.handoff.timelineWindow);

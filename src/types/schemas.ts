@@ -451,6 +451,69 @@ export const SqliteProjectRowSchema = z.object({
   worktree: z.string(),
 });
 
+// SQLite row schemas — OpenCode v2 (session_v2 / session_message)
+export const SqliteV2SessionRowSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  parent_id: z.string().nullable().optional(),
+  slug: z.string(),
+  directory: z.string(),
+  title: z.string().nullable().optional(),
+  version: z.string(),
+  summary_additions: z.number().nullable().optional(),
+  summary_deletions: z.number().nullable().optional(),
+  summary_files: z.number().nullable().optional(),
+  model: z.string().nullable().optional(),
+  cost: z.number().nullable().optional(),
+  tokens_input: z.number().nullable().optional(),
+  tokens_output: z.number().nullable().optional(),
+  tokens_reasoning: z.number().nullable().optional(),
+  tokens_cache_read: z.number().nullable().optional(),
+  tokens_cache_write: z.number().nullable().optional(),
+  time_created: z.number(),
+  time_updated: z.number(),
+});
+
+export const SqliteV2MessageRowSchema = z.object({
+  id: z.string(),
+  session_id: z.string(),
+  type: z.string(),
+  seq: z.number(),
+  time_created: z.number(),
+  time_updated: z.number(),
+  data: z.string(),
+});
+
+export const V2ContentPartSchema = z
+  .object({
+    type: z.string(),
+    id: z.string().optional(),
+    name: z.string().optional(),
+    tool: z.string().optional(), // legacy alias
+    callID: z.string().optional(), // legacy alias
+    text: z.string().optional(),
+    state: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export const V2MessageDataSchema = z
+  .object({
+    text: z.string().optional(),
+    agent: z.string().optional(),
+    model: z
+      .object({ id: z.string().optional(), providerID: z.string().optional(), variant: z.string().optional() })
+      .optional(),
+    content: z.array(V2ContentPartSchema).optional(),
+    summary: z.string().optional(),
+    time: z.object({ created: z.number().optional() }).optional(),
+  })
+  .passthrough();
+
+export type SqliteV2SessionRow = z.infer<typeof SqliteV2SessionRowSchema>;
+export type SqliteV2MessageRow = z.infer<typeof SqliteV2MessageRowSchema>;
+export type V2ContentPart = z.infer<typeof V2ContentPartSchema>;
+export type V2MessageData = z.infer<typeof V2MessageDataSchema>;
+
 export type OpenCodeSession = z.infer<typeof OpenCodeSessionSchema>;
 export type OpenCodeProject = z.infer<typeof OpenCodeProjectSchema>;
 export type OpenCodeMessage = z.infer<typeof OpenCodeMessageSchema>;
