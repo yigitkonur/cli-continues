@@ -7,7 +7,13 @@ import { maybePromptGithubStar } from '../display/star-prompt.js';
 import type { SessionSource, UnifiedSession } from '../types/index.js';
 import type { HandoffForwardingOptions } from '../utils/forward-flags.js';
 import { getAllSessions, getSessionsByCwd, getSessionsBySource } from '../utils/index.js';
-import { getResumeCommand, nativeResume, resolveCrossToolForwarding, resume } from '../utils/resume.js';
+import {
+  enterSessionDir,
+  getResumeCommand,
+  nativeResume,
+  resolveCrossToolForwarding,
+  resume,
+} from '../utils/resume.js';
 import { matchesCwd } from '../utils/slug.js';
 import { checkSingleToolAutoResume, selectTargetTool, showForwardingWarnings } from './_shared.js';
 
@@ -118,7 +124,7 @@ export async function interactivePick(
       clack.log.step(`Handing off to ${targetTool}...`);
       clack.outro(`Launching ${targetTool}`);
 
-      if (session.cwd) process.chdir(session.cwd);
+      enterSessionDir(session);
       await resume(session, targetTool, 'inline', forwarding, {
         preset: options.preset,
         configPath: options.configPath,
@@ -273,7 +279,7 @@ export async function interactivePick(
     clack.outro(`Launching ${targetTool}`);
 
     // Change to session's working directory and resume
-    if (session.cwd) process.chdir(session.cwd);
+    enterSessionDir(session);
     await resume(session, targetTool, 'inline', forwarding, {
       preset: options.preset,
       configPath: options.configPath,

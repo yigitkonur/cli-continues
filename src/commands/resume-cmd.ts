@@ -5,7 +5,7 @@ import { formatSessionColored } from '../display/format.js';
 import { isSessionSource, type SessionSource, TOOL_NAMES } from '../types/index.js';
 import type { HandoffForwardingOptions } from '../utils/forward-flags.js';
 import { findSession, formatSession, getAllSessions } from '../utils/index.js';
-import { getResumeCommand, resolveCrossToolForwarding, resume } from '../utils/resume.js';
+import { enterSessionDir, getResumeCommand, resolveCrossToolForwarding, resume } from '../utils/resume.js';
 import { selectTargetTool, showForwardingWarnings } from './_shared.js';
 
 /**
@@ -97,7 +97,7 @@ export async function resumeCommand(
         console.log();
       }
 
-      if (session.cwd) process.chdir(session.cwd);
+      enterSessionDir(session);
       await resume(session, target, mode, effectiveForwarding, contextOptions);
       return;
     }
@@ -123,7 +123,7 @@ export async function resumeCommand(
         clack.outro(`Launching ${selectedTarget}`);
       }
 
-      if (session.cwd) process.chdir(session.cwd);
+      enterSessionDir(session);
       await resume(session, selectedTarget, mode, effectiveForwarding, contextOptions);
     } else {
       // Target specified, just resume
@@ -139,7 +139,7 @@ export async function resumeCommand(
         console.log();
       }
 
-      if (session.cwd) process.chdir(session.cwd);
+      enterSessionDir(session);
       await resume(session, target, mode, effectiveForwarding, contextOptions);
     }
   } catch (error) {

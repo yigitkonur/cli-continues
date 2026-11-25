@@ -4,7 +4,7 @@ import type { Command } from 'commander';
 import { sourceColors } from '../display/format.js';
 import { ALL_TOOLS } from '../parsers/registry.js';
 import type { SessionSource, UnifiedSession } from '../types/index.js';
-import { getAvailableTools } from '../utils/resume.js';
+import { enterSessionDir, getAvailableTools } from '../utils/resume.js';
 
 /**
  * Show interactive tool-selection TUI and return the chosen target tool.
@@ -66,7 +66,7 @@ export async function checkSingleToolAutoResume(
   if (availableTools.length === 1 && availableTools[0] === session.source) {
     clack.log.step(`Resuming natively in ${sourceColors[session.source](session.source)}...`);
     clack.outro(`Launching ${session.source}`);
-    if (session.cwd) process.chdir(session.cwd);
+    enterSessionDir(session);
     await nativeResumeFn(session);
     return true;
   }

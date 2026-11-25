@@ -44,6 +44,7 @@ vi.mock('../utils/index.js', () => ({
 }));
 
 vi.mock('../utils/resume.js', () => ({
+  enterSessionDir: vi.fn(),
   getResumeCommand: vi.fn(() => 'continues resume selected'),
   nativeResume: testState.nativeResume,
   resolveCrossToolForwarding: vi.fn(() => ({ warnings: [] })),
