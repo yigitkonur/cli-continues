@@ -116,10 +116,26 @@ function resolveHandoffConfig(options?: HandoffContextOptions): VerbosityConfig 
 }
 
 /**
+ * Directory to launch the target CLI in: the session's own cwd, or the current
+ * directory when that folder has since been deleted (spawn would fail with ENOENT).
+ */
+export function launchCwd(session: UnifiedSession): string {
+  if (!session.cwd) return process.cwd();
+  if (fs.existsSync(session.cwd)) return session.cwd;
+  console.warn(`Session folder ${session.cwd} no longer exists; launching in ${process.cwd()}`);
+  return process.cwd();
+}
+
+/** chdir into the session's folder when it still exists (launchCwd warns when it doesn't). */
+export function enterSessionDir(session: UnifiedSession): void {
+  if (session.cwd && fs.existsSync(session.cwd)) process.chdir(session.cwd);
+}
+
+/**
  * Resume a session using native CLI commands
  */
 export async function nativeResume(session: UnifiedSession): Promise<void> {
-  const cwd = session.cwd || process.cwd();
+  const cwd = launchCwd(session);
   const adapter = adapters[session.source];
   if (!adapter) throw new UnknownSourceError(session.source);
   const binaryName = await requireToolBinaryName(session.source);
@@ -140,7 +156,7 @@ export async function crossToolResume(
   if (!adapter) throw new UnknownSourceError(target);
 
   const context = await extractContext(session, resolveHandoffConfig(contextOptions));
-  const cwd = session.cwd || process.cwd();
+  const cwd = launchCwd(session);
 
   // Always save handoff file to project directory (for sandboxed tools like Gemini)
   const localPath = path.join(cwd, '.continues-handoff.md');

@@ -42,7 +42,7 @@ function makeSession(): UnifiedSession {
   return {
     id: 'resume-debug-test',
     source: 'claude',
-    cwd: '/tmp/project',
+    cwd: process.cwd(), // must exist: enterSessionDir skips missing folders
     repo: 'test/repo',
     branch: 'main',
     summary: 'Test debug prompt passthrough',
@@ -88,7 +88,7 @@ describe('resumeCommand debug prompt option', () => {
     const output = logSpy.mock.calls.map((call) => call.join(' ')).join('\n');
     expect(output).not.toContain('Session:');
     expect(output).not.toContain('Command:');
-    expect(chdirSpy).toHaveBeenCalledWith('/tmp/project');
+    expect(chdirSpy).toHaveBeenCalledWith(process.cwd());
   });
 
   it('rejects invalid --in targets before resolving forwarding or resuming', async () => {
@@ -102,7 +102,7 @@ describe('resumeCommand debug prompt option', () => {
     expect(resolveCrossToolForwardingMock).not.toHaveBeenCalled();
     expect(getResumeCommandMock).not.toHaveBeenCalled();
     expect(resumeMock).not.toHaveBeenCalled();
-    expect(chdirSpy).not.toHaveBeenCalledWith('/tmp/project');
+    expect(chdirSpy).not.toHaveBeenCalledWith(process.cwd());
     expect(errorSpy.mock.calls.map((call) => call.join(' ')).join('\n')).toContain('Unknown target tool: not-a-tool');
   });
 });

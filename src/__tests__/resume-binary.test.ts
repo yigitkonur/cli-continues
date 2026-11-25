@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getToolBinaryCandidates, resolveToolBinaryName } from '../utils/resume.js';
+import { getToolBinaryCandidates, launchCwd, resolveToolBinaryName } from '../utils/resume.js';
 
 describe('tool binary resolution', () => {
   it('prefers cursor-agent with agent as fallback', () => {
@@ -22,5 +22,14 @@ describe('tool binary resolution', () => {
     const binaryName = await resolveToolBinaryName('cursor', async () => false);
 
     expect(binaryName).toBeNull();
+  });
+});
+
+describe('launch directory', () => {
+  type S = Parameters<typeof launchCwd>[0];
+  it('uses the session cwd when it exists and falls back when it was deleted', () => {
+    expect(launchCwd({ cwd: process.cwd() } as S)).toBe(process.cwd());
+    expect(launchCwd({ cwd: '/definitely/not/here/continues-test' } as S)).toBe(process.cwd());
+    expect(launchCwd({ cwd: '' } as S)).toBe(process.cwd());
   });
 });

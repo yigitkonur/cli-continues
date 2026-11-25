@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { formatSessionColored } from '../display/format.js';
 import type { SessionSource } from '../types/index.js';
 import { getSessionsBySource } from '../utils/index.js';
-import { nativeResume } from '../utils/resume.js';
+import { enterSessionDir, nativeResume } from '../utils/resume.js';
 
 /**
  * Resume Nth session from a specific source tool
@@ -23,7 +23,7 @@ export async function resumeBySource(source: SessionSource, n: number): Promise<
     console.log(formatSessionColored(session));
     console.log();
 
-    if (session.cwd) process.chdir(session.cwd);
+    enterSessionDir(session);
     await nativeResume(session);
   } catch (error) {
     console.error(chalk.red('Error:'), (error as Error).message);
